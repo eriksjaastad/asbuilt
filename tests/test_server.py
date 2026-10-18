@@ -1,5 +1,6 @@
 import contextlib
 import http.client
+import json
 import re
 import socket
 import shutil
@@ -9,17 +10,20 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from asbuilt.hub import Hub
 from asbuilt.server import FILES, PAGE, Server
 
 JS, HTML = "text/javascript; charset=utf-8", "text/html; charset=utf-8"
 NOT_LISTED = ["/nope", "/../x", "/%2e%2e/x", "//x", "/vendor/", "/vendor/manifest.json"]
-ALIASES = ["//main.js", "///vendor/rough.js", "/./main.js", "/main.js/", "/index.html"]
+ALIASES = ["//main.js", "///vendor/rough.js", "//events", "/events/", "/index.html"]
 
 
 class ServerCase(unittest.TestCase):
     def setUp(self):
         self.enterContext(contextlib.chdir("/"))
-        self.server = Server(0)
+        self.n = 1
+        self.hub = Hub(lambda: json.dumps({"n": self.n}))
+        self.server = Server(0, self.hub, keep_alive=0.05)
         serving = threading.Thread(target=self.server.serve_forever, args=(0.01,))
         serving.daemon = True
         serving.start()
@@ -61,7 +65,7 @@ class ServerTest(ServerCase):
             shutil.copytree(PAGE, tmp, ignore=shutil.ignore_patterns(Path(name).name))
             self.enterContext(mock.patch("asbuilt.server.PAGE", tmp))
             with self.assertRaisesRegex(FileNotFoundError, re.escape(name)):
-                Server(0)
+                Server(0, self.hub)
 
 
 class HostTest(ServerCase):
@@ -70,7 +74,7 @@ class HostTest(ServerCase):
         for host in ["evil.example", "127.0.0.1", "localhost", f"evil:{port}", "x:1"]:
             for method, path in [
                 ("GET", "/"),
-                ("GET", "/main.js"),
+                ("GET", "/events"),
                 ("GET", "/nope"),
                 ("POST", "/"),
             ]:
