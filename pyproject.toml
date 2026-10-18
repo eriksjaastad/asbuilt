@@ -1,0 +1,13 @@
+[project]
+name = "asbuilt"
+version = "0.0.0"
+description = "Draw the plan for a program before it is built, then compare it with what was built."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["uv_build==0.10.12"]
+build-backend = "uv_build"
