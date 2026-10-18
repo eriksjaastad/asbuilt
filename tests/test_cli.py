@@ -1,4 +1,3 @@
-import _thread
 import contextlib
 import importlib.metadata
 import io
@@ -12,13 +11,29 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.request import urlopen
 
+from asbuilt import cli
 from asbuilt.cli import main
 
+ONE = '{"id": "root", "children": [{"id": "one"}]}'
+TWO = '{"id": "root", "children": [{"id": "two"}]}'
 
-def serve_visit_interrupt(*argv):
-    out, seen = io.StringIO(), []
+
+def data(events):
+    return next(
+        line for line in iter(events.readline, b"") if line.startswith(b"data:")
+    )
+
+
+def serve_visit_interrupt(*argv, then=None, until=b""):
+    out, seen, servers = io.StringIO(), [], []
+
+    class Capture(cli.Server):
+        def __init__(self, *args):
+            super().__init__(*args)
+            servers.append(self)
 
     def visit():
         try:
@@ -26,15 +41,21 @@ def serve_visit_interrupt(*argv):
             while not (found := re.search(r"http://127\.0\.0\.1:\d+/", out.getvalue())):
                 assert time.monotonic() < deadline, "no address printed"
                 time.sleep(0.01)
-            with urlopen(found[0]) as page, urlopen(found[0] + "events") as events:
-                seen.extend([page.status, events.readline()])
+            with (
+                urlopen(found[0]) as page,
+                urlopen(found[0] + "events", timeout=10) as events,
+            ):
+                seen.extend([page.status, data(events)])
+                then and then()
+                while until not in seen[-1]:
+                    seen.append(data(events))
         except Exception as exc:  # shown by the assertions
             seen.append(repr(exc))
         finally:
-            _thread.interrupt_main()
+            servers[0].shutdown()  # ends serve_forever, no signal needed
 
     threading.Thread(target=visit, daemon=True).start()
-    with contextlib.redirect_stdout(out):
+    with contextlib.redirect_stdout(out), mock.patch.object(cli, "Server", Capture):
         code = main([*argv, "--port", "0"])
     return code, seen
 
@@ -63,6 +84,49 @@ class CliTest(unittest.TestCase):
             message = json.loads(seen[1][6:])
             self.assertEqual([code, seen[0], message["ok"]], [0, 200, False])
             self.assertTrue(message["error"].startswith(f"plan.json {why}"))
+
+    def test_a_save_redraws_the_page(self):
+        self.plan.write_text(ONE)
+        _, seen = serve_visit_interrupt(
+            str(self.plan), then=lambda: self.plan.write_text(TWO), until=b'"two"'
+        )
+        self.assertIn(b'"one"', seen[1])
+        self.assertEqual(json.loads(seen[-1][6:])["plan"], json.loads(TWO))
+
+    def test_a_save_made_before_the_watch_looks_is_not_lost(self):
+        self.plan.write_text(ONE)
+        stops, real_watch = [], cli.watch
+
+        def late_start(path, on_change, stop):
+            self.plan.write_text(TWO)
+            stops.append(stop)
+            real_watch(path, on_change, stop)
+
+        redraws = mock.patch.object(
+            cli.Hub, "refresh", autospec=True, side_effect=cli.Hub.refresh
+        )
+        with mock.patch.object(cli, "watch", late_start), redraws as refresh:
+            _, seen = serve_visit_interrupt(str(self.plan), until=b'"two"')
+        refresh.assert_called_once()  # the first wait redraws once, not at every wait
+        self.assertEqual(json.loads(seen[-1][6:])["plan"], json.loads(TWO))
+        self.assertTrue(stops[0].is_set())
+
+    def test_ctrl_c_ends_the_command_cleanly_and_closes_the_socket(self):
+        closing = mock.patch.object(
+            cli.Server,
+            "server_close",
+            autospec=True,
+            side_effect=cli.Server.server_close,
+        )
+        with (
+            mock.patch.object(
+                cli.Server, "serve_forever", side_effect=KeyboardInterrupt
+            ),
+            closing as close,
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--port", "0"]), 0)
+        close.assert_called_once()
 
     def test_the_default_plan_is_asbuilt_plan_json(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
