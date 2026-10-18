@@ -1,6 +1,7 @@
 import contextlib
 import http.client
 import re
+import socket
 import shutil
 import tempfile
 import threading
@@ -25,10 +26,10 @@ class ServerCase(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def request(self, path):
+    def request(self, path, host=None, method="GET"):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         self.addCleanup(conn.close)
-        conn.request("GET", path)
+        conn.request(method, path, headers={"Host": host} if host else {})
         return conn.getresponse()
 
 
@@ -61,3 +62,43 @@ class ServerTest(ServerCase):
             self.enterContext(mock.patch("asbuilt.server.PAGE", tmp))
             with self.assertRaisesRegex(FileNotFoundError, re.escape(name)):
                 Server(0)
+
+
+class HostTest(ServerCase):
+    def test_a_request_naming_another_host_is_refused_whatever_it_asks_for(self):
+        port = self.server.server_port
+        for host in ["evil.example", "127.0.0.1", "localhost", f"evil:{port}", "x:1"]:
+            for method, path in [
+                ("GET", "/"),
+                ("GET", "/main.js"),
+                ("GET", "/nope"),
+                ("POST", "/"),
+            ]:
+                self.assertEqual(
+                    self.request(path, host, method).status, 403, (host, path)
+                )
+        self.assertEqual(
+            self.request("/", f"127.0.0.1.evil.example:{port}").status, 403
+        )
+
+    def test_this_machines_own_names_are_let_in(self):
+        for host in ["127.0.0.1", "localhost"]:
+            self.assertEqual(
+                self.request("/", f"{host}:{self.server.server_port}").status, 200
+            )
+
+    def raw(self, data):
+        with socket.create_connection(self.server.server_address, timeout=5) as conn:
+            conn.sendall(data)
+            return b"".join(iter(lambda: conn.recv(4096), b""))
+
+    def test_a_request_with_no_host_is_refused_and_gets_nothing_else(self):
+        everything = self.raw(b"GET / HTTP/1.0\r\n\r\n")
+        self.assertTrue(everything.startswith(b"HTTP/1.0 403"))
+        self.assertNotIn(b"As-Built", everything)
+
+    def test_a_malformed_request_gets_its_400_and_no_handler_error(self):
+        with mock.patch.object(self.server, "handle_error") as failed:
+            everything = self.raw(b"GET / / / HTTP/1.0\r\n\r\n")
+        self.assertTrue(everything.startswith(b"HTTP/1.0 400"))
+        failed.assert_not_called()

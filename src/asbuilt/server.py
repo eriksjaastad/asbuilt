@@ -21,6 +21,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(file.read_bytes())
 
+    def parse_request(self):
+        """Refuse any request, of any kind, whose Host is not this server's own address."""
+        if not super().parse_request():
+            return False
+        if self.headers.get("Host") not in self.server.hosts:
+            self.send_error(403)
+            return False
+        return True
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
@@ -35,3 +44,4 @@ class Server(http.server.ThreadingHTTPServer):
             if not file.is_file():
                 raise FileNotFoundError(f"{file} is missing from the installed package")
         super().__init__(("127.0.0.1", port), Handler)
+        self.hosts = {f"127.0.0.1:{self.server_port}", f"localhost:{self.server_port}"}
