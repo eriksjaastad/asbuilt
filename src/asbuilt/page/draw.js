@@ -1,6 +1,7 @@
 // Draw laid-out boxes and arrows (the output of layout.js) as an ink-and-wash SVG string (D-006) with rough.js's
 // generator, passed in. Every shape is seeded from its box or arrow id, never its place in the list, so a redraw
 // never wobbles and adding a box does not move the others. Labels are plain escaped text, drawn last and crisp.
+import { arrows } from "./arrows.js";
 import { drawn, esc, INK, seedOf } from "./shapes.js";
 
 const WASH = "rgba(170,158,135,0.20)";
@@ -25,6 +26,6 @@ export function draw(laid, gen) {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w + 20} ${h + 20}" width="${w + 20}" height="${h + 20}">` +
     `<defs>${filter("wash", 0.035, 12, 7, w, h)}${filter("ink", 0.08, 2.2, 3, w, h)}</defs>` +
-    `<g filter="url(#wash)">${washes.join("")}</g><g filter="url(#ink)">${inks.join("")}</g>${labels.join("")}</svg>`
+    `<g filter="url(#wash)">${washes.join("")}</g><g filter="url(#ink)">${inks.join("")}${arrows(laid.arrows, gen)}</g>${labels.join("")}</svg>`
   );
 }
