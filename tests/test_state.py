@@ -35,8 +35,8 @@ class StateTest(unittest.TestCase):
 
     def test_a_plan_error_shows_its_own_text(self):
         self.assertEqual(
-            parsed(raising(PlanError("plan.json is missing"))),
-            {"ok": False, "error": "plan.json is missing"},
+            parsed(raising(PlanError("plan.json is missing\nsecond line"))),
+            {"ok": False, "error": "plan.json is missing\nsecond line"},
         )
 
     def test_any_other_failure_gets_the_fixed_sentence_and_none_of_its_text(self):
