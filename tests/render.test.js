@@ -28,6 +28,7 @@ const WRONG = {
   "not JSON": ["{nope", /JSON/],
   "JSON that is not a message": ["null", /cannot read/],
   "a message with no verdict": [{ plan: big }, /cannot read/],
+  "a verdict that is not true or false": [{ ok: "yes", plan: big }, /cannot read/],
   "ok with no plan": [{ ok: true }, /plan: is not an object/],
   "a plan the page refuses": [{ ok: true, plan: { id: "r", children: [leaf("a"), leaf("a")] } }, /used twice/],
   "an arrow ELK refuses": [{ ok: true, plan: { id: "r", children: [leaf("a")], edges: [arrow("e", "a", "zzz")] } }, /zzz/],
@@ -39,3 +40,9 @@ for (const [name, [state, reason]] of Object.entries(WRONG)) {
     assert.match(html, reason);
   });
 }
+
+test("something thrown that is not an Error still shows its text", async () => {
+  const elkThatRefuses = { layout: () => Promise.reject("plain text") };
+  const html = await render(JSON.stringify({ ok: true, plan: big }), elkThatRefuses, gen);
+  assert.equal(html, '<pre class="error">plain text</pre>');
+});
