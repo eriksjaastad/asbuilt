@@ -8,14 +8,16 @@ import socket
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from urllib.request import urlopen
 
-from asbuilt.cli import NO_PLAN, main
+from asbuilt.cli import main
 
 
-def serve_visit_interrupt(**kwargs):
+def serve_visit_interrupt(*argv):
     out, seen = io.StringIO(), []
 
     def visit():
@@ -33,7 +35,7 @@ def serve_visit_interrupt(**kwargs):
 
     threading.Thread(target=visit, daemon=True).start()
     with contextlib.redirect_stdout(out):
-        code = main(["--port", "0"], **kwargs)
+        code = main([*argv, "--port", "0"])
     return code, seen
 
 
@@ -43,18 +45,29 @@ def fail_to_start(port):
 
 
 class CliTest(unittest.TestCase):
-    def test_it_serves_the_page_and_a_visible_error_message_until_interrupted(self):
-        code, seen = serve_visit_interrupt()
-        self.assertEqual([code, seen[0]], [0, 200])
-        self.assertEqual(seen[1], f"data: {NO_PLAN}\n".encode())
-        self.assertIs(json.loads(seen[1][6:])["ok"], False)
+    def setUp(self):
+        self.plan = Path(self.enterContext(tempfile.TemporaryDirectory())) / "plan.json"
 
-    def test_a_given_build_function_supplies_the_message(self):
-        message = json.dumps({"ok": True, "plan": {"id": "root"}})
-        self.assertEqual(
-            serve_visit_interrupt(build=lambda: message)[1][1],
-            f"data: {message}\n".encode(),
-        )
+    def test_it_serves_the_page_and_the_plan_in_the_file_until_interrupted(self):
+        self.plan.write_text('{"id": "root", "children": [{"id": "a"}]}')
+        code, seen = serve_visit_interrupt(str(self.plan))
+        self.assertEqual([code, seen[0]], [0, 200])
+        plan = {"id": "root", "children": [{"id": "a"}]}
+        self.assertEqual(json.loads(seen[1][6:]), {"ok": True, "plan": plan})
+
+    def test_a_missing_or_bad_plan_still_serves_the_page_with_the_reason(self):
+        for text, why in ((None, "was not found."), ("{", "is not valid JSON: ")):
+            if text:
+                self.plan.write_text(text)
+            code, seen = serve_visit_interrupt(str(self.plan))
+            message = json.loads(seen[1][6:])
+            self.assertEqual([code, seen[0], message["ok"]], [0, 200, False])
+            self.assertTrue(message["error"].startswith(f"plan.json {why}"))
+
+    def test_the_default_plan_is_asbuilt_plan_json(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertRaises(SystemExit, main, ["--help"])
+        self.assertIn("default asbuilt/plan.json", out.getvalue().replace("\n", " "))
 
     def test_a_taken_port_ends_with_a_message_that_names_it_and_exit_code_2(self):
         with socket.socket() as taken:
