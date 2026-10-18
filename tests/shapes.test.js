@@ -11,6 +11,14 @@ test("esc leaves nothing that can break out of text or an attribute, and decodes
   }
 });
 
+test("what a parser would rewrite is written as references, what no XML text can hold shows as U+FFFD", () => {
+  assert.equal(esc("a\r\nb\tc"), "a&#13;&#10;b&#9;c");
+  for (const bad of ["\0", "\x01", "\b", "\v", "\f", "\x0e", "\x1f", "\ud800", "\udc00", "\uFFFE", "\uFFFF"]) {
+    assert.equal(esc(`a${bad}b`), "a\uFFFDb", JSON.stringify(bad));
+  }
+  for (const fine of ["\x7f", "\x85", "\x9f", "\u2028", "😀", "\ud83d\ude00"]) assert.equal(esc(fine), fine);
+});
+
 // An id whose FNV hash is 0: its last character equals the hash of the rest, which cancels it.
 const fnv = (s) => [...s].reduce((h, c) => Math.imul(h ^ c.codePointAt(0), 16777619), 2166136261);
 const zeroHashId = () => {
