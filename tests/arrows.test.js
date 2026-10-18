@@ -12,6 +12,9 @@ const run = (id, points) => coords(arrows([{ id, points }], rough.generator()));
 test("41 arrows are drawn, each a line and a head, the same on a redraw and wherever they sit in the list", () => {
   const first = pieces(draw(laid, rough.generator()), "arrow");
   assert.equal(Object.keys(first).length, 41);
+  const svg = draw(laid, rough.generator());
+  const inked = svg.slice(svg.indexOf('<g filter="url(#ink)">'), svg.indexOf("<text")); // the layer that wobbles
+  assert.equal(Object.keys(pieces(inked, "arrow")).length, 41);
   assert.ok(Object.values(first).every((a) => a.split("<path").length === 3));
   const again = draw({ ...laid, arrows: [...laid.arrows].reverse() }, rough.generator());
   assert.deepEqual(pieces(again, "arrow"), first);
