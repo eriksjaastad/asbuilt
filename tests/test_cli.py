@@ -1,9 +1,12 @@
 import _thread
 import contextlib
+import importlib.metadata
 import io
 import json
 import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -70,3 +73,21 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertRaises(SystemExit, main, ["--help"])
         self.assertIn("default 8765", out.getvalue())
+
+
+class EntryTest(unittest.TestCase):
+    def test_the_asbuilt_command_runs_main(self):
+        [entry] = importlib.metadata.entry_points(
+            group="console_scripts", name="asbuilt"
+        )
+        self.assertIs(entry.load(), main)
+
+    def test_python_dash_m_runs_main_and_passes_its_exit_code_on(self):
+        run = subprocess.run(
+            [sys.executable, "-m", "asbuilt", "--port", "65536"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("cannot start on 127.0.0.1:65536", run.stderr)
