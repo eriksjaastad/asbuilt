@@ -1,6 +1,8 @@
 import io
+import math
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import unittest
@@ -71,3 +73,60 @@ class ReadBytesTest(unittest.TestCase):
         with mock.patch.object(plan, "open", spy, create=True):
             self.refused()
         self.assertEqual(sizes, [plan.MAX_BYTES + 1])
+
+
+class ParseTest(unittest.TestCase):
+    def refused(self, raw):
+        with self.assertRaises(PlanError) as caught:
+            plan.parse(raw, "plan.json")
+        return str(caught.exception)
+
+    def test_json_parses_plainly_and_numbers_are_left_for_the_message_step(self):
+        self.assertEqual(
+            plan.parse(b'{"id": "r", "k": [1, 2.5, "caf\xc3\xa9"]}', "p"),
+            {"id": "r", "k": [1, 2.5, "caf\u00e9"]},
+        )
+        nan, huge = plan.parse(b"[NaN, 1e400]", "p")
+        self.assertTrue(math.isnan(nan) and math.isinf(huge))
+
+    def test_text_that_is_not_json_names_the_file_and_where(self):
+        self.assertRegex(
+            self.refused(b'{"a": }'),
+            r"^plan\.json is not valid JSON: .*line 1 column 7",
+        )
+        self.assertRegex(
+            self.refused(b"\xef\xbb\xbf{}"), r"^plan\.json is not valid JSON: "
+        )
+
+    def test_bytes_that_are_not_utf8_are_refused(self):
+        self.assertEqual(self.refused(b'{"a": "\xff"}'), "plan.json is not UTF-8 text.")
+
+    def test_a_repeated_key_is_refused_wherever_it_is(self):
+        for raw in (b'{"id": 1, "id": 2}', b'{"children": [{"x": 1, "x": 2}]}'):
+            self.assertRegex(
+                self.refused(raw),
+                r"^plan\.json repeats the key '(id|x)' in one object\.$",
+            )
+
+    def test_a_number_with_too_many_digits_and_a_deep_nest_are_refused(self):
+        old = sys.get_int_max_str_digits()
+        self.addCleanup(sys.set_int_max_str_digits, old)
+        sys.set_int_max_str_digits(640)
+        self.assertEqual(
+            self.refused(b"[" + b"1" * 700 + b"]"),
+            "plan.json has a whole number with too many digits.",
+        )
+        self.assertEqual(self.refused(b"[" * 200000), "plan.json is nested too deeply.")
+
+    def test_read_gives_the_plan_in_a_file_or_the_reason_it_cannot(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "plan.json").write_bytes(b'{"id": "r"}')
+        self.assertEqual(plan.read(directory / "plan.json"), {"id": "r"})
+        (directory / "bad.json").write_bytes(b"{")
+        for name, text in (
+            ("nope.json", "was not found."),
+            ("bad.json", "is not valid JSON: "),
+        ):
+            with self.assertRaisesRegex(PlanError, rf"^{name[:-5]}\.json {text}"):
+                plan.read(directory / name)

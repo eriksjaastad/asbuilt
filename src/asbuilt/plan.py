@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 
@@ -25,3 +26,33 @@ def read_bytes(path):
     if len(raw) > MAX_BYTES:
         raise PlanError(f"{name} is over {MAX_BYTES} bytes.")
     return raw
+
+
+def _object(pairs, name):
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:  # json would keep the last one and draw a quietly wrong chart
+            raise PlanError(f"{name} repeats the key {key[:40]!r} in one object.")
+        seen.add(key)
+    return dict(pairs)
+
+
+def parse(raw, name):
+    """The JSON in `raw` (plain parsing; numbers are checked when the message is made), or a PlanError."""
+    try:
+        return json.loads(
+            raw.decode("utf-8"), object_pairs_hook=lambda pairs: _object(pairs, name)
+        )
+    except json.JSONDecodeError as exc:
+        raise PlanError(f"{name} is not valid JSON: {exc}.") from None
+    except UnicodeDecodeError:
+        raise PlanError(f"{name} is not UTF-8 text.") from None
+    except RecursionError:
+        raise PlanError(f"{name} is nested too deeply.") from None
+    except ValueError:  # the one other: more digits than Python converts
+        raise PlanError(f"{name} has a whole number with too many digits.") from None
+
+
+def read(path):
+    """The plan in the file at `path`, or a PlanError naming the file and the problem."""
+    return parse(read_bytes(path), path.name)
