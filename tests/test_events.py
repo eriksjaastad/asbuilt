@@ -22,7 +22,9 @@ class EventsTest(ServerCase):
         self.assertEqual(resp.getheader("Content-Type"), "text/event-stream")
         self.assertEqual(resp.getheader("Cache-Control"), "no-store")
         self.assertEqual(event(resp), ['data: {"n": 1}'])
+        idle = time.monotonic()
         self.assertEqual(event(resp), [": keep-alive"])
+        self.assertGreaterEqual(time.monotonic() - idle, 0.04)  # it waits, not spins
         self.n = 2
         self.hub.refresh()
         while (lines := event(resp)) == [": keep-alive"]:
