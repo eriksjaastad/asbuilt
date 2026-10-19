@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import sys
 import threading
+import traceback
 from pathlib import Path
 
 from asbuilt import plan
@@ -41,12 +42,22 @@ def main(argv=None):
     except (OSError, OverflowError) as exc:  # in use, no permission, out of range
         print(f"asbuilt: cannot start on 127.0.0.1:{args.port}: {exc}", file=sys.stderr)
         return 2
-    stop = Stop(hub.refresh)
-    threading.Thread(
-        target=watch, args=(args.plan, hub.refresh, stop), daemon=True
-    ).start()
+    stop, failed = Stop(hub.refresh), []
+
+    def watching():
+        try:
+            watch(args.plan, hub.refresh, stop)
+        except Exception as exc:  # a dead watch ends the command, not a stale page
+            failed.append(exc)
+            server.shutdown()
+
+    threading.Thread(target=watching, daemon=True).start()
     print(f"asbuilt: drawing {args.plan} at http://127.0.0.1:{server.server_port}/")
     with server, contextlib.suppress(KeyboardInterrupt):  # leaving closes the socket
         server.serve_forever()
     stop.set()
+    if failed:
+        print(f"asbuilt: stopped, the watch of {args.plan} failed:", file=sys.stderr)
+        traceback.print_exception(failed[0])
+        return 1
     return 0

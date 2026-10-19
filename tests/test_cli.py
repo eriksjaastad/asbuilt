@@ -128,6 +128,23 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(main(["--port", "0"]), 0)
         close.assert_called_once()
 
+    def test_a_watch_that_fails_ends_the_command_with_the_reason(self):
+        codes = []
+        runner = threading.Thread(
+            target=lambda: codes.append(main(["--port", "0"])), daemon=True
+        )
+        failing = mock.patch.object(cli, "watch", side_effect=RuntimeError("boom"))
+        with (
+            failing,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            runner.start()
+            runner.join(10)  # a command that never ends fails here instead of hanging
+        self.assertEqual(codes, [1])
+        self.assertIn("watch of asbuilt/plan.json failed", err.getvalue())
+        self.assertIn("RuntimeError: boom", err.getvalue())
+
     def test_the_default_plan_is_asbuilt_plan_json(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertRaises(SystemExit, main, ["--help"])
