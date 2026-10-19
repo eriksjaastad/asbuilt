@@ -18,6 +18,23 @@ test("a good plan is copied: unchanged by the call, arrows moved to the root, a 
   assert.equal(out.x, 1);
 });
 
+test("a box is made wide enough for its label: a bare leaf grows, a given width stays, a box with children gets a minimum", () => {
+  const text = "x".repeat(40);
+  const [a, b, c, g, h] = prepare({
+    id: "r",
+    children: [
+      { id: "a", labels: [{ text }] },
+      { id: "😀".repeat(30) },
+      leaf("c", { labels: [{ text }] }),
+      { id: "g", labels: [{ text }], children: [leaf("k")] },
+      { id: "h", layoutOptions: { "elk.nodeSize.minimum": "(1,1)" }, labels: [{ text }], children: [leaf("m")] },
+    ],
+  }).children;
+  assert.deepEqual([a.width, b.width, c.width], [344, 264, 40]);
+  assert.deepEqual(g.layoutOptions, { "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": "(0,344)" });
+  assert.equal(h.layoutOptions["elk.nodeSize.minimum"], "(1,1)");
+});
+
 test("a refusal names where the problem is", () => {
   const plan = { id: "r", children: [leaf("a"), { id: "g", children: [leaf("b", { width: 0 })] }] };
   assert.throws(() => prepare(plan), { message: "plan.children[1].children[0]: width is not a number above 0" });

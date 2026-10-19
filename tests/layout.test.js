@@ -54,3 +54,10 @@ test("an arrow that skips a box bends around it and keeps its bend points", asyn
   assertSound(plan, laid, 3, 3);
   assert.ok(laid.arrows.find((a) => a.id === "e3").points.length > 2);
 });
+
+test("a long label fits inside its box, whether the box is a bare leaf or holds other boxes", async () => {
+  const text = "validate_credentials(user, password)";
+  const plan = { id: "r", children: [{ id: "a", labels: [{ text }] }, { id: "g", labels: [{ text }], children: [leaf("b")] }] };
+  const laid = await layout(plan, elk);
+  assert.deepEqual(laid.boxes.filter((b) => b.label === text).map((b) => b.w >= 8 * text.length + 24), [true, true]);
+});
