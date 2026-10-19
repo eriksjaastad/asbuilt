@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import rough from "roughjs/bundled/rough.esm.js";
 import { draw } from "../src/asbuilt/page/draw.js";
@@ -17,6 +18,15 @@ test("49 boxes are drawn, each with a wash, a label and a margin, and nothing is
   assert.ok(laid.boxes.every((b) => svg.includes(`<text x="${b.x + b.w / 2}" y="${b.y + 22}"`)));
   assert.equal(svg.split('fill="rgba(170,158,135,0.20)"').length, 50);
   assert.doesNotMatch(svg, /NaN|undefined|Infinity|fill="black"/);
+});
+
+test("every label sits on a paper halo drawn under its letters, so an arrow under it cannot hide it", () => {
+  const svg = draw(laid, rough.generator());
+  const labels = svg.match(/<text [^>]*>/g);
+  assert.equal(labels.length, 49);
+  for (const t of labels) assert.match(t, / fill="#2F2E2C" stroke="#F9F5EB" stroke-width="4" stroke-linejoin="round" paint-order="stroke">$/);
+  assert.ok(svg.lastIndexOf("data-arrow") < svg.indexOf("<text"));
+  assert.match(readFileSync(new URL("../src/asbuilt/page/index.html", import.meta.url), "utf8"), /background: #F9F5EB;/);
 });
 
 test("a redraw is byte-identical, and a box looks the same wherever it sits in the list", () => {
