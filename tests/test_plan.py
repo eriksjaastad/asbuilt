@@ -46,11 +46,20 @@ class ReadBytesTest(unittest.TestCase):
     def test_a_file_that_cannot_be_used_is_named_with_the_reason(self):
         (self.dir / "file.txt").write_bytes(b"")
         for path, why in (
-            (self.path, "was not found."),
             (self.dir / "file.txt" / "plan.json", "cannot be read: Not a directory."),
             (self.dir, "cannot be read: Is a directory."),
         ):
             self.assertEqual(self.refused(path), f"{path.name} {why}")
+
+    def test_a_missing_file_is_named_with_the_full_path_it_was_looked_for_at(self):
+        nowhere = Path(
+            "no-such-folder", "plan.json"
+        )  # relative, as typed or the default
+        self.assertEqual(
+            self.refused(nowhere),
+            f"plan.json was not found: {Path.cwd() / nowhere}. "
+            "Save a plan there, or start asbuilt with its path.",
+        )
 
     def test_the_size_limit_is_exact(self):
         self.path.write_bytes(b" " * plan.MAX_BYTES)

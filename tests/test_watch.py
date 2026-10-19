@@ -46,7 +46,12 @@ class WatchTest(unittest.TestCase):
 
     def test_a_deleted_file_is_a_change_and_so_is_its_return(self):
         self.assertEqual(
-            self.run_steps(None, None, b"A", b"A"), ["plan.json was not found.", b"A"]
+            self.run_steps(None, None, b"A", b"A"),
+            [
+                f"plan.json was not found: {self.path}. "
+                "Save a plan there, or start asbuilt with its path.",
+                b"A",
+            ],
         )
 
     def test_an_error_from_the_callback_ends_the_watch_and_reaches_the_caller(self):

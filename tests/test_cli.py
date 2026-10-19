@@ -70,7 +70,7 @@ class CliTest(unittest.TestCase):
         self.plan = Path(self.enterContext(tempfile.TemporaryDirectory())) / "plan.json"
 
     def test_a_missing_or_bad_plan_still_serves_the_page_with_the_reason(self):
-        for text, why in ((None, "was not found."), ("{", "is not valid JSON: ")):
+        for text, why in ((None, "was not found: "), ("{", "is not valid JSON: ")):
             if text:
                 self.plan.write_text(text)
             code, seen = serve_visit_interrupt(str(self.plan))

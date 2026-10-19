@@ -18,7 +18,10 @@ def read_bytes(path):
                 raise PlanError(f"{name} is not a regular file.")
             raw = file.read(MAX_BYTES + 1)
     except FileNotFoundError:
-        raise PlanError(f"{name} was not found.") from None
+        # Where it was looked for, in full: the page cannot see the folder the command was started in.
+        raise PlanError(
+            f"{name} was not found: {path.absolute()}. Save a plan there, or start asbuilt with its path."
+        ) from None
     except OSError as exc:
         raise PlanError(
             f"{name} cannot be read: {exc.strerror or type(exc).__name__}."
