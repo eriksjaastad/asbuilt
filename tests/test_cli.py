@@ -69,13 +69,6 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.plan = Path(self.enterContext(tempfile.TemporaryDirectory())) / "plan.json"
 
-    def test_it_serves_the_page_and_the_plan_in_the_file_until_interrupted(self):
-        self.plan.write_text('{"id": "root", "children": [{"id": "a"}]}')
-        code, seen = serve_visit_interrupt(str(self.plan))
-        self.assertEqual([code, seen[0]], [0, 200])
-        plan = {"id": "root", "children": [{"id": "a"}]}
-        self.assertEqual(json.loads(seen[1][6:]), {"ok": True, "plan": plan})
-
     def test_a_missing_or_bad_plan_still_serves_the_page_with_the_reason(self):
         for text, why in ((None, "was not found."), ("{", "is not valid JSON: ")):
             if text:
@@ -87,10 +80,11 @@ class CliTest(unittest.TestCase):
 
     def test_a_save_redraws_the_page(self):
         self.plan.write_text(ONE)
-        _, seen = serve_visit_interrupt(
+        code, seen = serve_visit_interrupt(
             str(self.plan), then=lambda: self.plan.write_text(TWO), until=b'"two"'
         )
-        self.assertIn(b'"one"', seen[1])
+        self.assertEqual([code, seen[0]], [0, 200])
+        self.assertEqual(json.loads(seen[1][6:])["plan"], json.loads(ONE))
         self.assertEqual(json.loads(seen[-1][6:])["plan"], json.loads(TWO))
 
     def test_a_save_made_before_the_watch_looks_is_not_lost(self):
@@ -145,11 +139,6 @@ class CliTest(unittest.TestCase):
         self.assertIn("watch of asbuilt/plan.json failed", err.getvalue())
         self.assertIn("RuntimeError: boom", err.getvalue())
 
-    def test_the_default_plan_is_asbuilt_plan_json(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertRaises(SystemExit, main, ["--help"])
-        self.assertIn("default asbuilt/plan.json", out.getvalue().replace("\n", " "))
-
     def test_a_taken_port_ends_with_a_message_that_names_it_and_exit_code_2(self):
         with socket.socket() as taken:
             taken.bind(("127.0.0.1", 0))
@@ -163,10 +152,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("cannot start on 127.0.0.1:65536: ", text)
 
-    def test_the_default_port_is_8765(self):
+    def test_the_defaults_are_asbuilt_plan_json_and_port_8765(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertRaises(SystemExit, main, ["--help"])
-        self.assertIn("default 8765", out.getvalue())
+        text = out.getvalue().replace("\n", " ")
+        self.assertIn("default asbuilt/plan.json", text)
+        self.assertIn("default 8765", text)
 
 
 class EntryTest(unittest.TestCase):
