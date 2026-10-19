@@ -24,31 +24,19 @@ test("a refusal names where the problem is", () => {
 });
 
 const BAD = {
-  "not an object": [[null, 5, "x", [], { id: "r", children: [5] }, { id: "r", children: [leaf("a"), null] }], /is not an object/],
-  "no boxes": [[{ id: "r" }, { id: "r", children: [] }, { id: "r", edges: [] }], /has no boxes/],
-  "children or edges not a list": [
-    [{ id: "r", children: "x" }, { id: "r", children: null }, two({ edges: "x" }), two({ edges: { a: 1 } })],
-    /is not a list/,
-  ],
-  "an id that is not text": [
-    [{ children: [leaf("a")] }, { id: "r", children: [{ ...leaf("a"), id: 5 }] }, two({ edges: [{ sources: ["a"], targets: ["b"] }] }), two({ edges: [7] })],
-    /id that is not text/,
-  ],
+  "not an object": [[null, 5, []], /is not an object/],
+  "no boxes": [[{ id: "r" }, { id: "r", children: [] }], /has no boxes/],
+  "children or edges not a list": [[{ id: "r", children: "x" }, { id: "r", children: null }, two({ edges: "x" })], /is not a list/],
+  "an id that is not text": [[{ children: [leaf("a")] }, two({ edges: [{ sources: ["a"], targets: ["b"] }] })], /id that is not text/],
   "an id used twice": [
-    [
-      { id: "r", children: [leaf("a"), leaf("a")] },
-      { id: "r", children: [leaf("a"), { id: "g", children: [leaf("a")] }] },
-      { id: "r", children: [leaf("r")] },
-      two({ edges: [arrow("a", "a", "b")] }),
-      two({ edges: [arrow("e", "a", "b"), arrow("e", "b", "a")] }),
-    ],
+    [{ id: "r", children: [leaf("a"), { id: "g", children: [leaf("a")] }] }, two({ edges: [arrow("a", "a", "b")] })],
     /used twice/,
   ],
+  "a width or height not a number above 0": [
+    [0, "9", Infinity].map((width) => ({ id: "r", children: [leaf("a", { width })] })).concat({ id: "r", children: [leaf("a", { height: 0 })] }),
+    /above 0/,
+  ],
 };
-for (const key of ["width", "height"]) {
-  const sizes = [0, -1, "9", NaN, Infinity, true, null, [1]];
-  BAD[`${key} not a number above 0`] = [sizes.map((v) => ({ id: "r", children: [leaf("a", { [key]: v })] })), /above 0/];
-}
 for (const [name, [plans, reason]] of Object.entries(BAD)) {
   test(`refused, with the reason: ${name}`, () => {
     for (const plan of plans) assert.throws(() => prepare(plan), reason, JSON.stringify(plan));

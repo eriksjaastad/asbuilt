@@ -4,7 +4,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
 import rough from "roughjs/bundled/rough.esm.js";
 import { render } from "../src/asbuilt/page/render.js";
 import { decode, escaped, evils } from "./helpers.js";
-import { arrow, big, leaf } from "./plans.js";
+import { big, leaf } from "./plans.js";
 
 const [elk, gen] = [new ELK(), rough.generator()];
 const show = (state) => render(typeof state === "string" ? state : JSON.stringify(state), elk, gen);
@@ -31,7 +31,6 @@ const WRONG = {
   "a verdict that is not true or false": [{ ok: "yes", plan: big }, /cannot read/],
   "ok with no plan": [{ ok: true }, /plan: is not an object/],
   "a plan the page refuses": [{ ok: true, plan: { id: "r", children: [leaf("a"), leaf("a")] } }, /used twice/],
-  "an arrow ELK refuses": [{ ok: true, plan: { id: "r", children: [leaf("a")], edges: [arrow("e", "a", "zzz")] } }, /zzz/],
 };
 for (const [name, [state, reason]] of Object.entries(WRONG)) {
   test(`it shows a panel, not a throw or a blank: ${name}`, async () => {

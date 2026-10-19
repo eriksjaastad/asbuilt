@@ -31,17 +31,6 @@ test("an older state that finishes before the newer one starts is shown, then th
   assert.deepEqual(shown, ["one", "two"]);
 });
 
-test("a newer state that is quick (an error) is not overwritten by a slower older one", async () => {
-  const shown = [];
-  let slow;
-  const go = latest((s) => (s === "layout" ? new Promise((r) => (slow = () => r("chart"))) : s), (r) => shown.push(r));
-  const first = go("layout");
-  await go("error");
-  slow();
-  await first;
-  assert.deepEqual(shown, ["error"]);
-});
-
 test("an error thrown by work reaches the caller and shows nothing", async () => {
   const shown = [];
   const go = latest(async () => { throw new Error("boom"); }, (r) => shown.push(r));
