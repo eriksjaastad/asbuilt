@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.request import urlopen
 
-from asbuilt import cli
+from asbuilt import cli, plan
 from asbuilt.cli import main
 
 ONE = '{"id": "root", "children": [{"id": "one"}]}'
@@ -173,12 +173,15 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("cannot start on 127.0.0.1:65536: ", text)
 
-    def test_the_defaults_are_asbuilt_plan_json_and_port_8765(self):
+    def test_the_help_gives_the_defaults_and_an_example_plan_it_reads(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertRaises(SystemExit, main, ["--help"])
         text = out.getvalue().replace("\n", " ")
         self.assertIn("default asbuilt/plan.json", text)
         self.assertIn("default 8765", text)
+        example = cli.USAGE[cli.USAGE.index("{") :].encode()
+        self.assertIn(cli.USAGE.strip(), out.getvalue())  # verbatim, example included
+        self.assertEqual(plan.parse(example, "example")["edges"][0]["id"], "e1")
 
 
 class EntryTest(unittest.TestCase):

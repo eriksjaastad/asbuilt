@@ -11,10 +11,29 @@ from asbuilt.server import Server
 from asbuilt.state import build
 from asbuilt.watch import snapshot, watch
 
+USAGE = """\
+Open the address it prints. Saving the file redraws the page. If the file is
+missing or cannot be drawn, the page says why, and the chart comes back when
+the file is fixed. Stop with Ctrl-C.
+
+The plan is ELK JSON (eclipse.org/elk, "JSON format"): boxes inside boxes, and
+arrows between them. For example:
+
+  {"id": "root",
+   "children": [{"id": "read_plan", "labels": [{"text": "read the plan"}]},
+                {"id": "draw_chart", "labels": [{"text": "draw the chart"}]}],
+   "edges": [{"id": "e1", "sources": ["read_plan"], "targets": ["draw_chart"]}]}
+"""
+
 
 def main(argv=None):
     """Serve the plan file as a chart on this machine, redrawn when it is saved, until interrupted."""
-    parser = argparse.ArgumentParser("asbuilt")
+    parser = argparse.ArgumentParser(
+        "asbuilt",
+        description="Draw a plan file as a chart in the browser, on this machine only.",
+        epilog=USAGE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "plan",
         nargs="?",
