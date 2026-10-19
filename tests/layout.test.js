@@ -61,3 +61,9 @@ test("a long label fits inside its box, whether the box is a bare leaf or holds 
   const laid = await layout(plan, elk);
   assert.deepEqual(laid.boxes.filter((b) => b.label === text).map((b) => b.w >= 8 * text.length + 24), [true, true]);
 });
+
+test("every box that holds others, the plan included, keeps its top 36 px clear for the label", async () => {
+  const plan = { id: "r", children: [{ id: "p", children: [{ id: "c", children: [leaf("k")] }] }] };
+  const byId = Object.fromEntries((await layout(plan, elk)).boxes.map((b) => [b.id, b]));
+  assert.deepEqual([byId.p.y, byId.c.y - byId.p.y, byId.k.y - byId.c.y], [36, 36, 36]);
+});

@@ -1,12 +1,12 @@
 // Lay out an already-parsed plan with ELK (passed in). Returns { width, height, boxes, arrows } in absolute
 // coordinates; refusals come from prepare() and ELK. Read: id, labels[0].text, width, height, children, edges.
-import { prepare } from "./prepare.js";
+import { PADDING, prepare } from "./prepare.js";
 
 const OPTIONS = {
   "elk.algorithm": "layered",
   "elk.direction": "DOWN",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-  "elk.padding": "[top=36,left=14,bottom=14,right=14]",
+  "elk.padding": PADDING,
 };
 export async function layout(plan, elk) {
   const out = await elk.layout({ ...prepare(plan), layoutOptions: OPTIONS });

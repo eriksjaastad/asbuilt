@@ -31,7 +31,7 @@ test("a box is made wide enough for its label: a bare leaf grows, a given width 
     ],
   }).children;
   assert.deepEqual([a.width, b.width, c.width], [344, 264, 40]);
-  assert.deepEqual(g.layoutOptions, { "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": "(0,344)" });
+  assert.deepEqual(g.layoutOptions, { "elk.padding": "[top=36,left=14,bottom=14,right=14]", "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": "(0,344)" });
   assert.equal(h.layoutOptions["elk.nodeSize.minimum"], "(1,1)");
 });
 
