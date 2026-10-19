@@ -71,7 +71,7 @@ class ServerTest(ServerCase):
 class HostTest(ServerCase):
     def test_a_request_naming_another_host_is_refused_whatever_it_asks_for(self):
         port = self.server.server_port
-        for host in ["evil.example", "127.0.0.1", f"evil:{port}"]:
+        for host in ["evil.example", "127.0.0.1", f"evil:{port}", "localhost:1"]:
             for method, path in [
                 ("GET", "/"),
                 ("GET", "/events"),
