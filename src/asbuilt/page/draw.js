@@ -1,7 +1,7 @@
 // Draw laid-out boxes and arrows (the output of layout.js) as an ink-and-wash SVG string (D-006) with rough.js's
 // generator, passed in. Every shape is seeded from its box or arrow id, never its place in the list, so a redraw
-// never wobbles and adding a box does not move the others. Labels are plain escaped text, drawn last and crisp,
-// each on a paper-coloured halo so an arrow that passes under a label (into a box that holds others) cannot hide it.
+// never wobbles and adding a box does not move the others. Labels, and a box's note under its label, are plain
+// escaped text, drawn last and crisp, each on a paper-coloured halo so an arrow that passes under one cannot hide it.
 import { arrows } from "./arrows.js";
 import { drawn, esc, INK, seedOf } from "./shapes.js";
 
@@ -22,9 +22,9 @@ export function draw(laid, gen) {
     const o = { stroke: INK, strokeWidth: b.level === 1 ? 2.8 : 2.2, roughness: 0.9, bowing: 0.7, seed: seedOf(b.id) + 1 };
     return `<g data-box="${esc(b.id)}">${drawn(gen, gen.rectangle(b.x, b.y, b.w, b.h, o))}</g>`;
   });
-  const labels = laid.boxes.map(
-    (b) => `<text x="${b.x + b.w / 2}" y="${b.y + 22}" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="13" fill="${INK}" stroke="${PAPER}" stroke-width="4" stroke-linejoin="round" paint-order="stroke">${esc(b.label)}</text>`,
-  );
+  const text = (b, dy, size, s) =>
+    `<text x="${b.x + b.w / 2}" y="${b.y + dy}" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="${size}" fill="${INK}" stroke="${PAPER}" stroke-width="4" stroke-linejoin="round" paint-order="stroke">${esc(s)}</text>`;
+  const labels = laid.boxes.map((b) => text(b, 22, 13, b.label) + (b.note ? text(b, 40, 11, b.note) : ""));
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w + 20} ${h + 20}" width="${w + 20}" height="${h + 20}">` +
     `<defs>${filter("wash", 0.035, 12, 7, w, h)}${filter("ink", 0.08, 2.2, 3, w, h)}</defs>` +

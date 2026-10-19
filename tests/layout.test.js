@@ -38,9 +38,9 @@ test("a box with arrows inside it, a bare leaf and a label without text are draw
   assert.deepEqual(laid.boxes.filter((b) => b.id === "a").map((b) => [b.w, b.h, b.label]), [[190, 70, "a"]]);
 });
 
-test("a label is the first label's text", async () => {
-  const plan = { id: "r", children: [{ ...leaf("a"), labels: [{ text: "fn()" }, { text: "other" }] }] };
-  assert.equal((await layout(plan, elk)).boxes[0].label, "fn()");
+test("a label is the first label's text and a note the second's, or empty", async () => {
+  const plan = { id: "r", children: [{ ...leaf("a"), labels: [{ text: "fn()" }, { text: "other" }] }, leaf("b")] };
+  assert.deepEqual((await layout(plan, elk)).boxes.map((b) => [b.label, b.note]), [["fn()", "other"], ["b", ""]]);
 });
 
 test("an arrow that skips a box bends around it and keeps its bend points", async () => {
@@ -61,4 +61,10 @@ test("every box that holds others, the plan included, keeps its top 36 px clear 
   const plan = { id: "r", children: [{ id: "p", children: [{ id: "c", children: [leaf("k")] }] }] };
   const byId = Object.fromEntries((await layout(plan, elk)).boxes.map((b) => [b.id, b]));
   assert.deepEqual([byId.p.y, byId.c.y - byId.p.y, byId.k.y - byId.c.y], [36, 36, 36]);
+});
+
+test("a box that holds others and has a note keeps its top 54 px clear for both lines", async () => {
+  const plan = { id: "r", children: [{ id: "p", labels: [{ text: "p" }, { text: "note" }], children: [leaf("k")] }] };
+  const byId = Object.fromEntries((await layout(plan, elk)).boxes.map((b) => [b.id, b]));
+  assert.equal(byId.k.y - byId.p.y, 54);
 });

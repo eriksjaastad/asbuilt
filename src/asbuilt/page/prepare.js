@@ -6,7 +6,11 @@
 const LEAF = { width: 190, height: 70 };
 // Room inside a box that holds others: its label sits in the top 36 px (draw.js writes it 22 px down).
 export const PADDING = "[top=36,left=14,bottom=14,right=14]";
+const PADDING_NOTE = "[top=54,left=14,bottom=14,right=14]"; // and the note under it, written 40 px down
 const CHAR = 8; // about the width of a character of the 13px monospace label
+const NOTE_CHAR = 7; // and of the 11px note
+// A box's note: its second label's text, drawn under the first in smaller type (D-013). "" when there is none.
+export const noteOf = (box) => String(box.labels?.[1]?.text ?? "");
 const fail = (where, why) => {
   throw new Error(`${where}: ${why}`);
 };
@@ -28,9 +32,10 @@ function check(box, where, ids, arrows) {
   for (const key of ["width", "height"]) {
     if (key in box && !(Number.isFinite(box[key]) && box[key] > 0)) fail(at, `${key} is not a number above 0`);
   }
-  const wide = CHAR * [...String(box.labels?.[0]?.text ?? box.id)].length + 24; // so the label stays inside its box
+  const [label, note] = [String(box.labels?.[0]?.text ?? box.id), noteOf(box)];
+  const wide = Math.max(CHAR * [...label].length, NOTE_CHAR * [...note].length) + 24; // so both stay inside the box
   // ELK reads a box's minimum size along the layout direction, which layout.js sets to DOWN: the width goes second.
-  if (box.children?.length) box.layoutOptions = { "elk.padding": PADDING, "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
+  if (box.children?.length) box.layoutOptions = { "elk.padding": note ? PADDING_NOTE : PADDING, "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
   else Object.assign(box, { ...LEAF, width: Math.max(LEAF.width, wide), ...box, children: undefined });
   box.children?.forEach((kid, i) => check(kid, `${where}.children[${i}]`, ids, arrows));
 }

@@ -1,6 +1,6 @@
 // Lay out an already-parsed plan with ELK (passed in). Returns { width, height, boxes, arrows } in absolute
-// coordinates; refusals come from prepare() and ELK. Read: id, labels[0].text, width, height, children, edges.
-import { PADDING, prepare } from "./prepare.js";
+// coordinates; refusals come from prepare() and ELK. Read: id, labels[0].text and labels[1].text, width, height, children, edges.
+import { noteOf, PADDING, prepare } from "./prepare.js";
 
 const OPTIONS = {
   "elk.algorithm": "layered",
@@ -16,7 +16,7 @@ export async function layout(plan, elk) {
     for (const b of box.children ?? []) {
       const [x, y] = [origin[box.id][0] + b.x, origin[box.id][1] + b.y];
       origin[b.id] = [x, y];
-      boxes.push({ id: b.id, x, y, w: b.width, h: b.height, level, label: b.labels?.[0]?.text ?? b.id });
+      boxes.push({ id: b.id, x, y, w: b.width, h: b.height, level, label: b.labels?.[0]?.text ?? b.id, note: noteOf(b) });
       walk(b, level + 1);
     }
   };

@@ -36,6 +36,15 @@ test("a redraw is byte-identical, and a box looks the same wherever it sits in t
   for (const attr of ["box", "wash"]) assert.deepEqual(pieces(again, attr), pieces(first, attr));
 });
 
+test("a note is drawn under its box's label in smaller type, escaped, on the same halo; a box without one gets one line", () => {
+  const note = '<b>"n"</b>';
+  const svg = draw({ width: 60, height: 30, boxes: [{ ...one("a"), note }, one("c")], arrows: [] }, rough.generator());
+  const texts = [...svg.matchAll(/<text x="([^"]*)" y="([^"]*)"[^>]*font-size="(\d+)"[^>]*>(.*?)<\/text>/g)].map((m) => m.slice(1));
+  assert.deepEqual(texts.map(([x, y, size, t]) => [x, y, size, decode(t)]), [["25", "22", "13", "a"], ["25", "40", "11", note], ["25", "22", "13", "c"]]);
+  assert.match(texts[1][3], escaped);
+  assert.match(svg.match(/<text [^>]*font-size="11"[^>]*>/)[0], / stroke="#F9F5EB" stroke-width="4" stroke-linejoin="round" paint-order="stroke">$/);
+});
+
 test("ids and labels are escaped, whatever they hold, and decode back to exactly what was given", () => {
   for (const evil of evils) {
     const svg = draw(small(evil), rough.generator());

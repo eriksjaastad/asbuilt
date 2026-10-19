@@ -18,11 +18,15 @@ missing or cannot be drawn, the page says why, and the chart comes back when
 the file is fixed. Stop with Ctrl-C.
 
 The plan is ELK JSON (eclipse.org/elk, "JSON format"): boxes inside boxes, and
-arrows between them. For example:
+arrows between them. A box shows its first label; a second label, if any, is
+drawn under it in smaller type, for a short note on what the box does. For
+example:
 
   {"id": "root",
-   "children": [{"id": "read_plan", "labels": [{"text": "read the plan"}]},
-                {"id": "draw_chart", "labels": [{"text": "draw the chart"}]}],
+   "children": [
+     {"id": "read_plan", "labels": [{"text": "read_plan()"},
+                                    {"text": "reads the plan file"}]},
+     {"id": "draw_chart", "labels": [{"text": "draw_chart()"}]}],
    "edges": [{"id": "e1", "sources": ["read_plan"], "targets": ["draw_chart"]}]}
 """
 

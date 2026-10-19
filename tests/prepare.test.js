@@ -35,6 +35,25 @@ test("a box is made wide enough for its label: a bare leaf grows, a given width 
   assert.equal(h.layoutOptions["elk.nodeSize.minimum"], "(1,1)");
 });
 
+test("a second label is a note: the box is wide enough for it, and a box holding others keeps 54 px on top", () => {
+  const note = "y".repeat(60);
+  const [a, g, h, e] = prepare({
+    id: "r",
+    children: [
+      { id: "a", labels: [{ text: "a" }, { text: "😀".repeat(30) }] },
+      { id: "g", labels: [{ text: "g" }, { text: note }], children: [leaf("k")] },
+      { id: "h", labels: [{ text: "x".repeat(60) }, { text: note }], children: [leaf("m")] },
+      { id: "e", labels: [{ text: "e" }, { text: "" }], children: [leaf("n")] },
+    ],
+  }).children;
+  assert.equal(a.width, 7 * 30 + 24);
+  assert.deepEqual([g, h, e].map((b) => [b.layoutOptions["elk.padding"].slice(0, 7), b.layoutOptions["elk.nodeSize.minimum"]]), [
+    ["[top=54", "(0,444)"],
+    ["[top=54", "(0,504)"],
+    ["[top=36", "(0,32)"],
+  ]);
+});
+
 test("a refusal names the box by its id when it has one, and where it is", () => {
   const plan = { id: "r", children: [leaf("a"), { id: "g", children: [leaf("b", { width: 0 })] }] };
   assert.throws(() => prepare(plan), { message: 'box "b" at plan.children[1].children[0]: width is not a number above 0' });
