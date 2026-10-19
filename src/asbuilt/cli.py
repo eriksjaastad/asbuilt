@@ -9,19 +9,7 @@ from asbuilt import plan
 from asbuilt.hub import Hub
 from asbuilt.server import Server
 from asbuilt.state import build
-from asbuilt.watch import watch
-
-
-class Stop(threading.Event):  # watch() waits right after its first look: redraw then
-    def __init__(self, refresh):
-        super().__init__()
-        self._refresh = refresh
-
-    def wait(self, timeout=None):
-        refresh, self._refresh = self._refresh, None
-        if refresh:
-            refresh()
-        return super().wait(timeout)
+from asbuilt.watch import snapshot, watch
 
 
 def main(argv=None):
@@ -36,17 +24,23 @@ def main(argv=None):
     )
     parser.add_argument("--port", type=int, default=8765, help="default %(default)s")
     args = parser.parse_args(argv)
-    hub = Hub(lambda: build(lambda: plan.read(args.plan)))
+    # The page is drawn from the snapshot the watch settled on, never from a reread.
+    shown = [snapshot(args.plan)]
+    hub = Hub(lambda: build(lambda: plan.parse_snapshot(shown[0], args.plan.name)))
     try:
         server = Server(args.port, hub)
     except (OSError, OverflowError) as exc:  # in use, no permission, out of range
         print(f"asbuilt: cannot start on 127.0.0.1:{args.port}: {exc}", file=sys.stderr)
         return 2
-    stop, failed = Stop(hub.refresh), []
+    stop, failed = threading.Event(), []
+
+    def changed(now):
+        shown[0] = now
+        hub.refresh()
 
     def watching():
         try:
-            watch(args.plan, hub.refresh, stop)
+            watch(args.plan, changed, stop, shown[0])
         except Exception as exc:  # a dead watch ends the command, not a stale page
             failed.append(exc)
             server.shutdown()

@@ -10,15 +10,15 @@ def snapshot(path):
         return str(exc)
 
 
-def watch(path, on_change, stop, tick=0.1):
-    """Call on_change() once per change of contents, after it holds still for a tick.
+def watch(path, on_change, stop, shown, tick=0.1):
+    """Call on_change(snapshot) once per change from `shown` (the snapshot on the page), after it holds still for a tick.
 
-    Not reported: the first look, a half-written save, an undone change. An error from on_change ends the watch.
+    Not reported: a half-written save, an undone change. An error from on_change ends the watch.
     """
-    reported = seen = snapshot(path)
+    reported = seen = shown
     while not stop.wait(tick):
         now = snapshot(path)
         if now == seen and now != reported:
             reported = now
-            on_change()
+            on_change(now)
         seen = now

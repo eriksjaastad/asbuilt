@@ -89,21 +89,42 @@ class CliTest(unittest.TestCase):
 
     def test_a_save_made_before_the_watch_looks_is_not_lost(self):
         self.plan.write_text(ONE)
-        stops, real_watch = [], cli.watch
+        stops, real_watch, saved = [], cli.watch, self.plan
 
-        def late_start(path, on_change, stop):
-            self.plan.write_text(TWO)
+        class SavedWhileStarting(
+            cli.Hub
+        ):  # built after the first look, before the watch
+            def __init__(self, build):
+                super().__init__(build)
+                saved.write_text(TWO)
+
+        def watch(path, on_change, stop, shown):
             stops.append(stop)
-            real_watch(path, on_change, stop)
+            real_watch(path, on_change, stop, shown)
 
         redraws = mock.patch.object(
             cli.Hub, "refresh", autospec=True, side_effect=cli.Hub.refresh
         )
-        with mock.patch.object(cli, "watch", late_start), redraws as refresh:
+        with (
+            mock.patch.object(cli, "Hub", SavedWhileStarting),
+            mock.patch.object(cli, "watch", watch),
+            redraws as refresh,
+        ):
             _, seen = serve_visit_interrupt(str(self.plan), until=b'"two"')
-        refresh.assert_called_once()  # the first wait redraws once, not at every wait
+        refresh.assert_called_once()  # reported once, not at every look
+        self.assertEqual(json.loads(seen[1][6:])["plan"], json.loads(ONE))
         self.assertEqual(json.loads(seen[-1][6:])["plan"], json.loads(TWO))
         self.assertTrue(stops[0].is_set())
+
+    def test_the_page_shows_the_snapshot_the_watch_settled_on_not_a_reread(self):
+        self.plan.write_text(ONE)
+
+        def settled(path, on_change, stop, shown):
+            on_change(TWO.encode())  # the file itself still holds ONE
+
+        with mock.patch.object(cli, "watch", settled):
+            _, seen = serve_visit_interrupt(str(self.plan), until=b'"two"')
+        self.assertEqual(json.loads(seen[-1][6:])["plan"], json.loads(TWO))
 
     def test_ctrl_c_ends_the_command_cleanly_and_closes_the_socket(self):
         closing = mock.patch.object(

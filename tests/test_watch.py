@@ -28,20 +28,21 @@ class WatchTest(unittest.TestCase):
         self.path.write_bytes(b"A")
         self.calls = []
 
-    def run_steps(self, *steps, on_change=None):
+    def run_steps(self, *steps, on_change=None, shown=b"A"):
         watch(
-            self.path,
-            on_change or (lambda: self.calls.append(snapshot(self.path))),
-            Script(self.path, steps),
+            self.path, on_change or self.calls.append, Script(self.path, steps), shown
         )
         return self.calls
 
     def test_a_change_is_reported_once_when_it_settles_not_while_half_written(self):
         self.assertEqual(self.run_steps(b"{", b"{ ", b"{ }", b"{ }"), [b"{ }"])
 
-    def test_the_first_look_the_same_bytes_and_an_undone_change_are_not_reported(self):
+    def test_the_same_bytes_and_an_undone_change_are_not_reported(self):
         for steps in ((b"A", b"A", b"A"), (b"B", b"A", b"A")):
             self.assertEqual(self.run_steps(*steps), [])
+
+    def test_a_file_that_differs_from_what_is_shown_is_reported_once_it_settles(self):
+        self.assertEqual(self.run_steps(b"A", b"A", shown=b"old"), [b"A"])
 
     def test_a_deleted_file_is_a_change_and_so_is_its_return(self):
         self.assertEqual(
@@ -49,7 +50,7 @@ class WatchTest(unittest.TestCase):
         )
 
     def test_an_error_from_the_callback_ends_the_watch_and_reaches_the_caller(self):
-        def fail():
+        def fail(now):
             self.calls.append("called")
             raise RuntimeError("boom")
 
@@ -63,7 +64,15 @@ class WatchTest(unittest.TestCase):
             stop, tick
         )  # set after the first look
         thread = threading.Thread(
-            target=watch, args=(self.path, changed.set, stop, 0.01), daemon=True
+            target=watch,
+            args=(
+                self.path,
+                lambda now: changed.set(),
+                stop,
+                snapshot(self.path),
+                0.01,
+            ),
+            daemon=True,
         )
         thread.start()
         self.assertTrue(looked.wait(10))

@@ -53,6 +53,8 @@ def parse(raw, name):
         raise PlanError(f"{name} has a whole number with too many digits.") from None
 
 
-def read(path):
-    """The plan in the file at `path`, or a PlanError naming the file and the problem."""
-    return parse(read_bytes(path), path.name)
+def parse_snapshot(snap, name):
+    """The plan in a watch snapshot (the file's bytes, or the reason it could not be read), or a PlanError."""
+    if isinstance(snap, str):
+        raise PlanError(snap)
+    return parse(snap, name)

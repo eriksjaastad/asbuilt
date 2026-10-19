@@ -118,15 +118,7 @@ class ParseTest(unittest.TestCase):
         )
         self.assertEqual(self.refused(b"[" * 200000), "plan.json is nested too deeply.")
 
-    def test_read_gives_the_plan_in_a_file_or_the_reason_it_cannot(self):
-        directory = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, directory)
-        (directory / "plan.json").write_bytes(b'{"id": "r"}')
-        self.assertEqual(plan.read(directory / "plan.json"), {"id": "r"})
-        (directory / "bad.json").write_bytes(b"{")
-        for name, text in (
-            ("nope.json", "was not found."),
-            ("bad.json", "is not valid JSON: "),
-        ):
-            with self.assertRaisesRegex(PlanError, rf"^{name[:-5]}\.json {text}"):
-                plan.read(directory / name)
+    def test_a_snapshot_is_parsed_or_its_reason_raised(self):
+        self.assertEqual(plan.parse_snapshot(b'{"id": "r"}', "p"), {"id": "r"})
+        with self.assertRaisesRegex(PlanError, "^plan.json was not found.$"):
+            plan.parse_snapshot("plan.json was not found.", "plan.json")
