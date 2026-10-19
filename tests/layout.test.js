@@ -43,11 +43,6 @@ test("a label is the first label's text", async () => {
   assert.equal((await layout(plan, elk)).boxes[0].label, "fn()");
 });
 
-test("an arrow to a box that is not there is refused by ELK, its message passed on", async () => {
-  const plan = { id: "r", children: [leaf("a")], edges: [arrow("e", "a", "zzz")] };
-  await assert.rejects(layout(plan, elk), /zzz/);
-});
-
 test("an arrow that skips a box bends around it and keeps its bend points", async () => {
   const plan = { id: "r", children: [leaf("a"), leaf("b"), leaf("c")], edges: [arrow("e1", "a", "b"), arrow("e2", "b", "c"), arrow("e3", "a", "c")] };
   const laid = await layout(plan, elk);

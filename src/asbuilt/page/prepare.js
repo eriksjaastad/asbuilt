@@ -35,8 +35,15 @@ function check(box, where, ids, arrows) {
 
 export function prepare(plan) {
   const root = structuredClone(plan);
-  const arrows = [];
-  check(root, "plan", new Set(), arrows);
+  const [arrows, ids] = [[], new Set()];
+  check(root, "plan", ids, arrows);
   if (!root.children) fail("plan", "has no boxes");
+  // The page draws an arrow from one drawn box to another; ELK would also take ports, several ends, or the plan
+  // itself, and the arrow would then be drawn loose or not at all.
+  const boxes = new Set([...ids].filter((id) => id !== root.id && !arrows.some((a) => a.id === id)));
+  for (const a of arrows) {
+    const ok = [a.sources, a.targets].every((ends) => Array.isArray(ends) && ends.length === 1 && boxes.has(ends[0]));
+    if (!ok) fail(`arrow ${JSON.stringify(a.id)}`, "must go from one box to one box");
+  }
   return { ...root, edges: arrows };
 }
