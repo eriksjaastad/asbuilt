@@ -204,6 +204,21 @@ class EntryTest(unittest.TestCase):
         )
         self.assertIs(entry.load(), main)
 
+    def test_the_address_shows_at_once_when_the_output_is_a_pipe(self):
+        command = [sys.executable, "-m", "asbuilt", "--port", "0"]
+        with subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        ) as run:
+            first = []
+            reader = threading.Thread(
+                target=lambda: first.append(run.stdout.readline())
+            )
+            reader.start()
+            reader.join(10)
+            run.kill()  # it serves until stopped
+            reader.join()
+        self.assertRegex(first[0], r"^asbuilt: drawing .+ at http://127\.0\.0\.1:\d+/$")
+
     def test_python_dash_m_runs_main_and_passes_its_exit_code_on(self):
         run = subprocess.run(
             [sys.executable, "-m", "asbuilt", "--port", "65536"],

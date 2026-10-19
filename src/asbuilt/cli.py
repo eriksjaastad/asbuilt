@@ -65,7 +65,11 @@ def main(argv=None):
             server.shutdown()
 
     threading.Thread(target=watching, daemon=True).start()
-    print(f"asbuilt: drawing {args.plan} at http://127.0.0.1:{server.server_port}/")
+    # flush: piped or captured output is block-buffered, and the address must show before serving starts.
+    print(
+        f"asbuilt: drawing {args.plan} at http://127.0.0.1:{server.server_port}/",
+        flush=True,
+    )
     with server, contextlib.suppress(KeyboardInterrupt):  # leaving closes the socket
         server.serve_forever()
     stop.set()
