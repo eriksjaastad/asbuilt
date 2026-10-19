@@ -24,11 +24,7 @@ def _message(source):
 
 
 def build(source):
-    """The one-line message for the page: the plan, or an error text. Never raises.
-
-    Only a PlanError's own text is shown; any other failure gets one fixed sentence, so no
-    code of a failing source runs while describing it.
-    """
+    """The one-line message for the page. Never raises; only a PlanError's text is shown, anything else gets FALLBACK."""
     try:
         return _message(source)
     except Exception:

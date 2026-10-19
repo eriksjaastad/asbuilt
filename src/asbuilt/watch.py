@@ -13,8 +13,7 @@ def snapshot(path):
 def watch(path, on_change, stop, tick=0.1):
     """Call on_change() once per change of contents, after it holds still for a tick.
 
-    Not reported: the first look, a half-written save, a change undone first. `stop` is like threading.Event;
-    an error from on_change ends the watch and is raised.
+    Not reported: the first look, a half-written save, an undone change. An error from on_change ends the watch.
     """
     reported = seen = snapshot(path)
     while not stop.wait(tick):

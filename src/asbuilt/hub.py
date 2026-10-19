@@ -2,7 +2,7 @@ import threading
 
 
 class Hub:
-    """The latest message (one line from `build`, which reports problems in it, not by raising); clients wait for a newer one."""
+    """The latest one-line message from `build`; clients wait for a newer one."""
 
     def __init__(self, build):
         self._build = build
@@ -16,7 +16,7 @@ class Hub:
         return message
 
     def refresh(self):
-        """Build again and wake every waiting client. Built under the lock, so overlapping refreshes land in order."""
+        """Build again and wake every waiting client, under the lock so refreshes land in order."""
         with self._changed:
             self._version, self._message = self._version + 1, self._built()
             self._changed.notify_all()
