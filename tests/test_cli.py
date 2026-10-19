@@ -173,6 +173,19 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("cannot start on 127.0.0.1:65536: ", text)
 
+    def test_port_80_is_refused_before_it_binds_with_a_reason_and_exit_code_2(self):
+        # Its own process: a bind that wrongly succeeded times out instead of hanging the suite.
+        run = subprocess.run(
+            [sys.executable, "-m", "asbuilt", "--port", "80"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(run.returncode, 2)
+        self.assertIn(
+            "cannot start on 127.0.0.1:80: browsers leave port 80 out", run.stderr
+        )
+
     def test_the_help_gives_the_defaults_and_an_example_plan_it_reads(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertRaises(SystemExit, main, ["--help"])

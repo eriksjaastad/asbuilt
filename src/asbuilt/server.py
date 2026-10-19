@@ -60,6 +60,11 @@ class Server(http.server.ThreadingHTTPServer):
         for file in self.files.values():
             if not file.is_file():
                 raise FileNotFoundError(f"{file} is missing from the installed package")
+        # For http:// a browser drops only the default port, 80, from Host; the check below needs it.
+        if port == 80:
+            raise OSError(
+                "browsers leave port 80 out of the address, which this server checks"
+            )
         super().__init__(("127.0.0.1", port), Handler)
         self.hosts = {f"127.0.0.1:{self.server_port}", f"localhost:{self.server_port}"}
         self.hub, self.keep_alive = hub, keep_alive
