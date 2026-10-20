@@ -49,22 +49,27 @@ const BAD = {
     [{ id: "r", children: [leaf("a"), { id: "g", children: [leaf("a")] }] }, two({ edges: [arrow("a", "a", "b")] })],
     /used twice/,
   ],
-  "an arrow that is not from one box to one box": [
-    [
-      { id: "r", children: [leaf("a"), leaf("b", { ports: [{ id: "p" }] })], edges: [arrow("e", "a", "p")] },
-      two({ edges: [arrow("e", "a", "zzz")] }),
-      two({ edges: [{ id: "e", sources: ["a"], targets: ["b", "a"] }] }),
-      two({ edges: [{ id: "e", sources: "a", targets: ["b"] }] }),
-      two({ edges: [{ id: "e", sources: ["a"], targets: ["r"] }] }),
-      two({ edges: [arrow("e", "a", "b"), arrow("f", "e", "b")] }),
-    ],
-    /arrow "[ef]": must go from one box to one box$/,
-  ],
   "a width or height not a number above 0": [
     [0, "9", Infinity].map((width) => ({ id: "r", children: [leaf("a", { width })] })).concat({ id: "r", children: [leaf("a", { height: 0 })] }),
     /above 0/,
   ],
 };
+test("an arrow not from one box to one box is refused, naming the end and the id it gives", () => {
+  const cases = [
+    [{ id: "r", children: [leaf("a"), leaf("b", { ports: [{ id: "p" }] })], edges: [arrow("e", "a", "p")] }, 'target "p" is not a box in the plan'],
+    [two({ edges: [arrow("e", "a", "zzz")] }), 'target "zzz" is not a box in the plan'],
+    [two({ edges: [arrow("e", "zzz", "b")] }), 'source "zzz" is not a box in the plan'],
+    [two({ edges: [{ id: "e", sources: ["a"], targets: ["b", "a"] }] }), "targets must be a list of one box id"],
+    [two({ edges: [{ id: "e", sources: "a", targets: ["b"] }] }), "sources must be a list of one box id"],
+    [two({ edges: [{ id: "e", sources: ["a"], targets: ["r"] }] }), 'target "r" is not a box in the plan'],
+    [two({ edges: [arrow("e", "a", "b"), arrow("f", "e", "b")] }), 'source "e" is not a box in the plan'],
+  ];
+  for (const [plan, why] of cases) {
+    const id = plan.edges.at(-1).id;
+    assert.throws(() => prepare(plan), { message: `arrow "${id}": ${why}` }, JSON.stringify(plan));
+  }
+});
+
 for (const [name, [plans, reason]] of Object.entries(BAD)) {
   test(`refused, with the reason: ${name}`, () => {
     for (const plan of plans) assert.throws(() => prepare(plan), reason, JSON.stringify(plan));

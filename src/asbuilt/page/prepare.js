@@ -42,9 +42,14 @@ export function prepare(plan) {
   // itself, and the arrow would then be drawn loose or not at all.
   const boxes = new Set(ids);
   [root, ...arrows].forEach((x) => boxes.delete(x.id));
+  // Each refusal names the end and the id, so a box renamed in the plan but not in its arrows is found at once.
   for (const a of arrows) {
-    const ok = [a.sources, a.targets].every((ends) => Array.isArray(ends) && ends.length === 1 && boxes.has(ends[0]));
-    if (!ok) fail(`arrow ${JSON.stringify(a.id)}`, "must go from one box to one box");
+    for (const [key, end] of [["sources", "source"], ["targets", "target"]]) {
+      const ends = a[key];
+      const where = `arrow ${JSON.stringify(a.id)}`;
+      if (!Array.isArray(ends) || ends.length !== 1) fail(where, `${key} must be a list of one box id`);
+      if (!boxes.has(ends[0])) fail(where, `${end} ${JSON.stringify(ends[0])} is not a box in the plan`);
+    }
   }
   return { ...root, edges: arrows };
 }
