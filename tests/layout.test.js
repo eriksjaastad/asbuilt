@@ -81,3 +81,24 @@ test("an arrow that ends on a box lands well clear of an arrow crossing its bord
   const [head, line] = [arrows.find((x) => x.id === "back").points.at(-1), arrows.find((x) => x.id === "in").points];
   assert.ok(Math.min(...line.slice(1).map((p, i) => gap(head, line[i], p))) >= 24);
 });
+
+// Every pair of level runs, from different arrows, that overlap by more than 20 px: [overlap, distance apart].
+function sideBySide(arrows) {
+  const flat = arrows.flatMap((a) =>
+    a.points.slice(1).map((p, i) => [a.id, a.points[i], p]).filter(([, [, y0], [, y1]]) => Math.abs(y0 - y1) < 0.5));
+  return flat.flatMap(([id, p, q], i) => flat.slice(i + 1).filter(([other]) => other !== id).map(([, r, s]) => [
+    Math.min(Math.max(p[0], q[0]), Math.max(r[0], s[0])) - Math.max(Math.min(p[0], q[0]), Math.min(r[0], s[0])), Math.abs(p[1] - r[1])]))
+    .filter(([overlap]) => overlap > 20);
+}
+
+test("arrows that run side by side, inside a box and across the plan, stay 20 px apart", async () => {
+  const inside = { id: "r", children: [{ id: "g", children: [leaf("a"), leaf("b"), leaf("c")],
+    edges: [arrow("e0", "a", "c"), arrow("e1", "a", "b"), arrow("e2", "a", "b")] }] };
+  const across = { id: "r", children: [{ id: "g", children: [leaf("a")] }, leaf("x"), { id: "h", children: [leaf("p"), leaf("q"), leaf("s")] }],
+    edges: [arrow("e1", "a", "s"), arrow("e2", "a", "q"), arrow("e3", "a", "p"), arrow("e4", "a", "x")] };
+  for (const plan of [inside, across]) {
+    const side = sideBySide((await layout(plan, elk)).arrows);
+    assert.ok(side.length >= 1);
+    for (const [, apart] of side) assert.ok(apart >= 19.5, `${apart} px apart`);
+  }
+});

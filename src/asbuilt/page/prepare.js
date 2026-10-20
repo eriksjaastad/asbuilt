@@ -6,6 +6,9 @@
 const LEAF = { width: 190, height: 70 };
 // Room inside a box that holds others: its label sits in the top 36 px (draw.js writes it 22 px down).
 export const PADDING = "[top=36,left=14,bottom=14,right=14]";
+// Room between arrows that run side by side: at ELK's default 10 px two rough lines blur into one and cannot be
+// followed. layout.js sets it for the plan, and each box that holds others gets it here.
+export const ARROW_ROOM = { "elk.layered.spacing.edgeEdgeBetweenLayers": "20" };
 const PADDING_NOTE = "[top=54,left=14,bottom=14,right=14]"; // and the note under it, written 40 px down
 const CHAR = 8; // about the width of a character of the 13px monospace label
 const NOTE_CHAR = 7; // and of the 11px note
@@ -37,7 +40,7 @@ function check(box, where, ids, arrows) {
   // An arrow that ends on this box, and one that crosses its border to a box inside, meet the border ELK's default
   // 10 px apart, and the head then reads as going to the inner box: 24 keeps them clearly apart.
   // ELK reads a box's minimum size along the layout direction, which layout.js sets to DOWN: the width goes second.
-  if (box.children?.length) box.layoutOptions = { "elk.padding": note ? PADDING_NOTE : PADDING, "elk.spacing.portPort": "24", "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
+  if (box.children?.length) box.layoutOptions = { "elk.padding": note ? PADDING_NOTE : PADDING, "elk.spacing.portPort": "24", ...ARROW_ROOM, "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
   else Object.assign(box, { ...LEAF, width: Math.max(LEAF.width, wide), ...box, children: undefined });
   box.children?.forEach((kid, i) => check(kid, `${where}.children[${i}]`, ids, arrows));
 }

@@ -27,12 +27,12 @@ test("a box is made wide enough for its label: a bare leaf grows, a given width 
       { id: "😀".repeat(30) },
       leaf("c", { labels: [{ text }] }),
       { id: "g", labels: [{ text }], children: [leaf("k")] },
-      { id: "h", layoutOptions: { "elk.nodeSize.minimum": "(1,1)" }, labels: [{ text }], children: [leaf("m")] },
+      { id: "h", layoutOptions: { "elk.nodeSize.minimum": "(1,1)", "elk.layered.spacing.edgeEdgeBetweenLayers": "5" }, labels: [{ text }], children: [leaf("m")] },
     ],
   }).children;
   assert.deepEqual([a.width, b.width, c.width], [344, 264, 40]);
-  assert.deepEqual(g.layoutOptions, { "elk.padding": "[top=36,left=14,bottom=14,right=14]", "elk.spacing.portPort": "24", "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": "(0,344)" });
-  assert.equal(h.layoutOptions["elk.nodeSize.minimum"], "(1,1)");
+  assert.deepEqual(g.layoutOptions, { "elk.padding": "[top=36,left=14,bottom=14,right=14]", "elk.spacing.portPort": "24", "elk.layered.spacing.edgeEdgeBetweenLayers": "20", "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": "(0,344)" });
+  assert.deepEqual([h.layoutOptions["elk.nodeSize.minimum"], h.layoutOptions["elk.layered.spacing.edgeEdgeBetweenLayers"]], ["(1,1)", "5"]);
 });
 
 test("a second label is a note: the box is wide enough for it, and a box holding others keeps 54 px on top", () => {
