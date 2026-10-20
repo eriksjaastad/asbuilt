@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import errno
 import sys
 import threading
 import traceback
@@ -49,7 +50,12 @@ def main(argv=None):
     try:
         server = Server(args.port, hub)
     except (OSError, OverflowError) as exc:  # in use, no permission, out of range
-        print(f"asbuilt: cannot start on 127.0.0.1:{args.port}: {exc}", file=sys.stderr)
+        why = exc
+        # Taken is usually the default port, which whoever started asbuilt never chose: say what to do.
+        if getattr(exc, "errno", None) == errno.EADDRINUSE:
+            why = "it is in use, perhaps by asbuilt already running. "
+            why += "Stop that one, or choose another port with --port N."
+        print(f"asbuilt: cannot start on 127.0.0.1:{args.port}: {why}", file=sys.stderr)
         return 2
     stop, failed = threading.Event(), []
 

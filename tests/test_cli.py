@@ -166,7 +166,11 @@ class CliTest(unittest.TestCase):
             port = taken.getsockname()[1]
             code, text = fail_to_start(str(port))
         self.assertEqual(code, 2)
-        self.assertRegex(text, rf"on 127\.0\.0\.1:{port}: .*in use")
+        self.assertEqual(
+            text,
+            f"asbuilt: cannot start on 127.0.0.1:{port}: it is in use, perhaps by asbuilt "
+            "already running. Stop that one, or choose another port with --port N.\n",
+        )
 
     def test_a_port_out_of_range_ends_the_same_way(self):
         code, text = fail_to_start("65536")
