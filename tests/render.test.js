@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ELK from "elkjs/lib/elk.bundled.js";
 import rough from "roughjs/bundled/rough.esm.js";
-import { render } from "../src/asbuilt/page/render.js";
+import { keepLastGood, render } from "../src/asbuilt/page/render.js";
 import { decode, escaped, evils } from "./helpers.js";
 import { big, leaf } from "./plans.js";
 
 const [elk, gen] = [new ELK(), rough.generator()];
+const NOTE = "Out of date: this is the last good chart, from before the error above.";
 const show = (state) => render(typeof state === "string" ? state : JSON.stringify(state), elk, gen);
 
 test("a good plan becomes the chart", async () => {
@@ -44,4 +45,17 @@ test("something thrown that is not an Error still shows its text", async () => {
   const elkThatRefuses = { layout: () => Promise.reject("plain text") };
   const html = await render(JSON.stringify({ ok: true, plan: big }), elkThatRefuses, gen);
   assert.equal(html, '<pre class="error">plain text</pre>');
+});
+
+test("an error keeps the last good chart under its panel, dimmed and marked; a good plan clears both", async () => {
+  const keep = keepLastGood();
+  const [chart, bad, worse] = [await show({ ok: true, plan: big }), await show("{nope"), await show({ ok: false, error: "x" })];
+  const marked = (error, good) => `${error}<div class="stale"><p>${NOTE}</p>${good}</div>`;
+  assert.equal(keep(bad), bad, "with no good chart yet, only the panel");
+  assert.equal(keep(chart), chart);
+  assert.equal(keep(bad), marked(bad, chart));
+  assert.equal(keep(worse), marked(worse, chart), "a second error still keeps the good chart, not the first panel");
+  const next = await show({ ok: true, plan: { id: "r", children: [leaf("a")] } });
+  assert.equal(keep(next), next);
+  assert.equal(keep(bad), marked(bad, next), "the newest good chart is the one kept");
 });
