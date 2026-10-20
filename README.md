@@ -19,11 +19,19 @@ comparison come later.
 
 ## Use it
 
-You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). From a clone of this repo:
+You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```
-uv run asbuilt path/to/plan.json
+git clone https://github.com/eriksjaastad/asbuilt
+cd asbuilt
+uv run asbuilt --help
 ```
 
-`uv run asbuilt --help` says the rest: the defaults, what the page does when the file is saved or
-broken, and the plan format with an example.
+The help ends with an example plan. Save it as `plan.json`, then run:
+
+```
+uv run asbuilt plan.json
+```
+
+Open the address it prints. Each time you save `plan.json` the page redraws. `--help` says the
+rest: the defaults, what the page does when the file is broken, and the plan format.
