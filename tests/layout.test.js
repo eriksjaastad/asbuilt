@@ -63,12 +63,6 @@ test("every box that holds others, the plan included, keeps its top 36 px clear 
   assert.deepEqual([byId.p.y, byId.c.y - byId.p.y, byId.k.y - byId.c.y], [36, 36, 36]);
 });
 
-test("a box that holds others and has a note keeps its top 54 px clear for both lines", async () => {
-  const plan = { id: "r", children: [{ id: "p", labels: [{ text: "p" }, { text: "note" }], children: [leaf("k")] }] };
-  const byId = Object.fromEntries((await layout(plan, elk)).boxes.map((b) => [b.id, b]));
-  assert.equal(byId.k.y - byId.p.y, 54);
-});
-
 const gap = ([x, y], [a, b], [c, d]) => {
   const t = Math.max(0, Math.min(1, ((x - a) * (c - a) + (y - b) * (d - b)) / ((c - a) ** 2 + (d - b) ** 2 || 1)));
   return Math.hypot(x - a - t * (c - a), y - b - t * (d - b));

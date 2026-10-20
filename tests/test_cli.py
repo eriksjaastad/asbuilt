@@ -178,7 +178,8 @@ class CliTest(unittest.TestCase):
         self.assertIn("cannot start on 127.0.0.1:65536: ", text)
 
     def test_port_80_is_refused_before_it_binds_with_a_reason_and_exit_code_2(self):
-        # Its own process: a bind that wrongly succeeded times out instead of hanging the suite.
+        # Its own process: a bind that wrongly succeeded times out instead of hanging the suite,
+        # and python -m shows __main__ passing the exit code on.
         run = subprocess.run(
             [sys.executable, "-m", "asbuilt", "--port", "80"],
             capture_output=True,
@@ -222,13 +223,3 @@ class EntryTest(unittest.TestCase):
             run.kill()  # it serves until stopped
             reader.join()
         self.assertRegex(first[0], r"^asbuilt: drawing .+ at http://127\.0\.0\.1:\d+/$")
-
-    def test_python_dash_m_runs_main_and_passes_its_exit_code_on(self):
-        run = subprocess.run(
-            [sys.executable, "-m", "asbuilt", "--port", "65536"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(run.returncode, 2)
-        self.assertIn("cannot start on 127.0.0.1:65536", run.stderr)

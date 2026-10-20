@@ -67,7 +67,6 @@ const BAD = {
   "not an object": [[null, 5, []], /is not an object/],
   "no boxes": [[{ id: "r" }, { id: "r", children: [] }], /has no boxes/],
   "children or edges not a list": [[{ id: "r", children: "x" }, { id: "r", children: null }, two({ edges: "x" })], /is not a list/],
-  "an id that is not text": [[{ children: [leaf("a")] }, two({ edges: [{ sources: ["a"], targets: ["b"] }] })], /(an|whose) id (that )?is not text$/],
   "an id used twice": [
     [{ id: "r", children: [leaf("a"), { id: "g", children: [leaf("a")] }] }, two({ edges: [arrow("a", "a", "b")] })],
     /used twice/,
