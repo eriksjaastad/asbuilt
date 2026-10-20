@@ -34,8 +34,10 @@ function check(box, where, ids, arrows) {
   }
   const [label, note] = [String(box.labels?.[0]?.text ?? box.id), noteOf(box)];
   const wide = Math.max(CHAR * [...label].length, NOTE_CHAR * [...note].length) + 24; // so both stay inside the box
+  // An arrow that ends on this box, and one that crosses its border to a box inside, meet the border ELK's default
+  // 10 px apart, and the head then reads as going to the inner box: 24 keeps them clearly apart.
   // ELK reads a box's minimum size along the layout direction, which layout.js sets to DOWN: the width goes second.
-  if (box.children?.length) box.layoutOptions = { "elk.padding": note ? PADDING_NOTE : PADDING, "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
+  if (box.children?.length) box.layoutOptions = { "elk.padding": note ? PADDING_NOTE : PADDING, "elk.spacing.portPort": "24", "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
   else Object.assign(box, { ...LEAF, width: Math.max(LEAF.width, wide), ...box, children: undefined });
   box.children?.forEach((kid, i) => check(kid, `${where}.children[${i}]`, ids, arrows));
 }

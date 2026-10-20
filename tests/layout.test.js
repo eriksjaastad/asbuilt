@@ -68,3 +68,16 @@ test("a box that holds others and has a note keeps its top 54 px clear for both 
   const byId = Object.fromEntries((await layout(plan, elk)).boxes.map((b) => [b.id, b]));
   assert.equal(byId.k.y - byId.p.y, 54);
 });
+
+const gap = ([x, y], [a, b], [c, d]) => {
+  const t = Math.max(0, Math.min(1, ((x - a) * (c - a) + (y - b) * (d - b)) / ((c - a) ** 2 + (d - b) ** 2 || 1)));
+  return Math.hypot(x - a - t * (c - a), y - b - t * (d - b));
+};
+
+test("an arrow that ends on a box lands well clear of an arrow crossing its border to a box inside", async () => {
+  const plan = { id: "r", children: [leaf("f"), { id: "s", children: [leaf("k")] }, leaf("a")],
+    edges: [arrow("in", "f", "k"), arrow("back", "a", "s"), arrow("out", "s", "a")] };
+  const { arrows } = await layout(plan, elk);
+  const [head, line] = [arrows.find((x) => x.id === "back").points.at(-1), arrows.find((x) => x.id === "in").points];
+  assert.ok(Math.min(...line.slice(1).map((p, i) => gap(head, line[i], p))) >= 24);
+});
