@@ -35,16 +35,20 @@ test("a box is made wide enough for its label: a bare leaf grows, a given width 
   assert.equal(h.layoutOptions["elk.nodeSize.minimum"], "(1,1)");
 });
 
-test("a refusal names where the problem is", () => {
+test("a refusal names the box by its id when it has one, and where it is", () => {
   const plan = { id: "r", children: [leaf("a"), { id: "g", children: [leaf("b", { width: 0 })] }] };
-  assert.throws(() => prepare(plan), { message: "plan.children[1].children[0]: width is not a number above 0" });
+  assert.throws(() => prepare(plan), { message: 'box "b" at plan.children[1].children[0]: width is not a number above 0' });
+  assert.throws(() => prepare({ id: "r", children: [{ children: [] }] }), { message: "plan.children[0]: has an id that is not text" });
+  assert.throws(() => prepare({ id: "r", children: [leaf("a"), { id: "g", children: "x" }] }), { message: 'box "g" at plan.children[1]: children is not a list' });
+  assert.throws(() => prepare(two({ edges: [{ sources: ["a"], targets: ["b"] }] })), { message: 'box "r" at plan: has an arrow whose id is not text' });
+  assert.throws(() => prepare({ id: "r", children: [leaf("a"), leaf("a")] }), { message: 'box "a" at plan.children[1]: id "a" is used twice' });
 });
 
 const BAD = {
   "not an object": [[null, 5, []], /is not an object/],
   "no boxes": [[{ id: "r" }, { id: "r", children: [] }], /has no boxes/],
   "children or edges not a list": [[{ id: "r", children: "x" }, { id: "r", children: null }, two({ edges: "x" })], /is not a list/],
-  "an id that is not text": [[{ children: [leaf("a")] }, two({ edges: [{ sources: ["a"], targets: ["b"] }] })], /id that is not text/],
+  "an id that is not text": [[{ children: [leaf("a")] }, two({ edges: [{ sources: ["a"], targets: ["b"] }] })], /(an|whose) id (that )?is not text$/],
   "an id used twice": [
     [{ id: "r", children: [leaf("a"), { id: "g", children: [leaf("a")] }] }, two({ edges: [arrow("a", "a", "b")] })],
     /used twice/,

@@ -13,18 +13,20 @@ const fail = (where, why) => {
 
 function check(box, where, ids, arrows) {
   if (typeof box !== "object" || box === null || Array.isArray(box)) fail(where, "is not an object");
+  // Name the box when it has a name: in a real plan, counting children by index to find it is slow.
+  const at = typeof box.id === "string" ? `box ${JSON.stringify(box.id)} at ${where}` : where;
   for (const key of ["children", "edges"]) {
-    if (key in box && !Array.isArray(box[key])) fail(where, `${key} is not a list`);
+    if (key in box && !Array.isArray(box[key])) fail(at, `${key} is not a list`);
   }
   for (const item of [box, ...(box.edges ?? [])]) {
-    if (typeof item?.id !== "string") fail(where, "has an id that is not text");
-    if (ids.has(item.id)) fail(where, `id ${JSON.stringify(item.id)} is used twice`);
+    if (typeof item?.id !== "string") fail(at, item === box ? "has an id that is not text" : "has an arrow whose id is not text");
+    if (ids.has(item.id)) fail(at, `id ${JSON.stringify(item.id)} is used twice`);
     ids.add(item.id);
   }
   arrows.push(...(box.edges ?? []));
   delete box.edges;
   for (const key of ["width", "height"]) {
-    if (key in box && !(Number.isFinite(box[key]) && box[key] > 0)) fail(where, `${key} is not a number above 0`);
+    if (key in box && !(Number.isFinite(box[key]) && box[key] > 0)) fail(at, `${key} is not a number above 0`);
   }
   const wide = CHAR * [...String(box.labels?.[0]?.text ?? box.id)].length + 24; // so the label stays inside its box
   // ELK reads a box's minimum size along the layout direction, which layout.js sets to DOWN: the width goes second.
