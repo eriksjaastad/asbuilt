@@ -19,7 +19,8 @@ comparison come later.
 
 ## Use it
 
-You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
+You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). You don't need Node: the page's
+libraries are included, and package.json is only for running its tests.
 
 ```
 git clone https://github.com/eriksjaastad/asbuilt
