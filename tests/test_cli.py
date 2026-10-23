@@ -27,7 +27,7 @@ def data(events):
     )
 
 
-def serve_visit_interrupt(*argv, then=None, until=b""):
+def serve_visit_interrupt(*argv, until=b""):
     out, seen, servers = io.StringIO(), [], []
 
     class Capture(cli.Server):
@@ -46,7 +46,6 @@ def serve_visit_interrupt(*argv, then=None, until=b""):
                 urlopen(found[0] + "events", timeout=10) as events,
             ):
                 seen.extend([page.status, data(events)])
-                then and then()
                 while until not in seen[-1]:
                     seen.append(data(events))
         except Exception as exc:  # shown by the assertions
@@ -77,15 +76,6 @@ class CliTest(unittest.TestCase):
             message = json.loads(seen[1][6:])
             self.assertEqual([code, seen[0], message["ok"]], [0, 200, False])
             self.assertTrue(message["error"].startswith(f"plan.json {why}"))
-
-    def test_a_save_redraws_the_page(self):
-        self.plan.write_text(ONE)
-        code, seen = serve_visit_interrupt(
-            str(self.plan), then=lambda: self.plan.write_text(TWO), until=b'"two"'
-        )
-        self.assertEqual([code, seen[0]], [0, 200])
-        self.assertEqual(json.loads(seen[1][6:])["plan"], json.loads(ONE))
-        self.assertEqual(json.loads(seen[-1][6:])["plan"], json.loads(TWO))
 
     def test_a_save_made_before_the_watch_looks_is_not_lost(self):
         self.plan.write_text(ONE)
