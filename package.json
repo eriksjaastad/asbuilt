@@ -1,6 +1,6 @@
 {
   "type": "module",
-  "dependencies": {
+  "devDependencies": {
     "elkjs": "0.12.0",
     "roughjs": "4.6.6"
   }
