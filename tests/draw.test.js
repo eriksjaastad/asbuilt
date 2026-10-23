@@ -20,10 +20,11 @@ test("49 boxes are drawn, each with a wash, a label and a margin, and nothing is
   assert.doesNotMatch(svg, /NaN|undefined|Infinity|fill="black"/);
 });
 
-test("every label sits on a paper halo drawn under its letters, so an arrow under it cannot hide it", () => {
-  const svg = draw(laid, rough.generator());
+test("every label, note and arrow label sits on a paper halo drawn under its letters, so an arrow under it cannot hide it", () => {
+  const arrow = { id: "l", points: [[0, 0], [0, 30]], label: { x: 4, y: 6, w: 40, text: "l" } };
+  const svg = draw({ ...laid, boxes: [...laid.boxes, { ...one("n"), note: "n" }], arrows: [...laid.arrows, arrow] }, rough.generator());
   const labels = svg.match(/<text [^>]*>/g);
-  assert.equal(labels.length, 49);
+  assert.equal(labels.length, 52);
   for (const t of labels) assert.match(t, / fill="#2F2E2C" stroke="#F9F5EB" stroke-width="4" stroke-linejoin="round" paint-order="stroke">$/);
   assert.ok(svg.lastIndexOf("data-arrow") < svg.indexOf("<text"));
   assert.match(readFileSync(new URL("../src/asbuilt/page/index.html", import.meta.url), "utf8"), /background: #F9F5EB;/);
@@ -36,13 +37,12 @@ test("a redraw is byte-identical, and a box looks the same wherever it sits in t
   for (const attr of ["box", "wash"]) assert.deepEqual(pieces(again, attr), pieces(first, attr));
 });
 
-test("a note is drawn under its box's label in smaller type, escaped, on the same halo; a box without one gets one line", () => {
+test("a note is drawn under its box's label in smaller type, escaped; a box without one gets one line", () => {
   const note = '<b>"n"</b>';
   const svg = draw({ width: 60, height: 30, boxes: [{ ...one("a"), note }, one("c")], arrows: [] }, rough.generator());
   const texts = [...svg.matchAll(/<text x="([^"]*)" y="([^"]*)"[^>]*font-size="(\d+)"[^>]*>(.*?)<\/text>/g)].map((m) => m.slice(1));
   assert.deepEqual(texts.map(([x, y, size, t]) => [x, y, size, decode(t)]), [["25", "22", "13", "a"], ["25", "40", "11", note], ["25", "22", "13", "c"]]);
   assert.match(texts[1][3], escaped);
-  assert.match(svg.match(/<text [^>]*font-size="11"[^>]*>/)[0], / stroke="#F9F5EB" stroke-width="4" stroke-linejoin="round" paint-order="stroke">$/);
 });
 
 test("ids and labels are escaped, whatever they hold, and decode back to exactly what was given", () => {
@@ -57,13 +57,11 @@ test("ids and labels are escaped, whatever they hold, and decode back to exactly
   }
 });
 
-test("an arrow's label is drawn where layout put it in the note's type, escaped, on the halo; no label, no text", () => {
+test("an arrow's label is drawn where layout put it in the note's type, escaped; no label, no text", () => {
   const evil = '<b>"n"</b>';
   const line = (id, label) => ({ id, points: [[0, 0], [0, 30]], label });
   const svg = draw({ width: 60, height: 30, boxes: [], arrows: [line("e", { x: 4, y: 6, w: 40, text: evil }), line("f")] }, rough.generator());
   const texts = [...svg.matchAll(/<text x="([^"]*)" y="([^"]*)"[^>]*font-size="(\d+)"[^>]*>(.*?)<\/text>/g)].map((m) => m.slice(1));
   assert.deepEqual(texts.map(([x, y, size, t]) => [x, y, size, decode(t)]), [["24", "18", "11", evil]]);
   assert.match(texts[0][3], escaped);
-  assert.match(svg.match(/<text [^>]*>/)[0], / stroke="#F9F5EB" stroke-width="4" stroke-linejoin="round" paint-order="stroke">$/);
-  assert.ok(svg.lastIndexOf("data-arrow") < svg.indexOf("<text"));
 });
