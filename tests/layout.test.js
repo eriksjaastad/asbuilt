@@ -96,3 +96,18 @@ test("arrows that run side by side, inside a box and across the plan, stay 20 px
     for (const [, apart] of side) assert.ok(apart >= 19.5, `${apart} px apart`);
   }
 });
+
+test("an arrow's label comes back beside its arrow, in absolute coordinates, clear of the boxes", async () => {
+  const plan = { id: "r", children: [leaf("a"), { id: "g", children: [leaf("b"), leaf("c")] }],
+    edges: [{ ...arrow("e1", "a", "b"), labels: [{ text: "daily" }] }, { ...arrow("e2", "b", "c"), labels: [{ text: "email link" }] }, arrow("e3", "a", "c")] };
+  const { boxes, arrows } = await layout(plan, elk);
+  const [a, g, b, c] = boxes;
+  const clear = (l, k) => l.x + l.w <= k.x || l.x >= k.x + k.w || l.y + 16 <= k.y || l.y >= k.y + k.h;
+  for (const [id, text, holder] of [["e1", "daily", { x: 0, y: 0, w: Infinity, h: Infinity }], ["e2", "email link", g]]) {
+    const { label, points } = arrows.find((x) => x.id === id);
+    assert.deepEqual([label.text, label.w], [text, 7 * text.length + 8]);
+    assert.ok([a, b, c].every((k) => clear(label, k)) && inside([label.x, label.y], holder) && inside([label.x + label.w, label.y + 16], holder));
+    assert.ok(points.some(([x]) => Math.abs(x - label.x) < 20 || Math.abs(x - label.x - label.w) < 20), id);
+  }
+  assert.equal(arrows.find((x) => x.id === "e3").label, undefined);
+});

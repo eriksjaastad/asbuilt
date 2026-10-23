@@ -93,3 +93,9 @@ for (const [name, [plans, reason]] of Object.entries(BAD)) {
     for (const plan of plans) assert.throws(() => prepare(plan), reason, JSON.stringify(plan));
   });
 }
+
+test("an arrow's first label gets a size, so ELK makes room for it; a label without text is dropped", () => {
+  const labelled = (id, labels) => ({ ...arrow(id, "a", "b"), labels });
+  const { edges } = prepare(two({ edges: [labelled("e", [{ text: "daily 😀" }, { text: "x" }]), labelled("f", [{ text: "" }]), arrow("g", "a", "b")] }));
+  assert.deepEqual(edges.map((e) => e.labels), [[{ text: "daily 😀", width: 7 * 7 + 8, height: 16 }], undefined, undefined]);
+});

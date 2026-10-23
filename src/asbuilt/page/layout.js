@@ -1,5 +1,6 @@
 // Lay out an already-parsed plan with ELK (passed in). Returns { width, height, boxes, arrows } in absolute
-// coordinates; refusals come from prepare() and ELK. Read: id, labels[0].text and labels[1].text, width, height, children, edges.
+// coordinates; refusals come from prepare() and ELK. Read: id, labels[0].text and labels[1].text, width, height, children, edges
+// (and an arrow's labels[0].text).
 import { ARROW_ROOM, noteOf, PADDING, prepare } from "./prepare.js";
 
 const OPTIONS = {
@@ -26,7 +27,9 @@ export async function layout(plan, elk) {
     const [s] = e.sections;
     const [dx, dy] = origin[e.container];
     const points = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => [p.x + dx, p.y + dy]);
-    return { id: e.id, from: e.sources[0], to: e.targets[0], points };
+    const l = e.labels?.[0];
+    const label = l && { x: l.x + dx, y: l.y + dy, w: l.width, text: l.text };
+    return { id: e.id, from: e.sources[0], to: e.targets[0], points, label };
   });
   return { width: out.width, height: out.height, boxes, arrows: lines };
 }

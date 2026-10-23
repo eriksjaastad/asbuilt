@@ -56,3 +56,14 @@ test("ids and labels are escaped, whatever they hold, and decode back to exactly
     }
   }
 });
+
+test("an arrow's label is drawn where layout put it in the note's type, escaped, on the halo; no label, no text", () => {
+  const evil = '<b>"n"</b>';
+  const line = (id, label) => ({ id, points: [[0, 0], [0, 30]], label });
+  const svg = draw({ width: 60, height: 30, boxes: [], arrows: [line("e", { x: 4, y: 6, w: 40, text: evil }), line("f")] }, rough.generator());
+  const texts = [...svg.matchAll(/<text x="([^"]*)" y="([^"]*)"[^>]*font-size="(\d+)"[^>]*>(.*?)<\/text>/g)].map((m) => m.slice(1));
+  assert.deepEqual(texts.map(([x, y, size, t]) => [x, y, size, decode(t)]), [["24", "18", "11", evil]]);
+  assert.match(texts[0][3], escaped);
+  assert.match(svg.match(/<text [^>]*>/)[0], / stroke="#F9F5EB" stroke-width="4" stroke-linejoin="round" paint-order="stroke">$/);
+  assert.ok(svg.lastIndexOf("data-arrow") < svg.indexOf("<text"));
+});

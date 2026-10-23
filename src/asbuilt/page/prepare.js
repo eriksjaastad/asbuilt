@@ -61,6 +61,10 @@ export function prepare(plan) {
       if (!Array.isArray(ends) || ends.length !== 1) fail(where, `${key} must be a list of one box id`);
       if (!boxes.has(ends[0])) fail(where, `${end} ${JSON.stringify(ends[0])} is not a box in the plan`);
     }
+    // An arrow's first label is drawn beside it in the note's type; ELK makes room for a label only when it has a size.
+    const text = String(a.labels?.[0]?.text ?? "");
+    if (text) a.labels = [{ text, width: NOTE_CHAR * [...text].length + 8, height: 16 }];
+    else delete a.labels;
   }
   return { ...root, edges: arrows };
 }
