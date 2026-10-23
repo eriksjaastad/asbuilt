@@ -43,11 +43,15 @@ test("a label is the first label's text and a note the second's, or empty", asyn
   assert.deepEqual((await layout(plan, elk)).boxes.map((b) => [b.label, b.note]), [["fn()", "other"], ["b", ""]]);
 });
 
-test("an arrow that skips a box bends around it and keeps its bend points", async () => {
+test("an arrow that skips a box runs clear of it, and arrows keep their bend points", async () => {
   const plan = { id: "r", children: [leaf("a"), leaf("b"), leaf("c")], edges: [arrow("e1", "a", "b"), arrow("e2", "b", "c"), arrow("e3", "a", "c")] };
   const laid = await layout(plan, elk);
   assertSound(plan, laid, 3, 3);
-  assert.ok(laid.arrows.find((a) => a.id === "e3").points.length > 2);
+  const b = laid.boxes.find((k) => k.id === "b");
+  const { points } = laid.arrows.find((a) => a.id === "e3");
+  const clear = (lo, hi, at, size) => Math.max(lo, hi) <= at || Math.min(lo, hi) >= at + size;
+  assert.ok(points.slice(1).every((q, i) => clear(q[0], points[i][0], b.x, b.w) || clear(q[1], points[i][1], b.y, b.h)));
+  assert.ok(laid.arrows.some((a) => a.points.length > 2));
 });
 
 test("a long label fits inside its box, whether the box is a bare leaf or holds other boxes", async () => {
@@ -88,8 +92,8 @@ function sideBySide(arrows) {
 test("arrows that run side by side, inside a box and across the plan, stay 20 px apart", async () => {
   const inside = { id: "r", children: [{ id: "g", children: [leaf("a"), leaf("b"), leaf("c")],
     edges: [arrow("e0", "a", "c"), arrow("e1", "a", "b"), arrow("e2", "a", "b")] }] };
-  const across = { id: "r", children: [{ id: "g", children: [leaf("a")] }, leaf("x"), { id: "h", children: [leaf("p"), leaf("q"), leaf("s")] }],
-    edges: [arrow("e1", "a", "s"), arrow("e2", "a", "q"), arrow("e3", "a", "p"), arrow("e4", "a", "x")] };
+  const across = { id: "r", children: [{ id: "g", children: [leaf("a")] }, leaf("x"), leaf("y"), { id: "h", children: [leaf("p"), leaf("q"), leaf("s")] }],
+    edges: [arrow("e1", "a", "s"), arrow("e2", "a", "p"), arrow("e3", "a", "x"), arrow("e4", "a", "y")] };
   for (const plan of [inside, across]) {
     const side = sideBySide((await layout(plan, elk)).arrows);
     assert.ok(side.length >= 1);
@@ -110,4 +114,14 @@ test("an arrow's label comes back beside its arrow, in absolute coordinates, cle
     assert.ok(points.some(([x]) => Math.abs(x - label.x) < 20 || Math.abs(x - label.x - label.w) < 20), id);
   }
   assert.equal(arrows.find((x) => x.id === "e3").label, undefined);
+});
+
+test("arrows into a group from a bare box and from another group do not cross", async () => {
+  const plan = { id: "r", children: [leaf("c"), { id: "in", children: [leaf("p"), leaf("f")] }, { id: "out", children: [leaf("x"), leaf("w")] }],
+    edges: [arrow("e0", "c", "x"), arrow("e1", "c", "w"), arrow("e2", "p", "x"), arrow("e3", "f", "w")] };
+  const segs = (await layout(plan, elk)).arrows.flatMap((a) => a.points.slice(1).map((q, i) => [a.id, a.points[i], q]));
+  const across = (a, b, c) => c > Math.min(a, b) && c < Math.max(a, b);
+  const crossings = segs.filter(([a, p, q]) => p[1] === q[1] && segs.some(([b, s, t]) =>
+    a !== b && s[0] === t[0] && across(p[0], q[0], s[0]) && across(s[1], t[1], p[1])));
+  assert.deepEqual(crossings, []);
 });

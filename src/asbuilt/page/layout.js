@@ -7,6 +7,8 @@ const OPTIONS = {
   "elk.algorithm": "layered",
   "elk.direction": "DOWN",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
+  // Lines boxes up along their arrows, so on real plans fewer arrows cross than with the default.
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
   "elk.padding": PADDING,
   ...ARROW_ROOM,
 };
