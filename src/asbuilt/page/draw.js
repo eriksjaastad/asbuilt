@@ -1,7 +1,8 @@
 // Draw laid-out boxes and arrows (the output of layout.js) as an ink-and-wash SVG string (D-006) with rough.js's
-// generator, passed in. Every shape is seeded from its box or arrow id, never its place in the list, so a redraw
-// never wobbles and adding a box does not move the others. Labels, and a box's note under its label, are plain
-// escaped text, drawn last and crisp, each on a paper-coloured halo so an arrow that passes under one cannot hide it.
+// generator, passed in. Every shape's rough strokes are seeded from its box or arrow id, never its place in the
+// list, so a redraw never wobbles and adding a box leaves the other shapes' strokes as they were. That is the seeds
+// only: where each box sits is up to layout.js. Labels, and a box's note under its label, are plain escaped text,
+// drawn last and crisp, each on a paper-coloured halo so an arrow that passes under one cannot hide it.
 import { arrows } from "./arrows.js";
 import { drawn, esc, INK, seedOf } from "./shapes.js";
 
