@@ -52,9 +52,8 @@ class ReadBytesTest(unittest.TestCase):
             self.assertEqual(self.refused(path), f"{path.name} {why}")
 
     def test_a_missing_file_is_named_with_the_full_path_it_was_looked_for_at(self):
-        nowhere = Path(
-            "no-such-folder", "plan.json"
-        )  # relative, as typed or the default
+        # Relative, as typed or the default.
+        nowhere = Path("no-such-folder", "plan.json")
         self.assertEqual(
             self.refused(nowhere),
             f"plan.json was not found: {Path.cwd() / nowhere}. "
