@@ -15,6 +15,10 @@ const CHAR = 8; // about the width of a character of the 13px monospace label
 const NOTE_CHAR = 7; // and of the 11px note
 // A box's note: its second label's text, drawn under the first in smaller type (D-013). "" when there is none.
 export const noteOf = (box) => String(box.labels?.[1]?.text ?? "");
+// Labels, when given, are a list of {"text": "..."}. Other shapes lose their words without a message (a box is drawn
+// under its id, an arrow with no label, a bare-string note is dropped) or make ELK fail naming nothing, so check()
+// refuses them.
+const readable = (labels) => Array.isArray(labels) && labels.every((l) => typeof l?.text === "string");
 const fail = (where, why) => {
   throw new Error(`${where}: ${why}`);
 };
@@ -30,6 +34,9 @@ function check(box, where, ids, arrows) {
     if (typeof item?.id !== "string") fail(at, item === box ? "has an id that is not text" : "has an arrow whose id is not text");
     if (ids.has(item.id)) fail(at, `id ${JSON.stringify(item.id)} is used twice`);
     ids.add(item.id);
+    if ("labels" in item && !readable(item.labels)) {
+      fail(at, `${item === box ? "has" : `has an arrow ${JSON.stringify(item.id)} with`} labels that are not a list like [{"text": "..."}]`);
+    }
   }
   arrows.push(...(box.edges ?? []));
   delete box.edges;
