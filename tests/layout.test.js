@@ -125,3 +125,30 @@ test("arrows into a group from a bare box and from another group do not cross", 
     a !== b && s[0] === t[0] && across(p[0], q[0], s[0]) && across(s[1], t[1], p[1])));
   assert.deepEqual(crossings, []);
 });
+
+test("generated labels on a box, a group and an arrow: drawn with their words, or refused naming the first holder, never an ELK error", async () => {
+  // fast-check is not a dependency; a seeded Park-Miller generator picks the inputs (same cases every run)
+  let seed = 31_415;
+  const rand = (n) => ((seed = (seed * 48271) % 2147483647), seed % n);
+  const list = (make) => Array.from({ length: rand(4) }, make);
+  const any = (d) => [() => `w${rand(9)}`, () => "", () => rand(201) - 100, () => rand(2) === 1, () => null,
+    () => list(() => any(d + 1)), () => ({ text: any(d + 1) }), () => ({})][rand(d > 2 ? 5 : 8)]();
+  const labels = () => (rand(5) ? list(() => (rand(10) ? { text: `t${rand(99)}` } : any(1))) : any(0));
+  const readable = (l) => l === undefined || (Array.isArray(l) && l.every((x) => typeof x?.text === "string"));
+  for (let i = 0; i < 400; i++) {
+    const [la, lg, le] = [0, 0, 0].map(() => (rand(4) ? labels() : undefined));
+    const plan = JSON.parse(JSON.stringify({ id: "r", children: [{ ...leaf("a"), labels: la }, { id: "g", labels: lg, children: [leaf("b")] }],
+      edges: [{ ...arrow("e", "a", "b"), labels: le }] }));
+    const why = JSON.stringify(plan);
+    const refusal = [[le, 'box "r" at plan: has an arrow "e" with'], [la, 'box "a" at plan.children[0]: has'], [lg, 'box "g" at plan.children[1]: has']]
+      .find(([l]) => !readable(l));
+    if (refusal) {
+      await assert.rejects(layout(plan, elk), { message: `${refusal[1]} labels that are not a list like [{"text": "..."}]` }, why);
+      continue;
+    }
+    const { boxes, arrows } = await layout(plan, elk);
+    for (const [b, l] of [[boxes[0], la], [boxes[1], lg]]) assert.deepEqual([b.label, b.note], [l?.[0]?.text ?? b.id, l?.[1]?.text ?? ""], why);
+    assert.equal(arrows[0].label?.text, le?.[0]?.text || undefined, why);
+  }
+  assert.equal((await layout({ id: "r", children: [{ ...leaf("a"), labels: [] }] }, elk)).boxes[0].label, "a");
+});

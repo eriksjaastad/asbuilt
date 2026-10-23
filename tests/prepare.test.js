@@ -61,7 +61,6 @@ test("a refusal names the box by its id when it has one, and where it is", () =>
   assert.throws(() => prepare({ id: "r", children: [leaf("a"), { id: "g", children: "x" }] }), { message: 'box "g" at plan.children[1]: children is not a list' });
   assert.throws(() => prepare(two({ edges: [{ sources: ["a"], targets: ["b"] }] })), { message: 'box "r" at plan: has an arrow whose id is not text' });
   assert.throws(() => prepare({ id: "r", children: [leaf("a"), leaf("a")] }), { message: 'box "a" at plan.children[1]: id "a" is used twice' });
-  assert.throws(() => prepare(two({ edges: [{ ...arrow("e", "a", "b"), labels: "x" }] })), { message: 'box "r" at plan: has an arrow "e" with labels that are not a list like [{"text": "..."}]' });
 });
 
 const BAD = {
@@ -69,10 +68,6 @@ const BAD = {
   "no boxes": [[{ id: "r" }, { id: "r", children: [] }], /has no boxes/],
   "edges not a list": [[two({ edges: "x" })], /is not a list/],
   "an arrow and a box with one id": [[two({ edges: [arrow("a", "a", "b")] })], /used twice/],
-  "labels that are not a list of text": [
-    ["read", null, ["read"], [{}], [{ text: "read" }, "note"], [{ text: null }], [{ text: 5 }]].flatMap((labels) => [{ id: "r", children: [leaf("a", { labels })] }, two({ edges: [{ ...arrow("e", "a", "b"), labels }] })]),
-    /labels that are not a list like \[\{"text": "\.\.\."\}\]/,
-  ],
   "a width or height not a number above 0": [
     ["9", Infinity].map((width) => ({ id: "r", children: [leaf("a", { width })] })).concat({ id: "r", children: [leaf("a", { height: 0 })] }),
     /above 0/,
