@@ -13,17 +13,17 @@ function assertSound(plan, laid, boxCount, arrowCount) {
   assert.equal(laid.boxes.length, boxCount);
   assert.equal(laid.arrows.length, arrowCount);
   const byId = Object.fromEntries(laid.boxes.map((b) => [b.id, b]));
-  const parents = {};
-  const mark = (box) => (box.children ?? []).forEach((c) => ((parents[c.id] = box.id), mark(c)));
+  const [parents, ends] = [{}, {}];
+  const mark = (box) => (box.edges?.forEach((e) => (ends[e.id] = [e.sources[0], e.targets[0]])), (box.children ?? []).forEach((c) => ((parents[c.id] = box.id), mark(c))));
   mark(plan);
   for (const b of laid.boxes) {
     const p = byId[parents[b.id]];
     assert.equal(b.level, p ? p.level + 1 : 1, b.id);
     if (p) assert.ok(inside([b.x, b.y], p) && inside([b.x + b.w, b.y + b.h], p), `${b.id} inside ${p.id}`);
   }
-  for (const a of laid.arrows) {
-    assert.ok(inside(a.points[0], byId[a.from]), `${a.id} starts on ${a.from}`);
-    assert.ok(inside(a.points.at(-1), byId[a.to]), `${a.id} ends on ${a.to}`);
+  for (const { id, points } of laid.arrows) {
+    const [from, to] = ends[id];
+    assert.ok(inside(points[0], byId[from]) && inside(points.at(-1), byId[to]), `${id} runs from ${from} to ${to}`);
   }
 }
 

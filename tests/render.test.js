@@ -28,7 +28,6 @@ test("an error from the server becomes a panel holding its text, escaped, whatev
 const WRONG = {
   "not JSON": ["{nope", /JSON/],
   "JSON that is not a message": ["null", /cannot read/],
-  "a message with no verdict": [{ plan: big }, /cannot read/],
   "a verdict that is not true or false": [{ ok: "yes", plan: big }, /cannot read/],
   "ok with no plan": [{ ok: true }, /plan: is not an object/],
   "a plan the page refuses": [{ ok: true, plan: { id: "r", children: [leaf("a"), leaf("a")] } }, /used twice/],

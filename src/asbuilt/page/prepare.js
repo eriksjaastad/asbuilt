@@ -14,7 +14,7 @@ const PADDING_NOTE = "[top=54,left=14,bottom=14,right=14]"; // and the note unde
 const CHAR = 8; // about the width of a character of the 13px monospace label
 const NOTE_CHAR = 7; // and of the 11px note
 // A box's note: its second label's text, drawn under the first in smaller type (D-013). "" when there is none.
-export const noteOf = (box) => String(box.labels?.[1]?.text ?? "");
+export const noteOf = (box) => box.labels?.[1]?.text ?? "";
 // Labels, when given, are a list of {"text": "..."}. Other shapes lose their words without a message (a box is drawn
 // under its id, an arrow with no label, a bare-string note is dropped) or make ELK fail naming nothing, so check()
 // refuses them.
@@ -43,7 +43,7 @@ function check(box, where, ids, arrows) {
   for (const key of ["width", "height"]) {
     if (key in box && !(Number.isFinite(box[key]) && box[key] > 0)) fail(at, `${key} is not a number above 0`);
   }
-  const [label, note] = [String(box.labels?.[0]?.text ?? box.id), noteOf(box)];
+  const [label, note] = [box.labels?.[0]?.text ?? box.id, noteOf(box)];
   const wide = Math.max(CHAR * [...label].length, NOTE_CHAR * [...note].length) + 24; // so both stay inside the box
   // ELK reads a box's minimum size along the layout direction, which layout.js sets to DOWN: the width goes second.
   if (box.children?.length) box.layoutOptions = { "elk.padding": note ? PADDING_NOTE : PADDING, ...ARROW_ROOM, "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(0,${wide})`, ...box.layoutOptions };
@@ -69,7 +69,7 @@ export function prepare(plan) {
       if (!boxes.has(ends[0])) fail(where, `${end} ${JSON.stringify(ends[0])} is not a box in the plan`);
     }
     // An arrow's first label is drawn beside it in the note's type; ELK makes room for a label only when it has a size.
-    const text = String(a.labels?.[0]?.text ?? "");
+    const text = a.labels?.[0]?.text ?? "";
     if (text) a.labels = [{ text, width: NOTE_CHAR * [...text].length + 8, height: 16 }];
     else delete a.labels;
   }

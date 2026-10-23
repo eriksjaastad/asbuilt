@@ -31,7 +31,7 @@ export async function layout(plan, elk) {
     const points = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => [p.x + dx, p.y + dy]);
     const l = e.labels?.[0];
     const label = l && { x: l.x + dx, y: l.y + dy, w: l.width, text: l.text };
-    return { id: e.id, from: e.sources[0], to: e.targets[0], points, label };
+    return { id: e.id, points, label };
   });
   return { width: out.width, height: out.height, boxes, arrows: lines };
 }
