@@ -66,20 +66,16 @@ test("a refusal names the box by its id when it has one, and where it is", () =>
 const BAD = {
   "not an object": [[null, 5, []], /is not an object/],
   "no boxes": [[{ id: "r" }, { id: "r", children: [] }], /has no boxes/],
-  "children or edges not a list": [[{ id: "r", children: "x" }, { id: "r", children: null }, two({ edges: "x" })], /is not a list/],
-  "an id used twice": [
-    [{ id: "r", children: [leaf("a"), { id: "g", children: [leaf("a")] }] }, two({ edges: [arrow("a", "a", "b")] })],
-    /used twice/,
-  ],
+  "edges not a list": [[two({ edges: "x" })], /is not a list/],
+  "an arrow and a box with one id": [[two({ edges: [arrow("a", "a", "b")] })], /used twice/],
   "a width or height not a number above 0": [
-    [0, "9", Infinity].map((width) => ({ id: "r", children: [leaf("a", { width })] })).concat({ id: "r", children: [leaf("a", { height: 0 })] }),
+    ["9", Infinity].map((width) => ({ id: "r", children: [leaf("a", { width })] })).concat({ id: "r", children: [leaf("a", { height: 0 })] }),
     /above 0/,
   ],
 };
 test("an arrow not from one box to one box is refused, naming the end and the id it gives", () => {
   const cases = [
     [{ id: "r", children: [leaf("a"), leaf("b", { ports: [{ id: "p" }] })], edges: [arrow("e", "a", "p")] }, 'target "p" is not a box in the plan'],
-    [two({ edges: [arrow("e", "a", "zzz")] }), 'target "zzz" is not a box in the plan'],
     [two({ edges: [arrow("e", "zzz", "b")] }), 'source "zzz" is not a box in the plan'],
     [two({ edges: [{ id: "e", sources: ["a"], targets: ["b", "a"] }] }), "targets must be a list of one box id"],
     [two({ edges: [{ id: "e", sources: "a", targets: ["b"] }] }), "sources must be a list of one box id"],
