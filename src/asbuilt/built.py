@@ -2,7 +2,6 @@
 box, with a note when Python does not accept it (D-012): Python's own compile, never run, decides
 what is valid; tree-sitter (PRD) reads the text Python reads, and the definitions come next."""
 
-import io
 import tokenize
 import warnings
 
@@ -34,7 +33,8 @@ def _text(source):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # unicode_escape warns on a bad escape
         try:
-            encoding = tokenize.detect_encoding(io.BytesIO(source).readline)[0]
+            lines = iter(source.splitlines(True)).__next__  # LF, CRLF or CR, as Python
+            encoding = tokenize.detect_encoding(lines)[0]
             text = source.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
             return text.encode(), ""
         except Exception as e:  # a bad byte, a codec cut short, anything a codec raises

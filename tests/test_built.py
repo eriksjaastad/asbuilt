@@ -34,6 +34,7 @@ class PythonFileTest(unittest.TestCase):
         sources += [b"#coding:latin-1\n\xe9 = 1\n", b"#coding:unicode_escape\n'\\d'\n"]
         sources += [b"raise SystemExit\ntype L = int\nmatch x:\n case 1: pass\n"]
         sources += [b"x = 1\ry = 2\r\n", b"if 1:\r  x = 1\r"]  # old Mac line endings
+        sources += [b"\r# coding: latin-1\r\xe9 = 1\r"]  # its coding line after a CR
         for source in sources:
             self.assertEqual(note(source), "", source)
 
