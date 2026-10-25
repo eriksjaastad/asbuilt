@@ -1,16 +1,20 @@
 import json
 import os
+import random
+import subprocess
 import sys
 import unittest
 from unittest import mock
 
-from asbuilt.connections import ClaudeCLI, ConnectionFailed, ask, stopped
+from asbuilt.connections import FLAGS as ARGS
+from asbuilt.connections import STATUS, ClaudeCLI, ConnectionFailed, ask, stopped
 
 NO = "^claude is not signed in to claude.ai: run claude auth login[.]$"
 IN = (
     '{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "x": 1}'
 )
 SIGNED = f"if sys.argv[1] == 'auth': sys.exit(print({IN!r}))\n"
+ODD = [None, True, False, 0, 1, 1.0, "", "true", "Claude.ai", "firstParty ", [], {}]
 FLAGS = '-p --tools  --no-session-persistence --strict-mcp-config --safe-mode --settings {"disableAllHooks": true}'
 
 
@@ -52,18 +56,36 @@ class ClaudeCLITest(unittest.TestCase):
     def test_only_an_exact_claude_ai_sign_in_is_taken(self):
         asked = "assert sys.argv[1:] == ['auth', 'status', '--json'] and not sys.stdin.read()\n"
         self.assertIsNone(py(f"{asked}print({IN!r})").check_signed_in())
-        bad = [
-            ("true", "1"),
-            ("true", '"true"'),
-            ("claude.ai", "key"),
-            ("firstParty", "x"),
-        ]
-        outs = [repr(IN.replace(*b)) for b in bad] + ["'[]'", "'no'", "'[' * 300000"]
+        outs = [repr(IN.replace("true", "1")), "'no'", "'[' * 300000"]
         for code in [f"print({IN!r}); sys.exit(1)", *(f"print({o})" for o in outs)]:
             with self.subTest(code[:40]), self.assertRaisesRegex(ConnectionFailed, NO):
                 py(asked + code).check_signed_in()
         with self.assertRaisesRegex(ConnectionFailed, "^claude stopped, exit 2: x[.]$"):
             py("sys.stderr.write('x'); sys.exit(2)").check_signed_in()
+
+    def test_generated_statuses_send_the_prompt_only_when_exactly_signed_in(self):
+        for n in range(500):
+            rand, status = random.Random(n), json.loads(IN)
+            for key in [*status, "loggedIn", "authMethod"]:  # drop, retype or keep
+                if rand.random() < 0.3:
+                    status[key] = rand.choice([*ODD, status.get(key, 0)])
+                elif rand.random() < 0.15:
+                    status.pop(key, None)
+            out = json.dumps(rand.choice([status] * 9 + [[status], "x"]))
+            rc, cut = rand.choice([0] * 9 + [1]), rand.random() < 0.05
+            want = [json.dumps(status.get(k)) for k in ("loggedIn", "authMethod")]
+            want += [json.dumps(status.get("apiProvider")), out[0], rc, cut]
+            yes = want == ["true", '"claude.ai"', '"firstParty"', "{", 0, False]
+            sent, cli = [], ClaudeCLI()
+            cli.run = lambda a, s: sent.append(a) or subprocess.CompletedProcess(
+                a, rc if a == STATUS else 0, out[: -cut or None] if a == STATUS else s
+            )
+            with self.subTest(out=out, rc=rc, cut=cut):
+                if yes:
+                    self.assertEqual((cli("p"), sent), ("p", [STATUS, ARGS]))
+                else:
+                    self.assertRaisesRegex(ConnectionFailed, NO, cli, "p")
+                    self.assertEqual(sent, [STATUS])
 
     def test_a_prompt_goes_on_stdin_with_everything_off_once_signed_in(self):
         said = "print(json.dumps([' '.join(sys.argv[1:]), sys.stdin.read()]))"
