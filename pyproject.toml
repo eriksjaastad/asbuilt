@@ -6,7 +6,11 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tree-sitter==0.26.0",
+    "tree-sitter-javascript==0.25.0",
+    "tree-sitter-python==0.25.0",
+]
 
 [project.scripts]
 asbuilt = "asbuilt.cli:main"
