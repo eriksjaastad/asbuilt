@@ -7,13 +7,12 @@ from pathlib import Path
 from asbuilt.state import PlanError
 
 PAGE = f"""import {{ prepare }} from {json.dumps((Path(__file__).parent / "page/prepare.js").as_uri())};
-let text = ""; for await (const part of process.stdin) text += part;
+process.stdin.setEncoding("utf8"); let text = ""; for await (const part of process.stdin) text += part;
 let says = null; try {{ prepare(JSON.parse(text)); }} catch (e) {{ says = String(e?.message ?? e); }}
 process.stdout.write(JSON.stringify(says));"""
 
 
 def page_takes(out, name, node=("node",), timeout=60):
-    """None if prepare.js takes the bytes `out`, else a PlanError: "NAME: " and its message."""
     try:
         run = [*node, "--input-type=module", "-e", PAGE]
         done = subprocess.run(run, input=out, capture_output=True, timeout=timeout)
@@ -31,7 +30,7 @@ def page_takes(out, name, node=("node",), timeout=60):
         if says is None:
             return
         if isinstance(says, str):
-            raise PlanError(f"{name}: {says}")
-        last = done.stderr.decode(errors="replace").strip().split("\n")[-1][:200]
-        why = f"node stopped, exit {done.returncode}: {last or 'no message'}"
+            raise PlanError(f"{name}: {' '.join(says.splitlines())}")
+        last = (done.stderr.decode(errors="replace").strip().splitlines() or [""])[-1]
+        why = f"node stopped, exit {done.returncode}: {last[:200] or 'no message'}"
     raise PlanError(f"{name} cannot be checked: {why}.")
