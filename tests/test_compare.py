@@ -1,7 +1,8 @@
 import copy
 import unittest
 
-from asbuilt.compare import compare
+from asbuilt.compare import check, compare
+from asbuilt.state import PlanError
 
 
 def box(bid, *kids, labels=None):
@@ -54,3 +55,35 @@ class CompareTest(unittest.TestCase):
                     box("r", box("a", labels=p)), box("r", box("a", labels=b))
                 )
                 self.assertEqual(tree(out), want, (p, b))
+
+    def test_check_refuses_what_the_page_refuses_naming_the_file_and_box(self):
+        arrow = {
+            "id": "e",
+            "sources": ["a"],
+            "targets": ["a"],
+            "labels": [{"text": "x"}],
+        }
+        check({**box("r", box("a", labels=["A", "n"])), "edges": [arrow]}, "p.json")
+        a, top = {"id": "a"}, box("r", box("a"))
+        for why, plan in [
+            ("plan is not an object", []),
+            ("plan has no boxes", box("r")),
+            ('box "r".children[0] is not an object', box("r", 1)),
+            ('box "r" has children or edges that are not', {"id": "r", "children": {}}),
+            ('box "r" has children or edges that are not', {**top, "edges": None}),
+            ("plan or one of its arrows has a non-text id", {"id": 1, "children": []}),
+            ('box "r" or one of its arrows has a non-text', {**top, "edges": ["e"]}),
+            ('box "r" or one of its arrows has a non-text', {**top, "edges": [{}]}),
+            ('box "a": id "a" is used twice', box("r", a, box("b", a))),
+            ('box "a": id "a" is used twice', {**top, "edges": [a]}),
+            ('box "a": "a" has labels unlike', box("r", {**a, "labels": None})),
+            ('box "a": "a" has labels unlike', box("r", {**a, "labels": ["A"]})),
+            ('box "r": "r" has labels unlike', box("r", a, labels=[None])),
+            (
+                'box "r": "e" has labels unlike',
+                {**top, "edges": [{**a, "id": "e", "labels": [{}]}]},
+            ),
+        ]:
+            with self.subTest(why), self.assertRaises(PlanError) as caught:
+                check(plan, "p.json")
+            self.assertTrue(str(caught.exception).startswith(f"p.json: {why}"), why)
