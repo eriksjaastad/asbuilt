@@ -9,14 +9,14 @@ from asbuilt.state import PlanError
 
 
 def _q(text):  # as JSON.stringify writes it
-    return json.dumps(text, ensure_ascii=False)
+    return json.dumps(text, ensure_ascii=False, separators=(",", ":"))
 
 
 def check(plan, name):
     """A PlanError "NAME: " plus prepare.js's own message when the page would refuse `plan` for
-    what compare reads (boxes, ids, children, edges, labels), in prepare.js's order. Width, height
-    and arrow ends are not read here; the page refuses bad ones itself."""
-    ids, todo = set(), [(plan, "plan")]
+    what compare reads (boxes, ids, children, edges, labels, arrow ends), in prepare.js's order.
+    Width and height are not read here; the page refuses bad ones itself."""
+    ids, arrows, todo = set(), [], [(plan, "plan")]
     while todo:  # a stack, not recursion: kids go on reversed so the first is first
         box, where = todo.pop()
         if not isinstance(box, dict):
@@ -40,10 +40,19 @@ def check(plan, name):
                 bad = 'labels that are not a list like [{"text": "..."}]'
                 raise PlanError(f"{name}: {at}: {who} {bad}")
             ids.add(bid)
+        arrows += box.get("edges", [])
         kids = list(enumerate(box.get("children", [])))
         todo += [(kid, f"{where}.children[{i}]") for i, kid in reversed(kids)]
     if not plan.get("children"):  # prepare.js takes "children": [] as a leaf
         raise PlanError(f"{name}: plan: has no boxes")
+    boxes = ids - {plan["id"]} - {a["id"] for a in arrows}  # what an arrow may join
+    for a in arrows:
+        for key, end in [("sources", "source"), ("targets", "target")]:
+            ends, at = a.get(key), f"{name}: arrow {_q(a['id'])}"
+            if not isinstance(ends, list) or len(ends) != 1:
+                raise PlanError(f"{at}: {key} must be a list of one box id")
+            if not isinstance(ends[0], str) or ends[0] not in boxes:
+                raise PlanError(f"{at}: {end} {_q(ends[0])} is not a box in the plan")
 
 
 def _shown(plan):

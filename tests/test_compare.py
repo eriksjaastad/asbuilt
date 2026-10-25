@@ -48,9 +48,13 @@ def made(rand, ids, depth=0):
     out = {"id": rand.choice([bid] * 60 + [7, None])}
     if rand.random() < 0.3:
         out["labels"] = rand.choice(LABELS)
-    if depth and rand.random() < 0.3:  # an arrow from the box to itself
-        aid, ends = rand.choice([f"e{len(ids)}"] * 30 + [bid, 3]), [bid]
-        arrow = dict(id=aid, sources=ends, targets=ends, labels=rand.choice(LABELS))
+    if depth and rand.random() < 0.3:  # an arrow to a box made before, or a bad end
+        aid = rand.choice([f"e{len(ids)}"] * 30 + [bid, 3])
+        s, t = [
+            rand.choice([[rand.choice(ids)]] * 20 + [[], "a", [bid] * 2, [3], [aid]])
+            for _ in "st"
+        ]
+        arrow = dict(id=aid, sources=s, targets=t, labels=rand.choice(LABELS))
         out["edges"] = rand.choice([[arrow]] * 30 + [[arrow, "e"], {}])
     if rand.random() < 0.95 - depth * 0.3:
         kids = [made(rand, ids, depth + 1) for _ in range(rand.randint(not depth, 3))]
@@ -131,6 +135,23 @@ class CompareTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, f'arrow "{aid}" was planned'):
                 compare(planned, box(top, box("c"), box("a")))
 
+    def test_generated_pairs_give_a_plan_the_page_takes_holding_both(self):
+        plans = [made(random.Random(n), []) for n in range(400)]
+        good = [plan for plan, says in zip(plans, page_says(plans)) if not says]
+        outs = [compare(planned, built) for planned, built in zip(good, good[1:])]
+        self.assertEqual(page_says(outs), [None] * len(outs))
+        for planned, built, out in zip(good, good[1:], outs):
+            old, new, got = items(planned), items(built), items(out)
+            self.assertEqual(got.keys(), (old.keys() | new.keys()) - {built["id"]})
+            for key, mark in got.items():
+                both = key in old and key in new
+                ok = (
+                    ["planned", "changed"]
+                    if both
+                    else ["added" if key in new else "dropped"]
+                )
+                self.assertIn(mark, ok, key)
+
     def test_only_what_the_page_draws_counts_as_a_change(self):
         same = [None, [], ["a"], ["a", ""], ["a", "", "x"]]
         for labels in same + [[""], ["b"], ["a", "n"], ["b", ""]]:
@@ -155,4 +176,4 @@ class CompareTest(unittest.TestCase):
         kinds = {
             says and re.sub('"[^"]*"', "", says.split(": ", 1)[1]) for says in page
         }
-        self.assertEqual(len(kinds), 10, kinds)  # each of the 9 refusals, and None
+        self.assertEqual(len(kinds), 14, kinds)  # each of the 13 refusals, and None
