@@ -1,10 +1,16 @@
 """One plan from two ELK plans: each box and arrow marked "planned" (the page draws it the same
 in both), "changed" (in both, drawn differently), "added" (only built) or "dropped" (only planned),
 with an empty "why". Built's keep their place; a dropped box goes under its planned parent, a
-dropped arrow on the top box, joining its planned ends."""
+dropped arrow on the top box, joining its planned ends.
 
+python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT for `asbuilt OUT` to draw."""
+
+import argparse
 import json
+import sys
+from pathlib import Path
 
+from asbuilt.plan import parse, read_bytes
 from asbuilt.state import PlanError
 
 
@@ -121,3 +127,37 @@ def compare(planned, built):
                 raise ValueError(f'arrow "{aid}" was planned to end on built\'s top')
             root.setdefault("edges", []).append(_marked(arrow, "dropped"))
     return root
+
+
+def main(argv=None):
+    """Exit 0 with OUT written, or 2 with one line naming the file and why, and nothing written."""
+    parser = argparse.ArgumentParser(prog="python -m asbuilt.compare")
+    parser.add_argument("planned", type=Path, help="the planned chart's plan file")
+    parser.add_argument("built", type=Path, help="the built chart's plan file")
+    parser.add_argument("out", type=Path, help="where the marked plan is written")
+    args = parser.parse_args(argv)
+    try:
+        plans = []
+        for path, arg in [(args.planned, "PLANNED"), (args.built, "BUILT")]:
+            if args.out.exists() and path.exists() and args.out.samefile(path):
+                raise PlanError(f"{args.out.name}: OUT is {arg}; inputs are only read")
+            plans.append(parse(read_bytes(path), path.name))
+            check(plans[-1], path.name)
+        try:
+            out = compare(*plans)
+        except ValueError as exc:
+            raise PlanError(f"{args.built.name}: {exc}") from None
+        text = json.dumps(out, ensure_ascii=False, indent=2) + "\n"
+        try:
+            args.out.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            why = exc.strerror or type(exc).__name__
+            raise PlanError(f"{args.out.name} cannot be written: {why}") from None
+    except PlanError as exc:
+        print(f"asbuilt.compare: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

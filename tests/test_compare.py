@@ -1,12 +1,17 @@
+import contextlib
 import copy
+import io
 import json
+import os
 import random
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-from asbuilt.compare import check, compare
+from asbuilt.compare import check, compare, main
 from asbuilt.state import PlanError
 
 
@@ -177,3 +182,56 @@ class CompareTest(unittest.TestCase):
             says and re.sub('"[^"]*"', "", says.split(": ", 1)[1]) for says in page
         }
         self.assertEqual(len(kinds), 14, kinds)  # each of the 13 refusals, and None
+
+
+class CommandTest(unittest.TestCase):
+    def run_main(self, planned, built, out="out.json"):
+        """(exit code, stderr, files after) for the plans saved as planned.json, built.json."""
+        self.dir, saved = Path(self.enterContext(tempfile.TemporaryDirectory())), {}
+        for name, plan in [("planned.json", planned), ("built.json", built)]:
+            if plan is not None:
+                saved[name] = plan if isinstance(plan, str) else json.dumps(plan)
+                (self.dir / name).write_text(saved[name], encoding="utf-8")
+        args = [str(self.dir / n) for n in ("planned.json", "built.json", out)]
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(args)
+        files = {p.name: p.read_text(encoding="utf-8") for p in self.dir.iterdir()}
+        self.assertEqual({k: files.get(k) for k in saved}, saved)  # inputs only read
+        return code, err.getvalue(), files
+
+    def test_out_is_the_compare_of_the_two_files_and_the_page_takes_it(self):
+        planned = box("r", box("a", labels=["A"]), box("b"))
+        built = box("r", box("a", labels=["A2"]), box("c", labels=["é"]))
+        code, err, files = self.run_main(planned, built)
+        self.assertEqual((code, err, len(files)), (0, "", 3))
+        out = json.loads(files["out.json"])
+        self.assertEqual(out, compare(planned, built))
+        self.assertEqual(page_says([out]), [None])
+
+    def test_each_refusal_names_the_file_exits_2_and_writes_nothing(self):
+        good, arrow = box("r", box("a")), box("r", box("b"))
+        arrow["edges"] = [{"id": "a", "sources": ["b"], "targets": ["b"]}]
+        for planned, built, out, says in [
+            (None, good, "out.json", "planned.json was not found"),
+            (good, "{", "out.json", "built.json is not valid JSON"),
+            (good, box("r", box("a"), box("a")), "out.json", 'built.json: box "a" at'),
+            (good, arrow, "out.json", 'built.json: box "a" was planned; built has an'),
+            (good, good, "planned.json", "planned.json: OUT is PLANNED; inputs are"),
+            (good, good, "built.json", "built.json: OUT is BUILT; inputs are only"),
+            (good, good, "no/out.json", "out.json cannot be written: No such file"),
+        ]:
+            code, err, files = self.run_main(planned, built, out)
+            self.assertEqual((code, err.count("\n")), (2, 1), err)
+            self.assertTrue(err.startswith(f"asbuilt.compare: {says}"), err)
+            self.assertNotIn("out.json", files)
+
+    def test_python_m_runs_it(self):
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(os.environ, PYTHONPATH=src)
+        run = [sys.executable, "-m", "asbuilt.compare", "p.json", "b.json", "o.json"]
+        at = self.enterContext(tempfile.TemporaryDirectory())
+        done = subprocess.run(
+            run, cwd=at, env=env, capture_output=True, text=True, timeout=60
+        )
+        self.assertEqual((done.returncode, done.stdout), (2, ""))
+        self.assertRegex(done.stderr, r"\Aasbuilt.compare: p.json was not found.*\n\Z")
