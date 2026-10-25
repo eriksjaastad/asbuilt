@@ -1,4 +1,7 @@
+import io
 import random
+import sys
+import tokenize
 import unittest
 import warnings
 
@@ -6,7 +9,7 @@ from asbuilt.built import python_file
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
 HEADS += [b"# coding: unicode_escape\n", b"# coding: rot_13\n", b"# coding: nope\n"]
-CODE = b"def f(|):|\n|\r\n|  |pass|x = |'\\d'|\\ud800|+2AA-|\\|'|\xe9|\xff|\0|#"
+CODE = b"def f(|):|\n|\r\n|\r|  |pass|x = |'\\d'|\\ud800|+2AA-|\\|'|\xe9|\xff|\0|#"
 PIECES = CODE.split(b"|") + [b"\xef\xbb\xbf", b"caf\xc3\xa9", b"(" * 300]
 
 
@@ -30,6 +33,7 @@ class PythonFileTest(unittest.TestCase):
         sources = [b"", b"x = '\\d'\n", b"\xef\xbb\xbfx = 'caf\xc3\xa9'\n"]
         sources += [b"#coding:latin-1\n\xe9 = 1\n", b"#coding:unicode_escape\n'\\d'\n"]
         sources += [b"raise SystemExit\ntype L = int\nmatch x:\n case 1: pass\n"]
+        sources += [b"x = 1\ry = 2\r\n", b"if 1:\r  x = 1\r"]  # old Mac line endings
         for source in sources:
             self.assertEqual(note(source), "", source)
 
@@ -45,6 +49,13 @@ class PythonFileTest(unittest.TestCase):
         ]
         for source, want in cases:
             self.assertTrue(note(source).startswith(want), (source, note(source)))
+
+    def test_code_python_accepts_but_tree_sitter_cannot_read_whole_is_noted(self):
+        cut = note(b"# coding: unicode_escape\nx = 1\n\\")  # Python decodes by line
+        self.assertTrue(cut.startswith("Python accepts it, but it does not decode "))
+        misread = "tree-sitter could not read it all, though Python accepts it"
+        new = misread if sys.version_info >= (3, 13) else "does not parse: line 1"
+        self.assertTrue(note(b"class A[T: int = str]: pass\n").startswith(new))
 
     def test_nesting_of_any_depth_is_noted_not_a_crash(self):
         cases = [
@@ -70,6 +81,18 @@ class PythonFileTest(unittest.TestCase):
                 want = f"does not parse{line} (Python: {e.msg})"
             except Exception as e:
                 want = f"does not parse (Python: {type(e).__name__}: {e})"
+            if not want:  # Python accepts it, so it decodes whole or the note says not
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        source.decode(
+                            tokenize.detect_encoding(io.BytesIO(source).readline)[0]
+                        )
+                except Exception as e:
+                    why = f"{type(e).__name__}: {e}"
+                    want = f"Python accepts it, but it does not decode whole ({why})"
             self.assertEqual(got, want, source)
             seen.add(got[:15])
-        self.assertEqual(seen, {"", "does not parse:", "does not parse "})
+        self.assertEqual(
+            seen, {"", "does not parse:", "does not parse ", "Python accepts "}
+        )
