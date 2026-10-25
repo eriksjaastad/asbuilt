@@ -1,5 +1,10 @@
 import copy
+import json
+import random
+import re
+import subprocess
 import unittest
+from pathlib import Path
 
 from asbuilt.compare import check, compare
 from asbuilt.state import PlanError
@@ -16,6 +21,41 @@ def tree(plan):
         + (f"[{tree(kid)}]" if kid.get("children") else "")
         for kid in plan.get("children", [])
     )
+
+
+PAGE = """import { prepare } from "./src/asbuilt/page/prepare.js"; let text = "";
+for await (const part of process.stdin) text += part;
+const says = (plan) => { try { prepare(plan); return null; } catch (e) { return e.message; } };
+console.log(JSON.stringify(JSON.parse(text).map(says)));"""
+LABELS = [[{"text": ""}, {"text": "A"}]] * 9 + [[], None, ["A"], [{}], "A"]
+
+
+def page_says(plans):
+    """prepare.js's refusal for each plan, or None where the page takes it."""
+    run, root = ["node", "--input-type=module", "-e", PAGE], Path(__file__).resolve()
+    out = subprocess.check_output(
+        run, input=json.dumps(plans), text=True, cwd=root.parents[1]
+    )
+    return json.loads(out)
+
+
+def made(rand, ids, depth=0):
+    """A seeded random box, now and then malformed in one of the ways prepare.js refuses."""
+    if rand.random() < 0.02:
+        return rand.choice([1, "a", None, []])
+    bid = rand.choice(ids) if ids and rand.random() < 0.02 else f"b{len(ids)}é"
+    ids.append(bid)
+    out = {"id": rand.choice([bid] * 60 + [7, None])}
+    if rand.random() < 0.3:
+        out["labels"] = rand.choice(LABELS)
+    if depth and rand.random() < 0.3:  # an arrow from the box to itself
+        aid, ends = rand.choice([f"e{len(ids)}"] * 30 + [bid, 3]), [bid]
+        arrow = dict(id=aid, sources=ends, targets=ends, labels=rand.choice(LABELS))
+        out["edges"] = rand.choice([[arrow]] * 30 + [[arrow, "e"], {}])
+    if rand.random() < 0.95 - depth * 0.3:
+        kids = [made(rand, ids, depth + 1) for _ in range(rand.randint(not depth, 3))]
+        out["children"] = rand.choice([kids] * 40 + [[], {}, None])
+    return out
 
 
 class CompareTest(unittest.TestCase):
@@ -56,34 +96,18 @@ class CompareTest(unittest.TestCase):
                 )
                 self.assertEqual(tree(out), want, (p, b))
 
-    def test_check_refuses_what_the_page_refuses_naming_the_file_and_box(self):
-        arrow = {
-            "id": "e",
-            "sources": ["a"],
-            "targets": ["a"],
-            "labels": [{"text": "x"}],
-        }
-        check({**box("r", box("a", labels=["A", "n"])), "edges": [arrow]}, "p.json")
-        a, top = {"id": "a"}, box("r", box("a"))
-        for why, plan in [
-            ("plan is not an object", []),
-            ("plan has no boxes", box("r")),
-            ('box "r".children[0] is not an object', box("r", 1)),
-            ('box "r" has children or edges that are not', {"id": "r", "children": {}}),
-            ('box "r" has children or edges that are not', {**top, "edges": None}),
-            ("plan or one of its arrows has a non-text id", {"id": 1, "children": []}),
-            ('box "r" or one of its arrows has a non-text', {**top, "edges": ["e"]}),
-            ('box "r" or one of its arrows has a non-text', {**top, "edges": [{}]}),
-            ('box "a": id "a" is used twice', box("r", a, box("b", a))),
-            ('box "a": id "a" is used twice', {**top, "edges": [a]}),
-            ('box "a": "a" has labels unlike', box("r", {**a, "labels": None})),
-            ('box "a": "a" has labels unlike', box("r", {**a, "labels": ["A"]})),
-            ('box "r": "r" has labels unlike', box("r", a, labels=[None])),
-            (
-                'box "r": "e" has labels unlike',
-                {**top, "edges": [{**a, "id": "e", "labels": [{}]}]},
-            ),
-        ]:
-            with self.subTest(why), self.assertRaises(PlanError) as caught:
+    def test_check_says_what_the_page_says_about_generated_plans(self):
+        # Seeded, so the same plans every run.
+        plans = [made(random.Random(n), []) for n in range(400)]
+        page = page_says(plans)
+        for plan, says in zip(plans, page):
+            try:
                 check(plan, "p.json")
-            self.assertTrue(str(caught.exception).startswith(f"p.json: {why}"), why)
+                said = None
+            except PlanError as error:
+                said = str(error)
+            self.assertEqual(said, says and f"p.json: {says}", plan)
+        kinds = {
+            says and re.sub('"[^"]*"', "", says.split(": ", 1)[1]) for says in page
+        }
+        self.assertEqual(len(kinds), 10, kinds)  # each of the 9 refusals, and None

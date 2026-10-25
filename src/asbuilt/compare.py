@@ -7,44 +7,42 @@ import json
 from asbuilt.state import PlanError
 
 
-LIKE = '[{"text": "..."}]'
-
-
-def _readable(labels):
-    return isinstance(labels, list) and all(
-        isinstance(one, dict) and isinstance(one.get("text"), str) for one in labels
-    )
+def _q(text):  # as JSON.stringify writes it
+    return json.dumps(text, ensure_ascii=False)
 
 
 def check(plan, name):
-    """A PlanError naming the file and the box unless the page (prepare.js) would take `plan` as
-    far as compare reads it: objects, children and edges lists, text ids used once across boxes
-    and arrows, labels like [{"text": ...}], boxes under the root. Arrow ends: not read here."""
+    """A PlanError "NAME: " plus prepare.js's own message when the page would refuse `plan` for
+    what compare reads (boxes, ids, children, edges, labels), in prepare.js's order. Width, height
+    and arrow ends are not read here; the page refuses bad ones itself."""
     ids, todo = set(), [(plan, "plan")]
-    for box, at in todo:  # grows as it goes, so deep plans need no recursion
+    while todo:  # a stack, not recursion: kids go on reversed so the first is first
+        box, where = todo.pop()
         if not isinstance(box, dict):
-            raise PlanError(f"{name}: {at} is not an object.")
-        if isinstance(box.get("id"), str):
-            at = f"box {json.dumps(box['id'])}"
-        if not all(isinstance(box.get(key, []), list) for key in ("children", "edges")):
-            raise PlanError(f"{name}: {at} has children or edges that are not a list.")
+            raise PlanError(f"{name}: {where}: is not an object")
+        at = f"box {_q(i)} at {where}" if isinstance(i := box.get("id"), str) else where
+        for key in ("children", "edges"):
+            if not isinstance(box.get(key, []), list):
+                raise PlanError(f"{name}: {at}: {key} is not a list")
         for item in [box, *box.get("edges", [])]:
             bid = item.get("id") if isinstance(item, dict) else None
             if not isinstance(bid, str):
-                raise PlanError(f"{name}: {at} or one of its arrows has a non-text id.")
+                kind = "has an id that" if item is box else "has an arrow whose id"
+                raise PlanError(f"{name}: {at}: {kind} is not text")
             if bid in ids:
-                raise PlanError(f"{name}: {at}: id {json.dumps(bid)} is used twice.")
-            if not _readable(item.get("labels", [])):
-                raise PlanError(
-                    f"{name}: {at}: {json.dumps(bid)} has labels unlike {LIKE}."
-                )
+                raise PlanError(f"{name}: {at}: id {_q(bid)} is used twice")
+            labels = item.get("labels", [])
+            if not isinstance(labels, list) or not all(
+                isinstance(x, dict) and isinstance(x.get("text"), str) for x in labels
+            ):
+                who = "has" if item is box else f"has an arrow {_q(bid)} with"
+                bad = 'labels that are not a list like [{"text": "..."}]'
+                raise PlanError(f"{name}: {at}: {who} {bad}")
             ids.add(bid)
-        todo += [
-            (kid, f"{at}.children[{i}]")
-            for i, kid in enumerate(box.get("children", []))
-        ]
-    if "children" not in plan:
-        raise PlanError(f"{name}: plan has no boxes.")
+        kids = list(enumerate(box.get("children", [])))
+        todo += [(kid, f"{where}.children[{i}]") for i, kid in reversed(kids)]
+    if not plan.get("children"):  # prepare.js takes "children": [] as a leaf
+        raise PlanError(f"{name}: plan: has no boxes")
 
 
 def _shown(plan):
@@ -62,7 +60,7 @@ def _shown(plan):
 
 def compare(planned, built):
     """Built with every box marked, plus the planned boxes it lacks. Inputs are not changed.
-    Both must pass check(), so ids are unique text in each."""
+    Both must be plans the page accepts (prepare.js), so ids are unique text in each."""
     old, new = _shown(planned), _shown(built)
     root = {**built, "children": []}
     placed = {None: root}  # a loop, not recursion: parents come first in _shown
