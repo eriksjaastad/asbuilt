@@ -4,7 +4,14 @@ import sys
 import unittest
 from unittest import mock
 
-from asbuilt.connections import ClaudeCLI, ConnectionFailed, stopped
+from asbuilt.connections import ClaudeCLI, ConnectionFailed, ask, stopped
+
+NO = "^claude is not signed in to claude.ai: run claude auth login[.]$"
+IN = (
+    '{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "x": 1}'
+)
+SIGNED = f"if sys.argv[1] == 'auth': sys.exit(print({IN!r}))\n"
+FLAGS = '-p --tools  --no-session-persistence --strict-mcp-config --safe-mode --settings {"disableAllHooks": true}'
 
 
 def py(code, timeout=30):  # stands in for claude: tests never run it
@@ -41,3 +48,38 @@ class ClaudeCLITest(unittest.TestCase):
                 self.assertEqual(
                     str(stopped(py(code).run([], ""))), f"claude stopped, exit {said}."
                 )
+
+    def test_only_an_exact_claude_ai_sign_in_is_taken(self):
+        asked = "assert sys.argv[1:] == ['auth', 'status', '--json'] and not sys.stdin.read()\n"
+        self.assertIsNone(py(f"{asked}print({IN!r})").check_signed_in())
+        bad = [
+            ("true", "1"),
+            ("true", '"true"'),
+            ("claude.ai", "key"),
+            ("firstParty", "x"),
+        ]
+        outs = [repr(IN.replace(*b)) for b in bad] + ["'[]'", "'no'", "'[' * 300000"]
+        for code in [f"print({IN!r}); sys.exit(1)", *(f"print({o})" for o in outs)]:
+            with self.subTest(code[:40]), self.assertRaisesRegex(ConnectionFailed, NO):
+                py(asked + code).check_signed_in()
+        with self.assertRaisesRegex(ConnectionFailed, "^claude stopped, exit 2: x[.]$"):
+            py("sys.stderr.write('x'); sys.exit(2)").check_signed_in()
+
+    def test_a_prompt_goes_on_stdin_with_everything_off_once_signed_in(self):
+        said = "print(json.dumps([' '.join(sys.argv[1:]), sys.stdin.read()]))"
+        out = py(SIGNED + said)("draw")
+        self.assertEqual((json.loads(out), out[-1]), ([FLAGS, "draw"], "\n"))
+        for code, why in [
+            ("sys.exit(print('x') or 3)", "stopped, exit 3: x"),
+            ("print()", "replied with nothing"),
+        ]:
+            with self.subTest(why), self.assertRaises(ConnectionFailed) as caught:
+                py(SIGNED + code)("draw")
+            self.assertEqual(str(caught.exception), f"claude {why}.")
+        with self.assertRaisesRegex(ConnectionFailed, NO):
+            py(said)("draw")
+
+    def test_ask_uses_the_connection_handed_in_else_the_claude_cli(self):
+        self.assertEqual(ask("p", lambda p: p + "!"), "p!")
+        with mock.patch.object(ClaudeCLI, "__call__", lambda cli, p: (cli.command, p)):
+            self.assertEqual(ask("p"), (["claude"], "p"))
