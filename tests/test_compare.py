@@ -34,7 +34,7 @@ def page_says(plans):
     """prepare.js's refusal for each plan, or None where the page takes it."""
     run, root = ["node", "--input-type=module", "-e", PAGE], Path(__file__).resolve()
     out = subprocess.check_output(
-        run, input=json.dumps(plans), text=True, cwd=root.parents[1]
+        run, input=json.dumps(plans), text=True, cwd=root.parents[1], timeout=60
     )
     return json.loads(out)
 
