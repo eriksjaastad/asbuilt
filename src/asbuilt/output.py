@@ -1,5 +1,6 @@
 """One place for what a command writes and how it fails (for compare and draft)."""
 
+import contextlib
 import json
 import os
 import sys
@@ -40,9 +41,10 @@ def write_atomic(path, data):
         why = exc.strerror or type(exc).__name__
         raise PlanError(f"{path.name} cannot be written: {why}.") from None
     finally:  # also on Ctrl-C; after os.replace there is nothing left to remove
-        if tmp is not None and os.path.lexists(tmp):
+        if tmp is not None:
             try:
-                os.unlink(tmp)
+                with contextlib.suppress(FileNotFoundError):  # os.replace moved it
+                    os.unlink(tmp)
             except OSError as exc:  # left behind: say so, with its name
                 why = f"its temporary file {tmp} could not be removed: {exc.strerror}"
                 raise PlanError(f"{path.name} cannot be written: {why}.") from None
