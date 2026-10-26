@@ -41,6 +41,12 @@ class OutputTest(unittest.TestCase):
         got = (out.read_bytes(), sorted(os.listdir(self.dir)))
         self.assertEqual(got, (b"again", ["OUT", "link", "plain"]))
         self.assertIn("No such file", self.why(write_atomic, self.dir / "no/OUT", b""))
+        fails = {"side_effect": OSError(13, "no")}
+        with (
+            unittest.mock.patch("os.replace", **fails),
+            unittest.mock.patch("os.unlink", **fails),
+        ):
+            self.assertIn("could not be removed: no.", self.why(write_atomic, out, b""))
 
     def test_fail_prints_the_whole_message_as_one_line_and_gives_2(self):
         with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
