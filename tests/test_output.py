@@ -29,9 +29,9 @@ class OutputTest(unittest.TestCase):
         out, link, plain = self.dir / "OUT", self.dir / "link", self.dir / "plain"
         self.addCleanup(os.umask, os.umask(0o027))  # not the usual 022, and kept
         link.symlink_to("OUT")
+        plain.touch()
         write_atomic(link, b"new")
         write_atomic(out, b"again")
-        plain.touch()
         got = (out.read_bytes(), out.stat().st_mode, link.is_symlink())
         self.assertEqual(got, (b"again", plain.stat().st_mode, True))
         # a failed write leaves the file as it was and no temporary file
