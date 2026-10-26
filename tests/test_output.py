@@ -27,6 +27,7 @@ class OutputTest(unittest.TestCase):
     def test_write_atomic_writes_whole_through_a_link_or_not_at_all(self):
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         out, link, plain = self.dir / "OUT", self.dir / "link", self.dir / "plain"
+        self.addCleanup(os.umask, os.umask(0o027))  # not the usual 022, and kept
         link.symlink_to("OUT")
         write_atomic(link, b"new")
         write_atomic(out, b"again")
