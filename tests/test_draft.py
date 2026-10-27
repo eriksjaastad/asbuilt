@@ -9,7 +9,7 @@ from test_compare import made, page_says
 
 BAD = [0, -1, "1", True, None, [], {}]  # sizes the page refuses
 STACK, EMPTY = "Maximum call stack size exceeded", "Unexpected end of JSON input"
-BROKEN = """Unexpected token 'w', "{ "id":wat}" is not valid JSON"""
+BROKEN = "Unexpected token 'w', \"{" + chr(10) + "\"id\":wat}\" is not valid JSON"
 SIZES = [{k: v} for k in ("width", "height") for v in BAD]
 
 
@@ -35,7 +35,7 @@ class PageTakesTest(unittest.TestCase):
                     got = page_takes(json.dumps(plan, ensure_ascii=False).encode(), "R")
                 except PlanError as e:
                     got = str(e)
-                self.assertEqual(got, says and f"R: {' '.join(says.splitlines())}")
+                self.assertEqual(got, says and f"R: {says}")
         deep = b'{"id": "r", "children": [' + b"[" * 99999 + b"]" * 99999 + b"]}"
         for out, says in [(deep, STACK), (b"", EMPTY), (b'{\n"id":wat}', BROKEN)]:
             with self.subTest(says), self.assertRaises(PlanError) as caught:
@@ -62,3 +62,9 @@ class PageTakesTest(unittest.TestCase):
             with self.subTest(why), self.assertRaises(PlanError) as caught:
                 page_takes(b"{}", "R", node, 0.5)
             self.assertEqual(str(caught.exception), f"R cannot be checked: node {why}.")
+
+    def test_page_message_keeps_its_line_breaks(self):
+        # fail() will join later; page_takes must not strip them itself
+        with self.assertRaises(PlanError) as caught:
+            page_takes(b"{}", "R", py("print(json.dumps('a'+chr(10)+'b'+chr(13)+'c'))"))
+        self.assertEqual(str(caught.exception), "R: a" + chr(10) + "b" + chr(13) + "c")

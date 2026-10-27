@@ -30,7 +30,7 @@ def page_takes(out, name, node=("node",), timeout=60):
         if says is None:
             return
         if isinstance(says, str):
-            raise PlanError(f"{name}: {' '.join(says.splitlines())}")
+            raise PlanError(f"{name}: {says}")
         last = (done.stderr.decode(errors="replace").strip().splitlines() or [""])[-1]
         why = f"node stopped, exit {done.returncode}: {last[:200] or 'no message'}"
     raise PlanError(f"{name} cannot be checked: {why}.")
