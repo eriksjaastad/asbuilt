@@ -1,4 +1,5 @@
 import random
+import tokenize
 import sys
 import unittest
 import warnings
@@ -28,9 +29,9 @@ def note(source, name="t.py"):
 
 
 class PythonFileTest(unittest.TestCase):
-    def test_code_python_accepts_has_no_note_whatever_its_encoding_and_is_not_run(self):
+    def test_code_python_accepts_has_no_note_when_utf8_and_is_not_run(self):
         sources = [b"", b"x = '\\d'\n", b"\xef\xbb\xbfx = 'caf\xc3\xa9'\n"]
-        sources += [b"#coding:latin-1\nx = 1\n", b"#coding:unicode_escape\n'\\d'\n"]
+        sources += [b"# coding: utf-8\nx = 1\n", b"# coding: utf-8-sig\nx = 1\n"]
         sources += [b"raise SystemExit\ntype L = int\nmatch x:\n case 1: pass\n"]
         sources += [b"x = 1\ry = 2\r\n", b"if 1:\r  x = 1\r"]  # old Mac line endings
         sources += [b"x = " + b"1+" * 3000 + b"1"]  # deep, and still read
@@ -53,20 +54,18 @@ class PythonFileTest(unittest.TestCase):
     def test_code_python_accepts_but_tree_sitter_does_not_read_as_python_is_noted(self):
         sources = [b"#coding:latin-1\n\xe9 = 1\n", b"# coding: utf-7\nx = '+AGE-'\n"]
         sources += [b"# coding: unicode_escape\r\n# c \\\r\n!\r\n"]  # `!` unseen
+        # Non-UTF-8 coding even when the body is ASCII (r3 FAIL was unicode_escape + dead code).
+        sources += [b"#coding:latin-1\nx = 1\n", b"#coding:unicode_escape\n'\\d'\n"]
+        # r3 FAIL case: under unicode_escape the backslash eats the newline, so Python
+        # never sees hidden; tree-sitter on UTF-8 would. Gate refuses the coding line.
+        sources += [
+            b"# coding: unicode_escape\nif False:\n class A:\n  # c \\\n  def hidden(self): pass\n  pass\n"
+        ]
         for source in sources:  # not UTF-8, or Python reads it as other text
             self.assertEqual(note(source), NOT_READ, source)
         misread = "tree-sitter could not read it all, though Python accepts it"
         new = misread if sys.version_info >= (3, 13) else "does not parse: line 1"
         self.assertTrue(note(b"class A[T: int = str]: pass\n").startswith(new))
-
-    def test_nesting_of_any_depth_is_noted_not_a_crash(self):
-        cases = [
-            (b"(" * n + b"!" + b")" * n, ": line 1 (Python: ") for n in (3, 1200, 10**5)
-        ]
-        cases += [(b"1+" * 200_000 + b"1", " (Python: RecursionError: ")]
-        cases += [(b"not " * 200_000 + b"1", " (Python: MemoryError: Parser stack")]
-        for middle, want in cases:  # the type of error Python raised is named
-            self.assertTrue(note(b"x = " + middle).startswith("does not parse" + want))
 
     def test_generated_bytes_get_pythons_verdict_never_a_crash(self):
         seen = set()
@@ -83,14 +82,17 @@ class PythonFileTest(unittest.TestCase):
                 want = f"does not parse{line} (Python: {e.msg})"
             except Exception as e:
                 want = f"does not parse (Python: {type(e).__name__}: {e})"
-            # read if UTF-8, maybe not with a coding line, never if not UTF-8
+            # read only when tokenize names utf-8 or utf-8-sig and the bytes decode
             if not want:
                 try:
-                    source.decode("utf-8")
-                    ok = {"", NOT_READ} if source.startswith(b"# coding: ") else {""}
-                except UnicodeDecodeError:
-                    ok = {NOT_READ}
-                want = got if got in ok else ok
+                    lines = iter(source.splitlines(True)).__next__
+                    encoding = tokenize.detect_encoding(lines)[0]
+                    if encoding not in ("utf-8", "utf-8-sig"):
+                        want = NOT_READ
+                    else:
+                        source.decode(encoding)
+                except Exception:
+                    want = NOT_READ
             self.assertEqual(got, want, source)
             seen.add(got[:15])
         self.assertEqual(

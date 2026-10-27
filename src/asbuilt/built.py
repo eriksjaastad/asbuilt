@@ -2,6 +2,7 @@
 box, with a note when Python does not accept it (D-012): Python's own compile, never run, decides
 what is valid; tree-sitter (PRD) reads only UTF-8 files, and the definitions come next."""
 
+import tokenize
 import warnings
 
 import tree_sitter
@@ -25,24 +26,21 @@ def _note(source):
     return ""
 
 
-def _code(source):
-    return compile(source, "", "exec", dont_inherit=True)  # compiled, never run
-
-
 def _text(source):
     """The bytes Python accepted, as UTF-8 text for tree-sitter with line endings as Python
-    reads them, and "", or None and why not: they are not UTF-8, or Python reads other text
-    (a coding line)."""
-    try:
-        text = source.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            same = _code(source) == _code(text)  # same names, values, positions
-    except Exception:  # not UTF-8, or text Python cannot read: not what Python read
-        same = False
-    if same:
-        return text.encode(), ""
-    return None, "Python accepts it; not UTF-8, so not read"
+    reads them, and "", or None and why not: tokenize.detect_encoding names something other
+    than utf-8 or utf-8-sig, or the bytes do not decode under that encoding."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # unicode_escape warns on a bad escape
+        try:
+            lines = iter(source.splitlines(True)).__next__  # LF, CRLF or CR, as Python
+            encoding = tokenize.detect_encoding(lines)[0]
+            if encoding not in ("utf-8", "utf-8-sig"):
+                return None, "Python accepts it; not UTF-8, so not read"
+            text = source.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+            return text.encode(), ""
+        except Exception:  # a bad byte, a codec cut short, anything a codec raises
+            return None, "Python accepts it; not UTF-8, so not read"
 
 
 def python_file(name, source):
