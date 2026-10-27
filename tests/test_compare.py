@@ -267,6 +267,67 @@ class CommandTest(unittest.TestCase):
         )
         self.assertEqual(out.read_text(encoding="utf-8"), old)
 
+    def test_bad_sizes_nonfinite_numbers_and_surrogates_are_refused_as_classes(self):
+        good = box("r", box("a"))
+        json_safe = (0, -1, True, "1", None)  # page_says round-trips these through JSON
+        for key in ("width", "height"):
+            for bad in (*json_safe, float("nan"), float("inf"), float("-inf")):
+                built = box("r", box("a"))
+                built["children"][0][key] = bad
+                code, err, files = self.run_main(good, built)
+                self.assertEqual(
+                    (code, err.count("\n"), "out.json" in files), (2, 1, False)
+                )
+                want = f'asbuilt.compare: built.json: box "a" at plan.children[0]: {key} is not'
+                self.assertTrue(err.startswith(want), (key, bad, err))
+                if bad in json_safe:
+                    self.assertEqual(
+                        page_says([built])[0].split(": ", 1)[1],
+                        f"{key} is not a number above 0",
+                    )
+        for sizes in ({}, {"width": 10}, {"height": 20.5}, {"width": 10, "height": 20}):
+            built = box("r", box("a"))
+            built["children"][0].update(sizes)
+            code, err, files = self.run_main(good, built)
+            self.assertEqual(
+                (code, err, page_says([json.loads(files["out.json"])])), (0, "", [None])
+            )
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            planned = box("r", box("a"))
+            planned["meta"] = bad
+            code, err, files = self.run_main(planned, good)
+            self.assertEqual((code, "out.json" in files), (2, False))
+            self.assertTrue(
+                err.startswith(
+                    "asbuilt.compare: planned.json: plan.meta: is not a finite"
+                ),
+                err,
+            )
+            built = box("r", box("a"))
+            built["children"][0]["meta"] = bad
+            code, err, files = self.run_main(good, built)
+            self.assertTrue(
+                err.startswith("asbuilt.compare: built.json: plan.children[0].meta:"),
+                err,
+            )
+        surr = "\ud800"
+        for where, make in (
+            ("plan.children[0].id", lambda: box("r", box(surr))),
+            (
+                "plan.children[0].labels[0].text",
+                lambda: box("r", box("a", labels=[surr])),
+            ),
+        ):
+            built = make()
+            code, err, files = self.run_main(good, built)
+            self.assertEqual((code, "out.json" in files), (2, False), err)
+            self.assertTrue(
+                err.startswith(
+                    f"asbuilt.compare: built.json: {where}: holds text that is not Unicode"
+                ),
+                err,
+            )
+
     def test_python_m_runs_it(self):
         src = str(Path(__file__).resolve().parents[1] / "src")
         env = dict(os.environ, PYTHONPATH=src)

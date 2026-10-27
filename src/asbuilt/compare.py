@@ -7,6 +7,7 @@ python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT for `asbuilt
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -19,10 +20,33 @@ def _q(text):  # as JSON.stringify writes it
     return json.dumps(text, ensure_ascii=False, separators=(",", ":"))
 
 
+def _above_zero(v):
+    return (
+        isinstance(v, (int, float))
+        and not isinstance(v, bool)
+        and math.isfinite(v)
+        and v > 0
+    )
+
+
+def _refuse_unwritable(plan, name):
+    todo = [(plan, "plan")]
+    while todo:
+        item, where = todo.pop()
+        if isinstance(item, dict):
+            todo += [(v, f"{where}.{k}") for k, v in item.items()]
+        elif isinstance(item, list):
+            todo += [(v, f"{where}[{i}]") for i, v in enumerate(item)]
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise PlanError(f"{name}: {where}: is not a finite number")
+        elif isinstance(item, str) and any(0xD800 <= ord(c) <= 0xDFFF for c in item):
+            raise PlanError(f"{name}: {where}: holds text that is not Unicode")
+
+
 def check(plan, name):
     """A PlanError "NAME: " plus prepare.js's own message when the page would refuse `plan` for
-    what compare reads (boxes, ids, children, edges, labels, arrow ends), in prepare.js's order.
-    Width and height are not read here; the page refuses bad ones itself."""
+    what compare reads (boxes, ids, children, edges, labels, arrow ends, sizes), in prepare.js's
+    order. Non-finite numbers and lone surrogates are refused too (shared writer cannot write them)."""
     ids, arrows, todo = set(), [], [(plan, "plan")]
     while todo:  # a stack, not recursion: kids go on reversed so the first is first
         box, where = todo.pop()
@@ -47,6 +71,9 @@ def check(plan, name):
                 bad = 'labels that are not a list like [{"text": "..."}]'
                 raise PlanError(f"{name}: {at}: {who} {bad}")
             ids.add(bid)
+        for key in ("width", "height"):  # prepare.js: omit or a finite number above 0
+            if key in box and not _above_zero(box[key]):
+                raise PlanError(f"{name}: {at}: {key} is not a number above 0")
         arrows += box.get("edges", [])
         kids = list(enumerate(box.get("children", [])))
         todo += [(kid, f"{where}.children[{i}]") for i, kid in reversed(kids)]
@@ -60,6 +87,7 @@ def check(plan, name):
                 raise PlanError(f"{at}: {key} must be a list of one box id")
             if not isinstance(ends[0], str) or ends[0] not in boxes:
                 raise PlanError(f"{at}: {end} {_q(ends[0])} is not a box in the plan")
+    _refuse_unwritable(plan, name)
 
 
 def _shown(plan):
