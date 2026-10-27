@@ -4,7 +4,7 @@ import sys
 import unittest
 import warnings
 
-from asbuilt.built import python_file
+from asbuilt.built import _text, python_file
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
 HEADS += [b"# coding: unicode_escape\n", b"# coding: rot_13\n", b"# coding: nope\n"]
@@ -66,6 +66,20 @@ class PythonFileTest(unittest.TestCase):
         misread = "tree-sitter could not read it all, though Python accepts it"
         new = misread if sys.version_info >= (3, 13) else "does not parse: line 1"
         self.assertTrue(note(b"class A[T: int = str]: pass\n").startswith(new))
+
+    def test_text_for_tree_sitter_uses_python_newlines_and_refuses_cr_coding_lines(
+        self,
+    ):
+        # CRLF and old Mac CR become LF so tree-sitter sees the same lines Python compiled.
+        for source, want in (
+            (b"x = 1\r\ny = 2\r\n", b"x = 1\ny = 2\n"),
+            (b"x = 1\ry = 2\r", b"x = 1\ny = 2\n"),
+        ):
+            text, note_ = _text(source)
+            self.assertEqual((text, note_), (want, ""), source)
+        # A CR before a non-UTF-8 coding line: splitlines finds the cookie; split on LF misses it.
+        source = b"\r#coding:latin-1\nx = 1\n"
+        self.assertEqual(note(source), NOT_READ, source)
 
     def test_generated_bytes_get_pythons_verdict_never_a_crash(self):
         seen = set()
