@@ -67,6 +67,15 @@ class PythonFileTest(unittest.TestCase):
         new = misread if sys.version_info >= (3, 13) else "does not parse: line 1"
         self.assertTrue(note(b"class A[T: int = str]: pass\n").startswith(new))
 
+    def test_nesting_of_any_depth_is_noted_not_a_crash(self):
+        cases = [
+            (b"(" * n + b"!" + b")" * n, ": line 1 (Python: ") for n in (3, 1200, 10**5)
+        ]
+        cases += [(b"1+" * 200_000 + b"1", " (Python: RecursionError: ")]
+        cases += [(b"not " * 200_000 + b"1", " (Python: MemoryError: Parser stack")]
+        for middle, want in cases:  # the type of error Python raised is named
+            self.assertTrue(note(b"x = " + middle).startswith("does not parse" + want))
+
     def test_text_for_tree_sitter_uses_python_newlines_and_refuses_cr_coding_lines(
         self,
     ):
