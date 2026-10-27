@@ -48,9 +48,13 @@ def made(rand, ids, depth=0):
     out = {"id": rand.choice([bid] * 60 + [7, None])}
     if rand.random() < 0.3:
         out["labels"] = rand.choice(LABELS)
-    if depth and rand.random() < 0.3:  # an arrow from the box to itself
-        aid, ends = rand.choice([f"e{len(ids)}"] * 30 + [bid, 3]), [bid]
-        arrow = dict(id=aid, sources=ends, targets=ends, labels=rand.choice(LABELS))
+    if depth and rand.random() < 0.3:  # an arrow to a box made before, or a bad end
+        aid = rand.choice([f"e{len(ids)}"] * 30 + [bid, 3])
+        s, t = [
+            rand.choice([[rand.choice(ids)]] * 20 + [[], "a", [bid] * 2, [3], [aid]])
+            for _ in "st"
+        ]
+        arrow = dict(id=aid, sources=s, targets=t, labels=rand.choice(LABELS))
         out["edges"] = rand.choice([[arrow]] * 30 + [[arrow, "e"], {}])
     if rand.random() < 0.95 - depth * 0.3:
         kids = [made(rand, ids, depth + 1) for _ in range(rand.randint(not depth, 3))]
@@ -58,10 +62,20 @@ def made(rand, ids, depth=0):
     return out
 
 
+def items(plan):
+    """{id: mark} for each box under the root and each arrow, wherever it sits."""
+    found, todo = {}, [plan]
+    for at in todo:
+        todo += at.get("children", [])
+        for item in at.get("children", []) + at.get("edges", []):
+            found[item["id"]] = item.get("asbuilt", {}).get("mark")
+    return found
+
+
 class CompareTest(unittest.TestCase):
     def test_each_mark_and_where_built_and_dropped_boxes_sit(self):
         x = box("x", box("y"))
-        x["edges"] = [{"id": "e", "sources": ["y"], "targets": ["y"]}]  # arrows: later
+        x["edges"] = [{"id": "e", "sources": ["y"], "targets": ["y"]}]
         a, b = box("a", x), box("b", labels=["B"])
         planned = box("r", a, b, box("", box("m")))
         built = box("r", box("a", box("m")), box("b", labels=["B2"]), box("c"))
@@ -85,6 +99,58 @@ class CompareTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'box "x" was planned; built has'):
                 compare(planned, built)
             del at["edges"]
+
+    def test_each_arrow_mark_by_its_ends_and_first_label_and_dropped_ones_joined(self):
+        def arrow(aid, source, target, *texts):
+            labels = [{"text": x} for x in texts]
+            return dict(id=aid, sources=[source], targets=[target], labels=labels)
+
+        planned = box("r", box("a"), box("b"), box("c"))
+        built = box("r", box("a"), box("b", box("d")))
+        names = "same moved to from words gone new".split()
+        planned["edges"] = [arrow(n, "a", "b", "x", "y") for n in names[:5]]
+        planned["edges"] += [arrow("gone", "a", "c")]
+        built["children"][1]["edges"] = [
+            arrow("same", "a", "b", "x"),
+            arrow("moved", "a", "b", "x", ""),
+        ]
+        built["edges"] = [arrow("to", "a", "d", "x"), arrow("from", "b", "b", "x")]
+        built["edges"] += [arrow("words", "a", "b", "z"), arrow("new", "d", "a")]
+        before = copy.deepcopy((planned, built))
+        out = compare(planned, built)
+        self.assertEqual((planned, built), before)
+        marks = ["planned"] * 2 + ["changed"] * 3 + ["dropped", "added"]
+        self.assertEqual(
+            {k: v for k, v in items(out).items() if k in names}, dict(zip(names, marks))
+        )
+        self.assertEqual(
+            out["edges"][-1]["sources"] + out["edges"][-1]["targets"], ["a", "c"]
+        )
+        self.assertEqual(page_says([out]), [None])
+
+    def test_a_planned_arrow_whose_id_or_end_built_uses_for_a_box_or_its_top(self):
+        planned = box("p", box("a"), box("b"))
+        for aid, s, t, top in ["caat", "taat", "ebab", "eabb"]:  # each end on the top
+            planned["edges"] = [{"id": aid, "sources": [s], "targets": [t]}]
+            with self.assertRaisesRegex(ValueError, f'arrow "{aid}" was planned'):
+                compare(planned, box(top, box("c"), box("a")))
+
+    def test_generated_pairs_give_a_plan_the_page_takes_holding_both(self):
+        plans = [made(random.Random(n), []) for n in range(400)]
+        good = [plan for plan, says in zip(plans, page_says(plans)) if not says]
+        outs = [compare(planned, built) for planned, built in zip(good, good[1:])]
+        self.assertEqual(page_says(outs), [None] * len(outs))
+        for planned, built, out in zip(good, good[1:], outs):
+            old, new, got = items(planned), items(built), items(out)
+            self.assertEqual(got.keys(), (old.keys() | new.keys()) - {built["id"]})
+            for key, mark in got.items():
+                both = key in old and key in new
+                ok = (
+                    ["planned", "changed"]
+                    if both
+                    else ["added" if key in new else "dropped"]
+                )
+                self.assertIn(mark, ok, key)
 
     def test_only_what_the_page_draws_counts_as_a_change(self):
         same = [None, [], ["a"], ["a", ""], ["a", "", "x"]]
@@ -110,4 +176,4 @@ class CompareTest(unittest.TestCase):
         kinds = {
             says and re.sub('"[^"]*"', "", says.split(": ", 1)[1]) for says in page
         }
-        self.assertEqual(len(kinds), 10, kinds)  # each of the 9 refusals, and None
+        self.assertEqual(len(kinds), 14, kinds)  # each of the 13 refusals, and None
