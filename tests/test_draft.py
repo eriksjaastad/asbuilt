@@ -9,7 +9,7 @@ from test_compare import made, page_says
 
 BAD = [0, -1, "1", True, None, [], {}]  # sizes the page refuses
 STACK, EMPTY = "Maximum call stack size exceeded", "Unexpected end of JSON input"
-BROKEN = "Unexpected token 'w', \"{" + chr(10) + "\"id\":wat}\" is not valid JSON"
+BROKEN = "Unexpected token 'w', \"{" + chr(10) + '"id":wat}" is not valid JSON'
 SIZES = [{k: v} for k in ("width", "height") for v in BAD]
 
 
