@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from asbuilt.compare import check, compare, main
@@ -224,6 +225,47 @@ class CommandTest(unittest.TestCase):
             self.assertEqual((code, err.count("\n")), (2, 1), err)
             self.assertTrue(err.startswith(f"asbuilt.compare: {says}"), err)
             self.assertNotIn("out.json", files)
+
+    def test_a_samefile_permission_error_is_a_named_refusal(self):
+        good = box("r", box("a"))
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        planned = self.dir / "planned.json"
+        built = self.dir / "built.json"
+        out = self.dir / "out.json"
+        for path, plan in ((planned, good), (built, good)):
+            path.write_text(json.dumps(plan), encoding="utf-8")
+        out.write_text("{}", encoding="utf-8")
+        with mock.patch.object(
+            Path, "samefile", side_effect=PermissionError(13, "Permission denied")
+        ):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                code = main([str(planned), str(built), str(out)])
+        self.assertEqual((code, err.getvalue().count("\n")), (2, 1), err.getvalue())
+        self.assertTrue(
+            err.getvalue().startswith(
+                "asbuilt.compare: planned.json cannot be read: Permission denied"
+            ),
+            err.getvalue(),
+        )
+
+    def test_an_existing_out_stays_byte_identical_when_compare_refuses(self):
+        good = box("r", box("a"))
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        planned = self.dir / "planned.json"
+        built = self.dir / "built.json"
+        out = self.dir / "out.json"
+        planned.write_text(json.dumps(good), encoding="utf-8")
+        built.write_text("{", encoding="utf-8")  # not JSON: refuse after OUT exists
+        old = '{"id": "keep-me"}\n'
+        out.write_text(old, encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main([str(planned), str(built), str(out)])
+        self.assertEqual(code, 2)
+        self.assertEqual(err.getvalue().count("\n"), 1)
+        self.assertTrue(
+            err.getvalue().startswith("asbuilt.compare: built.json is not valid JSON")
+        )
+        self.assertEqual(out.read_text(encoding="utf-8"), old)
 
     def test_python_m_runs_it(self):
         src = str(Path(__file__).resolve().parents[1] / "src")

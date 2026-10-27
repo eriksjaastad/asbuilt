@@ -10,6 +10,7 @@ import json
 import sys
 from pathlib import Path
 
+from asbuilt import output
 from asbuilt.plan import parse, read_bytes
 from asbuilt.state import PlanError
 
@@ -139,7 +140,12 @@ def main(argv=None):
     try:
         plans = []
         for path, arg in [(args.planned, "PLANNED"), (args.built, "BUILT")]:
-            if args.out.exists() and path.exists() and args.out.samefile(path):
+            try:  # samefile raises when a path cannot be statted (PermissionError on 3.12)
+                same = args.out.exists() and path.exists() and args.out.samefile(path)
+            except OSError as exc:
+                why = exc.strerror or type(exc).__name__
+                raise PlanError(f"{path.name} cannot be read: {why}") from None
+            if same:
                 raise PlanError(f"{args.out.name}: OUT is {arg}; inputs are only read")
             plans.append(parse(read_bytes(path), path.name))
             check(plans[-1], path.name)
@@ -147,15 +153,9 @@ def main(argv=None):
             out = compare(*plans)
         except ValueError as exc:
             raise PlanError(f"{args.built.name}: {exc}") from None
-        text = json.dumps(out, ensure_ascii=False, indent=2) + "\n"
-        try:
-            args.out.write_text(text, encoding="utf-8")
-        except OSError as exc:
-            why = exc.strerror or type(exc).__name__
-            raise PlanError(f"{args.out.name} cannot be written: {why}") from None
+        output.write_atomic(args.out, output.plan_bytes(out, args.out.name))
     except PlanError as exc:
-        print(f"asbuilt.compare: {exc}", file=sys.stderr)
-        return 2
+        return output.fail("asbuilt.compare", exc)
     return 0
 
 
