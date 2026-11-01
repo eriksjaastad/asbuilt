@@ -8,6 +8,8 @@ const dir = new URL("../src/asbuilt/page/vendor/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, dir));
 const { files } = JSON.parse(read("manifest.json"));
 const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url))).packages;
+// Locked for the tests alone and never shipped to the page, so not vendored: the browser test's driver.
+const TEST_ONLY = ["playwright-core"];
 
 test("every vendored file is exactly the file the manifest names, by sha256", () => {
   for (const f of files) assert.equal(createHash("sha256").update(read(f.file)).digest("hex"), f.sha256, f.file);
@@ -21,11 +23,12 @@ test("the manifest names the version and tarball integrity that package-lock.jso
   }
 });
 
-test("nothing is vendored that the manifest does not list, and every locked package has its licence", () => {
+test("nothing is vendored that the manifest does not list, and every shipped package has its licence", () => {
   const found = readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => (e.parentPath.endsWith("licenses") ? "licenses/" : "") + e.name);
   assert.deepEqual(found.sort(), [...files.map((f) => f.file), "manifest.json"].sort());
   for (const key of Object.keys(lock).filter((k) => k)) {
     const name = key.slice("node_modules/".length);
+    if (TEST_ONLY.includes(name)) continue;
     assert.ok(files.some((f) => f.package === name && f.file.startsWith("licenses/")), name);
   }
 });

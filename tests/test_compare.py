@@ -98,8 +98,14 @@ class CompareTest(unittest.TestCase):
 
     def test_a_planned_id_that_built_uses_for_its_root_or_an_arrow(self):
         planned, built = box("p", box("b", box("x")), box("a")), box("b", box("a"))
-        out = compare(planned, built)
-        self.assertEqual((out["id"], tree(out)), ("b", "a:planned x:dropped"))
+        with self.assertRaisesRegex(
+            ValueError, 'box "b" was planned; built has it as its top'
+        ):
+            compare(planned, built)
+        planned = box(
+            "b", box("x"), box("a")
+        )  # the same top in both is the normal case
+        self.assertEqual(tree(compare(planned, built)), "a:planned x:dropped")
         for at in built, built["children"][0]:  # an arrow at the top, then in a box
             at["edges"] = [{"id": "x", "sources": ["a"], "targets": ["a"]}]
             with self.assertRaisesRegex(ValueError, 'box "x" was planned; built has'):
@@ -136,10 +142,22 @@ class CompareTest(unittest.TestCase):
 
     def test_a_planned_arrow_whose_id_or_end_built_uses_for_a_box_or_its_top(self):
         planned = box("p", box("a"), box("b"))
-        for aid, s, t, top in ["caat", "taat", "ebab", "eabb"]:  # each end on the top
+        for aid, s, t, top in [
+            "caat",
+            "taat",
+        ]:  # built uses its id for a box, then its top
             planned["edges"] = [{"id": aid, "sources": [s], "targets": [t]}]
             with self.assertRaisesRegex(ValueError, f'arrow "{aid}" was planned'):
                 compare(planned, box(top, box("c"), box("a")))
+        for s, t in [
+            "ab",
+            "ba",
+        ]:  # an end on built's top is a planned box built has as its top
+            planned["edges"] = [{"id": "e", "sources": [s], "targets": [t]}]
+            with self.assertRaisesRegex(
+                ValueError, 'box "b" was planned; built has it as its top'
+            ):
+                compare(planned, box("b", box("c"), box("a")))
 
     def test_generated_pairs_give_a_plan_the_page_takes_holding_both(self):
         plans = [made(random.Random(n), []) for n in range(400)]

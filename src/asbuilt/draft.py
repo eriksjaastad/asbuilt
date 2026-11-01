@@ -13,6 +13,8 @@ process.stdout.write(JSON.stringify(says));"""
 
 
 def page_takes(out, name, node=("node",), timeout=60):
+    """None when the page's prepare.js takes `out` (a drafted plan's text), else a PlanError naming `name`
+    with the page's own refusal, or why node could not check it."""
     try:
         run = [*node, "--input-type=module", "-e", PAGE]
         done = subprocess.run(run, input=out, capture_output=True, timeout=timeout)
@@ -21,7 +23,7 @@ def page_takes(out, name, node=("node",), timeout=60):
     except subprocess.TimeoutExpired:
         why = f"node gave no answer in {timeout} s"
     except OSError as e:
-        why = f"node cannot be started: {e.strerror}"
+        why = f"node cannot be started: {e.strerror or type(e).__name__}"
     else:
         try:
             says = 0 if done.returncode else json.loads(done.stdout)

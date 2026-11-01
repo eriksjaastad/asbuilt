@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import unittest
 
@@ -47,9 +49,11 @@ class StateTest(unittest.TestCase):
             PlanError(Hostile()),
         ):
             with self.subTest(error=repr(error.args)):
-                self.assertEqual(
-                    parsed(raising(error)), {"ok": False, "error": FALLBACK}
-                )
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(
+                        parsed(raising(error)), {"ok": False, "error": FALLBACK}
+                    )
+                self.assertIn("Traceback", err.getvalue())
 
     def test_numbers_json_cannot_hold_are_refused_in_one_place(self):
         for number in (float("nan"), float("inf"), float("-inf"), 1e400):

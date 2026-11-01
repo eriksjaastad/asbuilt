@@ -1,4 +1,6 @@
+import contextlib
 import json
+import traceback
 
 FALLBACK = "The plan could not be read."
 NOT_SENDABLE = "The plan could not be sent to the page. Look for NaN, Infinity or a number too large to hold."
@@ -24,8 +26,13 @@ def _message(source):
 
 
 def build(source):
-    """The one-line message for the page. Never raises; only a PlanError's text is shown, anything else gets FALLBACK."""
+    """The one-line message for the page. Never raises; only a PlanError's text is shown, anything else gets FALLBACK
+    on the page and its traceback in the terminal, so the cause of a bug is not lost."""
     try:
         return _message(source)
     except Exception:
+        with contextlib.suppress(
+            Exception
+        ):  # a closed stderr must not stop the page getting its message
+            traceback.print_exc()
         return _error(FALLBACK)

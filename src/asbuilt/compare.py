@@ -1,9 +1,10 @@
-"""One plan from two ELK plans: each box and arrow marked "planned" (the page draws it the same
-in both), "changed" (in both, drawn differently), "added" (only built) or "dropped" (only planned),
+"""One plan from two ELK plans: each box and arrow marked "planned" (the same parent, label and
+note, or the same ends and label, in both), "changed" (in both, one of those differs), "added" (only built) or "dropped" (only planned),
 with an empty "why". Built's keep their place; a dropped box goes under its planned parent, a
 dropped arrow on the top box, joining its planned ends.
 
-python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT for `asbuilt OUT` to draw."""
+python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT. The page does not draw the
+marks yet: `asbuilt OUT` shows dropped boxes and arrows as if built."""
 
 import argparse
 import json
@@ -144,16 +145,18 @@ def compare(planned, built):
         if "edges" in box:
             box["edges"] = [_marked(a, _mark(a["id"], was, now)) for a in box["edges"]]
     for bid, (parent, *_, box) in old.items():
-        if bid not in new and bid != built["id"]:  # the root is in built, unmarked
+        if bid not in new:
+            if (
+                bid == built["id"]
+            ):  # dropping it would leave it unmarked and move its children
+                raise ValueError(f'box "{bid}" was planned; built has it as its top')
             if bid in now:  # prepare.js refuses an id used twice
                 raise ValueError(f'box "{bid}" was planned; built has an arrow "{bid}"')
             put(bid, parent, {k: v for k, v in box.items() if k != "edges"}, "dropped")
-    for aid, (source, target, _, arrow) in was.items():
+    for aid, (*_, arrow) in was.items():
         if aid not in now:  # its ends are built boxes or dropped ones put back
             if aid in new or aid == built["id"]:
                 raise ValueError(f'arrow "{aid}" was planned; built has a box "{aid}"')
-            if built["id"] in (source, target):  # prepare.js refuses the top as an end
-                raise ValueError(f'arrow "{aid}" was planned to end on built\'s top')
             root.setdefault("edges", []).append(_marked(arrow, "dropped"))
     return root
 
