@@ -13,6 +13,26 @@ original plans. As-Built does the same for code:
 3. **Walkthrough (later version).** Follow the path data takes through the program, with the
    lines it passes through highlighted.
 
-Status: planning. No code yet.
+Status: the first view works. `asbuilt` draws a plan file as a hand-inked flowchart in your
+browser and redraws it each time you save the file. An agent drafting the plan and the as-built
+comparison come later.
 
-Open source, runs locally.
+## Use it
+
+You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). You don't need Node: the page's
+libraries are included, and package.json is only for running its tests.
+
+```
+git clone https://github.com/eriksjaastad/asbuilt
+cd asbuilt
+uv run asbuilt --help
+```
+
+The help ends with an example plan. Save it as `plan.json`, then run:
+
+```
+uv run asbuilt plan.json
+```
+
+Open the address it prints. Each time you save `plan.json` the page redraws. `--help` says the
+rest: the defaults, what the page does when the file is broken, and the plan format.
