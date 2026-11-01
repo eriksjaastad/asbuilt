@@ -3,7 +3,9 @@ import tokenize
 import sys
 import unittest
 import warnings
+from pathlib import Path
 
+import asbuilt
 from asbuilt.built import _text, python_file
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
@@ -37,6 +39,13 @@ class PythonFileTest(unittest.TestCase):
         sources += [b"x = " + b"1+" * 3000 + b"1"]  # deep, and still read
         for source in sources:
             self.assertEqual(note(source), "", source)
+
+    def test_as_builts_own_files_each_get_a_box_with_no_note(self):
+        # As-Built's own repo is its first test project (PRD): its real files, not generated ones.
+        files = sorted(Path(asbuilt.__file__).parent.rglob("*.py"))
+        self.assertGreater(len(files), 10)
+        for path in files:
+            self.assertEqual(note(path.read_bytes(), path.name), "", path)
 
     def test_code_python_rejects_is_noted_with_pythons_reason_and_line(self):
         cases = [  # the start of each note, as Python's words differ by version
