@@ -13,7 +13,7 @@ export const ARROW_ROOM = { "elk.spacing.portPort": "24", "elk.layered.spacing.e
 const PADDING_NOTE = "[top=54,left=14,bottom=14,right=14]"; // and the note under it, written 40 px down
 const CHAR = 8; // about the width of a character of the 13px monospace label
 const NOTE_CHAR = 7; // and of the 11px note
-// A box's note: its second label's text, drawn under the first in smaller type (D-013). "" when there is none.
+// A box's note: its second label's text, drawn under the first in smaller type. "" when there is none.
 export const noteOf = (box) => box.labels?.[1]?.text ?? "";
 // Labels, when given, are a list of {"text": "..."}. Other shapes lose their words without a message (a box is drawn
 // under its id, an arrow with no label, a bare-string note is dropped) or make ELK fail naming nothing, so check()

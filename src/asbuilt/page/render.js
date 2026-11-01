@@ -1,5 +1,5 @@
 // One message from the server becomes what the page shows: the chart, or an error panel. It never throws, so a
-// bad message can never leave the page blank (D-012). ELK and rough come in as arguments.
+// bad message can never leave the page blank. ELK and rough come in as arguments.
 import { draw } from "./draw.js";
 import { layout } from "./layout.js";
 import { esc } from "./shapes.js";
@@ -9,7 +9,7 @@ export const panel = (text) => `${ERROR}${esc(text)}</pre>`;
 const NOTE = "Out of date: this is the last good chart, from before the error above.";
 
 // What render made becomes what the page shows. An error keeps the last good chart under its panel, dimmed and
-// marked out of date, so a typo mid-edit does not blank the chart (D-016). With no good chart yet, only the panel.
+// marked out of date, so a typo mid-edit does not blank the chart. With no good chart yet, only the panel.
 export function keepLastGood() {
   let good = "";
   return (html) => {

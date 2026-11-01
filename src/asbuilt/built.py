@@ -1,6 +1,6 @@
 """As-built chart: the code, read into the ELK JSON the page draws. So far one Python file as a
-box, with a note when Python does not accept it (D-012): Python's own compile, never run, decides
-what is valid; tree-sitter (PRD) reads only UTF-8 files, and the definitions come next."""
+box, with a note when Python does not accept it: Python's own compile, never run, decides
+what is valid; tree-sitter reads only UTF-8 files, and the definitions come next."""
 
 import tokenize
 import warnings

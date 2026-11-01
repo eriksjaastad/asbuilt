@@ -1,4 +1,4 @@
-"""The one place As-Built runs a model (D-017): the installed Claude Code CLI, so it is swapped here."""
+"""The one place As-Built runs a model: the installed Claude Code CLI, so it is swapped here."""
 
 import json
 import os

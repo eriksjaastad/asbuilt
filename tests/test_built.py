@@ -41,7 +41,7 @@ class PythonFileTest(unittest.TestCase):
             self.assertEqual(note(source), "", source)
 
     def test_as_builts_own_files_each_get_a_box_with_no_note(self):
-        # As-Built's own repo is its first test project (PRD): its real files, not generated ones.
+        # As-Built's own repo is its first test project: its real files, not generated ones.
         files = sorted(Path(asbuilt.__file__).parent.rglob("*.py"))
         self.assertGreater(len(files), 10)
         for path in files:

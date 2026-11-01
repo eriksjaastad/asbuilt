@@ -1,4 +1,4 @@
-"""The plan as the model drafts it (PRD goal 1, D-017): untrusted, taken only if prepare.js takes it."""
+"""The plan as the model drafts it: untrusted, taken only if prepare.js takes it."""
 
 import json
 import subprocess
