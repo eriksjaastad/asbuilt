@@ -15,8 +15,9 @@ const plan = (ids) => JSON.stringify({
 });
 
 // Resolves with the page address once asbuilt prints it; rejects if asbuilt exits first.
-function serve(file) {
-  const run = spawn("uv", ["run", "-q", "asbuilt", file, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"] });
+// The test's signal kills it at the test's deadline: a timed-out test is marked failed but keeps running.
+function serve(file, signal) {
+  const run = spawn("uv", ["run", "-q", "asbuilt", file, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], signal });
   const address = new Promise((resolve, reject) => {
     let out = "", err = "";
     run.stdout.on("data", (part) => {
@@ -31,13 +32,13 @@ function serve(file) {
   return { run, address };
 }
 
-// The timeout bounds every wait, including a server that never prints its address; finally stops the server
-// and the browser whatever fails, so a missing browser fails the run instead of hanging it.
-test("a save redraws the page, a broken save keeps the last good chart dimmed, and a fix brings it back", { timeout: 60_000 }, async () => {
+// At the timeout the server is killed, so a server that never prints its address fails the run; Playwright's waits
+// end on their own timeouts. finally stops the server and the browser whatever fails.
+test("a save redraws the page, a broken save keeps the last good chart dimmed, and a fix brings it back", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
   const file = join(dir, "plan.json");
   writeFileSync(file, plan(["read", "draw"]));
-  const { run, address } = serve(file);
+  const { run, address } = serve(file, t.signal);
   address.catch(() => {}); // awaited below; once the server is stopped, its exit is not a second failure
   let browser;
   try {
