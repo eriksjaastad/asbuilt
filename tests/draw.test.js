@@ -91,3 +91,13 @@ test("each mark draws its hue, dash, fade and tag on a box, its wash and an arro
   }
   assert.deepEqual(new Set(Object.values(MARKS).map((c) => c.dash + c.tag)).size, 3); // never colour alone
 });
+
+test("a chart with a mark gets a legend row under it, wide enough for its four entries, with each mark's dash and hue", () => {
+  const svg = draw({ width: 60, height: 80, boxes: [{ ...one("b"), mark: "dropped" }], arrows: [] }, rough.generator());
+  assert.match(svg, /viewBox="0 0 500 134" width="500" height="134"/);
+  const rows = [...svg.matchAll(/<line x1="(\d+)" y1="97" x2="\d+" y2="97" stroke="([^"]*)" stroke-width="2"([^/]*)\/><text [^>]*>([^<]*)<\/text>/g)].map((m) => m.slice(1));
+  const cues = [["10", "#2F2E2C", "", "as planned"], ...Object.values(MARKS).map((c, i) => [String(130 + 120 * i), c.hue, (c.dash ? ` stroke-dasharray="${c.dash}"` : "") + (c.fade < 1 ? ` opacity="${c.fade}"` : ""), c.tag])];
+  assert.deepEqual(rows, cues);
+  assert.ok(svg.indexOf("<line") > svg.lastIndexOf("data-box"));
+  assert.doesNotMatch(draw(laid, rough.generator()), /<line/);
+});
