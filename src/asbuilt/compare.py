@@ -3,8 +3,8 @@ note, or the same ends and label, in both), "changed" (in both, one of those dif
 with an empty "why". Built's keep their place; a dropped box goes under its planned parent, a
 dropped arrow on the top box, joining its planned ends.
 
-python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT. The page does not draw the
-marks yet: `asbuilt OUT` shows dropped boxes and arrows as if built."""
+python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT, and `asbuilt OUT` draws each
+mark with its tag, dash and hue (MARKS in page/shapes.js)."""
 
 import argparse
 import json

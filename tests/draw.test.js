@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import rough from "roughjs/bundled/rough.esm.js";
 import { draw } from "../src/asbuilt/page/draw.js";
+import { MARKS } from "../src/asbuilt/page/shapes.js";
 import { decode, escaped, evils, laid, pieces } from "./helpers.js";
 
 const one = (id) => ({ id, x: 0, y: 0, w: 50, h: 20, level: 1, label: id });
@@ -64,4 +66,28 @@ test("an arrow's label is drawn where layout put it in the note's type, escaped;
   const texts = [...svg.matchAll(/<text x="([^"]*)" y="([^"]*)"[^>]*font-size="(\d+)"[^>]*>(.*?)<\/text>/g)].map((m) => m.slice(1));
   assert.deepEqual(texts.map(([x, y, size, t]) => [x, y, size, decode(t)]), [["24", "18", "11", evil]]);
   assert.match(texts[0][3], escaped);
+});
+
+test("an unmarked plan draws byte for byte as before marks existed, and so do planned and unknown marks", () => {
+  const svg = draw(laid, rough.generator());
+  assert.equal(createHash("sha256").update(svg).digest("hex"), "ec9a518dc03484b458c305a4b9b196f2d3e82e1cbd45b7dd260fd5dbd30bd15e");
+  for (const mark of ["planned", "bogus", "constructor", "toString", 7, null]) {
+    const marked = { ...laid, boxes: laid.boxes.map((b) => ({ ...b, mark })), arrows: laid.arrows.map((a) => ({ ...a, mark })) };
+    assert.equal(draw(marked, rough.generator()), svg, String(mark));
+  }
+});
+
+test("each mark draws its hue, dash, fade and tag on a box, its wash and an arrow; the tag is escaped text", () => {
+  for (const [mark, cue] of Object.entries(MARKS)) {
+    const box = { ...one("b"), x: 10, y: 30, mark };
+    const line = { id: "e", points: [[0, 0], [0, 40], [20, 40]], mark };
+    const svg = draw({ width: 60, height: 80, boxes: [box], arrows: [line] }, rough.generator());
+    const attrs = (cue.dash ? ` stroke-dasharray="${cue.dash}"` : "") + (cue.fade < 1 ? ` opacity="${cue.fade}"` : "");
+    for (const g of ["box", "wash", "arrow"]) assert.ok(svg.includes(`<g data-${g}="${g === "arrow" ? "e" : "b"}"${attrs}>`), `${mark} ${g}`);
+    const strokes = (g) => [...svg.match(new RegExp(`<g data-${g}=[^>]*>(.*?)</g>`))[1].matchAll(/stroke="([^"]*)"/g)].map((m) => m[1]);
+    for (const g of ["box", "arrow"]) assert.deepEqual([...new Set(strokes(g))], [cue.hue], `${mark} ${g}`);
+    const tags = [...svg.matchAll(/<text x="([^"]*)" y="([^"]*)" text-anchor="(\w+)"[^>]*font-size="10" fill="([^"]*)"[^>]*>(.*?)<\/text>/g)].map((m) => m.slice(1));
+    assert.deepEqual(tags, [["60", "25", "end", cue.hue, cue.tag], ["16", "44", "start", cue.hue, cue.tag]], mark);
+  }
+  assert.deepEqual(new Set(Object.values(MARKS).map((c) => c.dash + c.tag)).size, 3); // never colour alone
 });
