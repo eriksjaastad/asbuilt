@@ -152,3 +152,12 @@ test("generated labels on a box, a group and an arrow: drawn with their words, o
   }
   assert.equal((await layout({ id: "r", children: [{ ...leaf("a"), labels: [] }] }, elk)).boxes[0].label, "a");
 });
+
+test("the mark compare writes on a box or an arrow comes through ELK; an item without one gets no mark key", async () => {
+  const m = (item, mark) => ({ ...item, asbuilt: { mark, why: "" } });
+  const plan = { id: "r", children: [{ id: "g", children: [m(leaf("a"), "dropped"), leaf("b")] }, m(leaf("c"), "added")], edges: [m(arrow("e", "a", "b"), "changed"), arrow("f", "b", "c")] };
+  const laid = await layout(plan, elk);
+  assert.deepEqual(laid.boxes.map((b) => [b.id, b.mark]), [["g", undefined], ["a", "dropped"], ["b", undefined], ["c", "added"]]);
+  assert.deepEqual(laid.arrows.map((a) => [a.id, a.mark]), [["e", "changed"], ["f", undefined]]);
+  assert.ok([...laid.boxes, ...laid.arrows].filter((x) => ["g", "b", "f"].includes(x.id)).every((x) => !("mark" in x)));
+});
