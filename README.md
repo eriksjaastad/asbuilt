@@ -14,8 +14,8 @@ original plans. As-Built does the same for code:
    lines it passes through highlighted.
 
 Status: the first view works. `asbuilt` draws a plan file as a hand-inked flowchart in your
-browser and redraws it each time you save the file. An agent drafting the plan and the as-built
-comparison come later.
+browser and redraws it each time you save the file, and it can draw a planned chart and a built one
+as one chart, marked. An agent drafting the plan and the note on why each part changed come later.
 
 ## Use it
 
@@ -36,3 +36,13 @@ uv run asbuilt plan.json
 
 Open the address it prints. Each time you save `plan.json` the page redraws. `--help` says the
 rest: the defaults, what the page does when the file is broken, and the plan format.
+
+## Compare a plan with what was built
+
+```
+uv run python -m asbuilt.compare planned.json built.json compared.json
+uv run asbuilt compared.json
+```
+
+The chart is the built one, with each box and arrow that differs from the plan tagged "new",
+"changed" (dotted) or "dropped" (faded and dashed, where the plan had it), and a legend under it.

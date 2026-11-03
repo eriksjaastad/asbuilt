@@ -4,9 +4,9 @@
 // only: where each box sits is up to layout.js. Labels, a box's note under its label and an arrow's label beside
 // it are plain escaped text, drawn last and crisp, each on a paper-coloured halo so an arrow under one cannot hide it.
 // A marked box or arrow (see MARKS in shapes.js) takes its mark's hue, dash and fade, and its tag: a box's above
-// its top right corner, an arrow's beside the middle of its line.
+// its top right corner, an arrow's beside the middle of its line. A chart with any of them gets a legend row under it.
 import { arrows } from "./arrows.js";
-import { cued, cueOf, drawn, esc, INK, seedOf } from "./shapes.js";
+import { cued, cueOf, drawn, esc, INK, MARKS, seedOf } from "./shapes.js";
 
 const WASH = "rgba(170,158,135,0.20)";
 const PAPER = "#F9F5EB"; // the page background in index.html
@@ -15,8 +15,18 @@ const filter = (id, freq, scale, seed, w, h) =>
   `<feTurbulence type="fractalNoise" baseFrequency="${freq}" numOctaves="2" seed="${seed}" result="n"/>` +
   `<feDisplacementMap in="SourceGraphic" in2="n" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/></filter>`;
 
+const LEGEND = 34; // the legend row's height, under the chart
+const legend = (y) =>
+  [["as planned", { hue: INK, dash: "", fade: 1 }], ...Object.values(MARKS).map((c) => [c.tag, c])].map(([word, c], i) => {
+    const x = 10 + 120 * i;
+    return `<line x1="${x}" y1="${y}" x2="${x + 28}" y2="${y}" stroke="${c.hue}" stroke-width="2"${cued(c)}/>` +
+      `<text x="${x + 34}" y="${y + 4}" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="${c.hue}">${word}</text>`;
+  }).join("");
+
 export function draw(laid, gen) {
-  const { width: w, height: h } = laid;
+  const marked = [...laid.boxes, ...laid.arrows].some((x) => cueOf(x.mark));
+  const w = marked ? Math.max(laid.width, 120 * 4) : laid.width; // wide enough for the legend's four entries
+  const h = laid.height + (marked ? LEGEND : 0);
   const washes = laid.boxes.map((b) => {
     const o = { fill: WASH, fillStyle: "solid", stroke: "none", roughness: 2.4, seed: seedOf(b.id) };
     return `<g data-wash="${esc(b.id)}"${cued(cueOf(b.mark))}>${drawn(gen, gen.rectangle(b.x - 4, b.y + 3, b.w + 6, b.h + 2, o))}</g>`;
@@ -40,6 +50,7 @@ export function draw(laid, gen) {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w + 20} ${h + 20}" width="${w + 20}" height="${h + 20}">` +
     `<defs>${filter("wash", 0.035, 12, 7, w, h)}${filter("ink", 0.08, 2.2, 3, w, h)}</defs>` +
-    `<g filter="url(#wash)">${washes.join("")}</g><g filter="url(#ink)">${inks.join("")}${arrows(laid.arrows, gen)}</g>${labels.join("")}</svg>`
+    `<g filter="url(#wash)">${washes.join("")}</g><g filter="url(#ink)">${inks.join("")}${arrows(laid.arrows, gen)}</g>${labels.join("")}` +
+    `${marked ? legend(laid.height + LEGEND / 2) : ""}</svg>`
   );
 }
