@@ -1,6 +1,7 @@
 // The page as a person sees it, in a real browser: the asbuilt command serves a plan, a save redraws it, a broken
 // save shows the error over the last good chart, dimmed, and fixing the file brings the chart back.
 // Only this test runs main.js, EventSource and the DOM; the others test the page's modules as functions.
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,6 +66,31 @@ test("a save redraws the page, a broken save keeps the last good chart dimmed, a
   } finally {
     await browser?.close();
     run.kill();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("no chart scrolls sideways: not a wide plan on a laptop, and not a box too wide to fold in a small window", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, plan(Array.from({ length: 14 }, (_, i) => `box${i}`)));
+  const { run, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("svg").waitFor();
+    const sideways = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert.equal(await sideways(), 0);
+    writeFileSync(file, plan(["x".repeat(300), "draw"]));
+    await page.locator("text=draw").waitFor();
+    await page.setViewportSize({ width: 800, height: 600 });
+    assert.equal(await sideways(), 0);
+  } finally {
+    run.kill();
+    await browser?.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

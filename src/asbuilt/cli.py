@@ -21,8 +21,9 @@ The plan is ELK JSON (eclipse.org/elk, "JSON format"): boxes inside boxes, and
 arrows between them. A box shows its first label; a second label, if any, is
 drawn under it in smaller type, for a short note on what the box does. Point
 each arrow the way the work goes, from the step that runs first to the one
-after it: the chart reads top to bottom along the arrows. An arrow's label is
-drawn beside it, for what starts that step (a schedule, a click on a link).
+after it: the chart reads top to bottom along the arrows, and it is never wider
+than a laptop screen (1440 px): a plan too wide for that grows downward. An
+arrow's label is drawn beside it, for what starts that step (a schedule, a click on a link).
 For example:
 
   {"id": "root",

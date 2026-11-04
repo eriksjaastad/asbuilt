@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ELK from "elkjs/lib/elk.bundled.js";
-import { layout } from "../src/asbuilt/page/layout.js";
+import { layout, MAX_WIDTH } from "../src/asbuilt/page/layout.js";
 import { arrow, big, leaf } from "./plans.js";
 
 const elk = new ELK();
@@ -160,4 +160,59 @@ test("the mark compare writes on a box or an arrow comes through ELK; an item wi
   assert.deepEqual(laid.boxes.map((b) => [b.id, b.mark]), [["g", undefined], ["a", "dropped"], ["b", undefined], ["c", "added"]]);
   assert.deepEqual(laid.arrows.map((a) => [a.id, a.mark]), [["e", "changed"], ["f", undefined]]);
   assert.ok([...laid.boxes, ...laid.arrows].filter((x) => ["g", "b", "f"].includes(x.id)).every((x) => !("mark" in x)));
+});
+
+const counted = () => {
+  const counter = { runs: 0, layout: (graph) => (counter.runs++, elk.layout(graph)) };
+  return counter;
+};
+const boxes = (name, n) => Array.from({ length: n }, (_, i) => ({ ...leaf(`${name}${i}`), width: 190, height: 70 }));
+
+test("a row too wide for a laptop folds down a layer, and the hidden arrows that fold it are not drawn", async () => {
+  const plan = { id: "root", children: boxes("b", 14), edges: [arrow("e", "b0", "b13")] };
+  const laid = await layout(plan, elk);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assert.ok(new Set(laid.boxes.map((b) => b.y)).size > 1, "more than one row");
+  assertSound(plan, laid, 14, 1);
+});
+
+test("parts wide on their own, and parts ELK would set corner to corner, stay inside the width", async () => {
+  const part = (id, n) => ({ id, labels: [{ text: id }], children: boxes(id, n) });
+  const plan = { id: "root", children: [part("p", 9), { ...part("q", 3), children: [...boxes("q", 3), part("r", 10)] }, part("s", 8)], edges: [arrow("e1", "p8", "q0"), arrow("e2", "q2", "s7"), arrow("e3", "r9", "s0")] };
+  const laid = await layout(plan, elk);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assertSound(plan, laid, 34, 3);
+});
+
+test("a chart that fits is laid out once, as it always was", async () => {
+  const elk1 = counted();
+  await layout(big, elk1);
+  assert.equal(elk1.runs, 1);
+});
+
+test("one box too wide to fold gives up after a bounded number of layouts and still comes back whole", async () => {
+  const plan = { id: "root", children: [leaf("x".repeat(400)), ...boxes("b", 3)] };
+  const elk1 = counted();
+  assertSound(plan, await layout(plan, elk1), 4, 0);
+  assert.ok(elk1.runs <= 41, `${elk1.runs} layouts`);
+});
+
+test("a chart with every row inside the width, made too wide by arrows running past its boxes, still fits", async () => {
+  // Found by search: 31 arrows, each four digits: part, box, then part, box.
+  const links = "0030 2030 2042 0014 0215 3541 2432 1242 0411 2430 1141 1330 0210 3540 2034 2230 2032 2430 2545 1142 0415 3542 2032 2131 1031 3440 2343 0413 3145 3543 3142".split(" ");
+  const parts = [6, 6, 6, 6, 6].map((n, i) => ({ id: `p${i}`, labels: [{ text: `p${i}` }], children: boxes(`p${i}b`, n) }));
+  const edges = [...links.map(([a, b, c, d], i) => arrow(`l${i}`, `p${a}b${b}`, `p${c}b${d}`))];
+  const laid = await layout({ id: "root", children: [{ id: "all", labels: [{ text: "all" }], children: parts }, { id: "top", width: 190, height: 70 }], edges: [...edges, arrow("te", "top", "p0b0")] }, elk);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+});
+
+test("a chart too wide is centred at every level, not only at the top", async () => {
+  const seen = [];
+  const part = (id, kids) => ({ id, labels: [{ text: id }], children: kids });
+  const plan = { id: "root", children: [part("p", [part("q", boxes("q", 9))]), ...boxes("b", 6)] };
+  await layout(plan, { layout: (graph) => (seen.push(structuredClone(graph)), elk.layout(graph)) });
+  const placement = (box) => box.layoutOptions["elk.layered.nodePlacement.strategy"];
+  assert.ok(seen.length > 1);
+  assert.equal(placement(seen[1].children[0]), "SIMPLE");
+  assert.equal(placement(seen[1].children[0].children[0]), "SIMPLE");
 });
