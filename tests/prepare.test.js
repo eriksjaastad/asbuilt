@@ -99,3 +99,11 @@ test("an arrow's first label gets a size, so ELK makes room for it; a label with
   const { edges } = prepare(two({ edges: [labelled("e", [{ text: "daily 😀" }, { text: "x" }]), labelled("f", [{ text: "" }]), arrow("g", "a", "b")] }));
   assert.deepEqual(edges.map((e) => e.labels), [[{ text: "daily 😀", width: 7 * 7 + 8, height: 16 }], undefined, undefined]);
 });
+
+test("an arrow from a box to one it holds, at any depth, is refused, naming the arrow; one from a box inside out is not", () => {
+  const plan = (from, to) => ({ id: "r", children: [{ id: "g", children: [{ id: "h", children: [{ id: "a" }] }, { id: "b" }] }], edges: [{ id: "e", sources: [from], targets: [to] }] });
+  assert.throws(() => prepare(plan("g", "b")), /arrow "e": runs from "g" to "b", which it holds/);
+  assert.throws(() => prepare(plan("g", "a")), /arrow "e": runs from "g" to "a", which it holds/);
+  assert.doesNotThrow(() => prepare(plan("b", "g")));
+  assert.doesNotThrow(() => prepare(plan("b", "a")));
+});

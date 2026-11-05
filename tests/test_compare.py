@@ -200,7 +200,7 @@ class CompareTest(unittest.TestCase):
         kinds = {
             says and re.sub('"[^"]*"', "", says.split(": ", 1)[1]) for says in page
         }
-        self.assertEqual(len(kinds), 14, kinds)  # each of the 13 refusals, and None
+        self.assertEqual(len(kinds), 15, kinds)  # each of the 14 refusals, and None
 
 
 class CommandTest(unittest.TestCase):
