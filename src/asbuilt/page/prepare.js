@@ -60,6 +60,10 @@ export function prepare(plan) {
   // itself, and the arrow would then be drawn loose or not at all.
   const boxes = new Set(ids);
   [root, ...arrows].forEach((x) => boxes.delete(x.id));
+  const parents = new Map();
+  const walk = (box) => box.children?.forEach((kid) => (parents.set(kid.id, box.id), walk(kid)));
+  walk(root);
+  const holds = (box, id) => parents.has(id) && (parents.get(id) === box || holds(box, parents.get(id)));
   // Each refusal names the end and the id, so a box renamed in the plan but not in its arrows is found at once.
   for (const a of arrows) {
     const where = `arrow ${JSON.stringify(a.id)}`;
@@ -68,6 +72,9 @@ export function prepare(plan) {
       if (!Array.isArray(ends) || ends.length !== 1) fail(where, `${key} must be a list of one box id`);
       if (!boxes.has(ends[0])) fail(where, `${end} ${JSON.stringify(ends[0])} is not a box in the plan`);
     }
+    // ELK starts such an arrow on the box's top edge and runs it through the box's title.
+    const [from, to] = [a.sources[0], a.targets[0]];
+    if (holds(from, to)) fail(where, `runs from ${JSON.stringify(from)} to ${JSON.stringify(to)}, which it holds: start it from a box inside ${JSON.stringify(from)}`);
     // An arrow's first label is drawn beside it in the note's type; ELK makes room for a label only when it has a size.
     const text = a.labels?.[0]?.text ?? "";
     if (text) a.labels = [{ text, width: NOTE_CHAR * [...text].length + 8, height: 16 }];

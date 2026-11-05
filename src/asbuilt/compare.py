@@ -81,6 +81,7 @@ def check(plan, name):
     if not plan.get("children"):  # prepare.js takes "children": [] as a leaf
         raise PlanError(f"{name}: plan: has no boxes")
     boxes = ids - {plan["id"]} - {a["id"] for a in arrows}  # what an arrow may join
+    shown = _shown(plan)
     for a in arrows:
         for key, end in [("sources", "source"), ("targets", "target")]:
             ends, at = a.get(key), f"{name}: arrow {_q(a['id'])}"
@@ -88,7 +89,21 @@ def check(plan, name):
                 raise PlanError(f"{at}: {key} must be a list of one box id")
             if not isinstance(ends[0], str) or ends[0] not in boxes:
                 raise PlanError(f"{at}: {end} {_q(ends[0])} is not a box in the plan")
+        source, target = a["sources"][0], a["targets"][0]
+        if _holds(shown, source, target):
+            raise PlanError(
+                f"{at}: runs from {_q(source)} to {_q(target)}, which it holds: "
+                f"start it from a box inside {_q(source)}"
+            )
     _refuse_unwritable(plan, name)
+
+
+def _holds(shown, box, inner):
+    """Whether `box` holds `inner` at any depth; `shown` is _shown's."""
+    at = shown[inner][0]
+    while at is not None and at != box:
+        at = shown[at][0]
+    return at == box
 
 
 def _shown(plan):
