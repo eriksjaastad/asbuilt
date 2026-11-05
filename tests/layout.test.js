@@ -194,7 +194,7 @@ test("one box too wide to fold gives up after a bounded number of layouts and st
   const plan = { id: "root", children: [leaf("x".repeat(400)), ...boxes("b", 3)] };
   const elk1 = counted();
   assertSound(plan, await layout(plan, elk1), 4, 0);
-  assert.ok(elk1.runs <= 41, `${elk1.runs} layouts`);
+  assert.ok(elk1.runs <= 81, `${elk1.runs} layouts`);
 });
 
 test("a chart with every row inside the width, made too wide by arrows running past its boxes, still fits", async () => {
@@ -206,13 +206,43 @@ test("a chart with every row inside the width, made too wide by arrows running p
   assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
 });
 
-test("a chart too wide is centred at every level, not only at the top", async () => {
+const part = (id, kids) => ({ id, labels: [{ text: id }], children: kids });
+const placement = (box) => box.layoutOptions["elk.layered.nodePlacement.strategy"];
+
+test("a chart too wide keeps arrows straight at every level, not only at the top", async () => {
   const seen = [];
-  const part = (id, kids) => ({ id, labels: [{ text: id }], children: kids });
   const plan = { id: "root", children: [part("p", [part("q", boxes("q", 9))]), ...boxes("b", 6)] };
   await layout(plan, { layout: (graph) => (seen.push(structuredClone(graph)), elk.layout(graph)) });
-  const placement = (box) => box.layoutOptions["elk.layered.nodePlacement.strategy"];
   assert.ok(seen.length > 1);
-  assert.equal(placement(seen[1].children[0]), "SIMPLE");
-  assert.equal(placement(seen[1].children[0].children[0]), "SIMPLE");
+  for (const box of [seen[1], seen[1].children[0], seen[1].children[0].children[0]]) {
+    assert.equal(placement(box), "NETWORK_SIMPLEX");
+    assert.equal(box.layoutOptions["elk.layered.thoroughness"], "60");
+  }
+});
+
+test("a long arrow past rows folded in its way runs without swinging from side to side", async () => {
+  const rows = ["p", "q", "r", "s"].map((id) => part(id, boxes(id, 9)));
+  const edges = rows.slice(1).flatMap((r, i) => [arrow(`a${i}`, `${rows[i].id}0`, `${r.id}0`), arrow(`b${i}`, `${rows[i].id}8`, `${r.id}8`)]);
+  const laid = await layout({ id: "root", children: [...rows, ...boxes("t", 2)], edges: [...edges, arrow("long", "t0", "s4"), arrow("long2", "t1", "s5")] }, elk);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  const swing = (a) => a.points.slice(1).reduce((sum, p, i) => sum + Math.abs(p[0] - a.points[i][0]), 0) - Math.abs(a.points.at(-1)[0] - a.points[0][0]);
+  for (const a of laid.arrows) assert.ok(swing(a) < 400, `${a.id} swings ${swing(a)} px`);
+});
+
+test("a chart the straight layout cannot fit starts again centred, without the hidden arrows it tried", async () => {
+  const seen = [];
+  const wideWhileStraight = {
+    layout: async (graph) => {
+      seen.push(structuredClone(graph));
+      const out = await elk.layout(graph);
+      return placement(graph) === "NETWORK_SIMPLEX" && seen.length > 1 ? { ...out, width: MAX_WIDTH + 1 } : out;
+    },
+  };
+  const plan = { id: "root", children: boxes("b", 14) };
+  const laid = await layout(plan, wideWhileStraight);
+  const first = seen.findIndex((g) => placement(g) === "SIMPLE");
+  assert.ok(first > 1, "tried the straight layout first");
+  assert.equal(seen[first].edges.length, 0);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assertSound(plan, laid, 14, 0);
 });
