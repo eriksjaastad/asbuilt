@@ -17,7 +17,7 @@ const OPTIONS = {
 export const MAX_WIDTH = 1420;
 const NESTED = 28; // a box's padding, left and right, taken from the room inside it
 const MAX_LAYOUTS = 40;
-const [ROOM_STEP, MIN_ROOM] = [50, 600];
+const [ROOM_STEP, MIN_ROOM] = [100, 300];
 
 // The hidden arrows that push what runs past `room` down a layer. ELK has no limit on width, and unjoined boxes share a
 // layer however many there are. Goes deepest first, since a part's width counts towards the row it sits in.
@@ -44,20 +44,28 @@ const folds = (box, room, tried) => {
   return [];
 };
 
-// ELK's placement staggers boxes to keep arrows straight, which can put two parts corner to corner; this one centres
-// each layer, so a chart is as wide as its widest layer. Set on every box that holds others, or it holds only at the top.
-const CENTRED = { "elk.layered.nodePlacement.strategy": "SIMPLE" };
-const centre = (box) => {
-  box.layoutOptions = { ...box.layoutOptions, ...CENTRED };
-  (box.children ?? []).filter((c) => c.children?.length).forEach(centre);
+// How a chart too wide is laid out, tried in turn. Each is set on every box that holds others, or it holds only at the
+// top. STRAIGHT keeps long arrows straight past the rows folded in their way, and more of ELK's crossing search lets it,
+// but its boxes stagger, so a dense chart can stay too wide. CENTRED centres each layer, so a chart is as wide as its
+// widest layer, at the price of arrows that swing from side to side.
+const PLACEMENT = "elk.layered.nodePlacement.strategy";
+const STRAIGHT = { [PLACEMENT]: "NETWORK_SIMPLEX", "elk.layered.thoroughness": "60" };
+const CENTRED = { [PLACEMENT]: "SIMPLE" };
+const setOn = (box, options) => {
+  box.layoutOptions = { ...box.layoutOptions, ...options };
+  (box.children ?? []).filter((c) => c.children?.length).forEach((c) => setOn(c, options));
 };
 
-async function narrow(prepared, elk, hidden) {
+const laidOut = (prepared, elk, hidden, options) => {
+  const graph = structuredClone(prepared);
+  setOn(graph, options);
+  return elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...options } });
+};
+
+async function narrow(prepared, elk, hidden, options) {
   let [out, room] = [null, MAX_WIDTH];
   for (let n = 0; n < MAX_LAYOUTS; n++) {
-    const graph = structuredClone(prepared);
-    centre(graph);
-    out = await elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...CENTRED } });
+    out = await laidOut(prepared, elk, hidden, options);
     if (out.width <= MAX_WIDTH) break;
     // Arrows running past the boxes take room of their own, so a chart can be too wide with every row inside `room`.
     let more = folds(out, room, hidden);
@@ -68,11 +76,18 @@ async function narrow(prepared, elk, hidden) {
   return out;
 }
 
+async function fitted(prepared, elk, hidden) {
+  const out = await narrow(prepared, elk, hidden, STRAIGHT);
+  if (out.width <= MAX_WIDTH) return out;
+  hidden.clear();
+  return narrow(prepared, elk, hidden, CENTRED);
+}
+
 export async function layout(plan, elk) {
   const prepared = prepare(plan);
   const hidden = new Map();
   let out = await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
-  if (out.width > MAX_WIDTH) out = await narrow(prepared, elk, hidden);
+  if (out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden);
   const boxes = [];
   const origin = { [out.id]: [0, 0] };
   const walk = (box, level) => {
