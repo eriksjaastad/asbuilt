@@ -1,6 +1,7 @@
 // Lay out an already-parsed plan with ELK (passed in). Returns { width, height, boxes, arrows } in absolute
 // coordinates; refusals come from prepare() and ELK. Read: id, labels[0].text and labels[1].text, width, height, children, edges
 // (and an arrow's labels[0].text), and asbuilt.mark when an item has one (the mark compare writes).
+import { LANES, lanes } from "./lanes.js";
 import { ARROW_ROOM, noteOf, PADDING, prepare } from "./prepare.js";
 
 const markOf = (item) => (item.asbuilt?.mark === undefined ? {} : { mark: item.asbuilt.mark });
@@ -23,11 +24,13 @@ const [ROOM_STEP, MIN_ROOM] = [100, 300];
 // layer however many there are. Goes deepest first, since a part's width counts towards the row it sits in.
 const folds = (box, room, tried) => {
   const kids = box.children ?? [];
+  // Lanes stand side by side and cannot fold under each other: each gives up its share of what they run over by.
+  const lanes = box.id.startsWith(LANES);
   for (const kid of kids) {
-    const found = folds(kid, room - NESTED, tried);
+    const found = folds(kid, lanes ? kid.width * Math.min(1, room / box.width) : room - NESTED, tried);
     if (found.length) return found;
   }
-  if (box.width <= room) return [];
+  if (box.width <= room || lanes) return [];
   const rows = [];
   for (const kid of [...kids].sort((a, b) => a.y - b.y)) {
     const row = rows.at(-1);
@@ -52,7 +55,7 @@ const PLACEMENT = "elk.layered.nodePlacement.strategy";
 const STRAIGHT = { [PLACEMENT]: "NETWORK_SIMPLEX", "elk.layered.thoroughness": "60" };
 const CENTRED = { [PLACEMENT]: "SIMPLE" };
 const setOn = (box, options) => {
-  box.layoutOptions = { ...box.layoutOptions, ...options };
+  box.layoutOptions = { ...box.layoutOptions, ...options, ...(box.id.startsWith(LANES) ? box.layoutOptions : {}) }; // lanes keep their rails straight
   (box.children ?? []).filter((c) => c.children?.length).forEach((c) => setOn(c, options));
 };
 
@@ -83,23 +86,44 @@ async function fitted(prepared, elk, hidden) {
   return narrow(prepared, elk, hidden, CENTRED);
 }
 
-export async function layout(plan, elk) {
-  const prepared = prepare(plan);
+// One chart from a plan ready for ELK: `hide` holds the ids of what ELK lays out and the page does not draw, and
+// `parts` says which group each part of a lane belongs to. Boxes and arrows come back in absolute coordinates.
+async function chart(prepared, elk, hide, parts) {
   const hidden = new Map();
   let out = await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
   if (out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden);
-  const boxes = [];
+  const [boxes, cut, held, spot] = [[], new Map(), new Map(), new Map()];
   const origin = { [out.id]: [0, 0] };
-  const walk = (box, level) => {
+  const walk = (box, level, holders) => {
     for (const b of box.children ?? []) {
       const [x, y] = [origin[box.id][0] + b.x, origin[box.id][1] + b.y];
       origin[b.id] = [x, y];
-      boxes.push({ id: b.id, x, y, w: b.width, h: b.height, level, label: b.labels?.[0]?.text ?? b.id, note: noteOf(b), ...markOf(b) });
-      walk(b, level + 1);
+      spot.set(b.id, { x, w: b.width });
+      const part = parts.get(b.id);
+      if (hide.has(b.id) && !part) {
+        walk(b, level, holders); // a knot's wrapper: its boxes are drawn where the plan has them
+        continue;
+      }
+      const shown = part?.group ?? b;
+      let drawn = cut.get(shown.id)?.drawn;
+      if (drawn) drawn.h = y + b.height - drawn.y; // a further part of a group: the group's box runs down to its foot
+      else {
+        drawn = { id: shown.id, x, y, w: b.width, h: b.height, level, label: shown.labels?.[0]?.text ?? shown.id, note: noteOf(shown), ...markOf(shown) };
+        boxes.push(drawn);
+        held.set(drawn, holders);
+        if (part) cut.set(shown.id, { drawn, part });
+      }
+      walk(b, level + 1, [...holders, drawn]);
     }
   };
-  walk(out, 1);
-  const lines = out.edges.filter((e) => !hidden.has(e.id)).map((e) => {
+  walk(out, 1, []);
+  // A group cut into parts is drawn as its whole lane: from the rail on its left, or the knot's edge, to the one on its right.
+  for (const { drawn, part: { wrapper, rails: [before, after] } } of cut.values()) {
+    const [left, right] = [spot.get(before ?? wrapper), spot.get(after ?? wrapper)];
+    drawn.x = before ? left.x + left.w : left.x;
+    drawn.w = (after ? right.x : right.x + right.w) - drawn.x;
+  }
+  const lines = out.edges.filter((e) => !hidden.has(e.id) && !hide.has(e.id)).map((e) => {
     const [s] = e.sections;
     const [dx, dy] = origin[e.container];
     const points = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => [p.x + dx, p.y + dy]);
@@ -107,5 +131,17 @@ export async function layout(plan, elk) {
     const label = l && { x: l.x + dx, y: l.y + dy, w: l.width, text: l.text };
     return { id: e.id, points, label, ...markOf(e) };
   });
-  return { width: out.width, height: out.height, boxes, arrows: lines };
+  // A lane must hold its own boxes and no others, and the chart must still fit a laptop. If not, the lanes are not used.
+  const inside = (b, g) => b.x >= g.x && b.y >= g.y && b.x + b.w <= g.x + g.w && b.y + b.h <= g.y + g.h;
+  const apart = (a, b) => a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+  const sound = out.width <= MAX_WIDTH && [...cut.values()].every(({ drawn: g }) =>
+    boxes.every((b) => b === g || (held.get(b).includes(g) ? inside(b, g) : held.get(g).includes(b) || apart(g, b))));
+  return { sound, laid: { width: out.width, height: out.height, boxes, arrows: lines } };
+}
+
+export async function layout(plan, elk) {
+  const prepared = prepare(plan);
+  const laned = lanes(prepared);
+  const made = laned && (await chart(laned.graph, elk, laned.hidden, laned.parts));
+  return (made?.sound ? made : await chart(prepared, elk, new Set(), new Map())).laid;
 }

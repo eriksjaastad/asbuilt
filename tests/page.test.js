@@ -94,3 +94,37 @@ test("no chart scrolls sideways: not a wide plan on a laptop, and not a box too 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a box between two boxes of a group is drawn beside the group: below the first, above the second, outside the group", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, JSON.stringify({
+    id: "root",
+    children: [{ id: "tests", children: [{ id: "run" }, { id: "report" }] }, { id: "results" }],
+    edges: [{ id: "e1", sources: ["run"], targets: ["results"] }, { id: "e2", sources: ["results"], targets: ["report"] }],
+  }));
+  const { run, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(await address);
+    await page.locator("#chart > svg [data-arrow='e2']").waitFor();
+    // Each drawn box as [left, top, right, bottom].
+    const drawn = (id) => page.locator(`#chart > svg [data-box='${id}']`).evaluate((g) => {
+      const { x, y, width, height } = g.getBBox();
+      return [x, y, x + width, y + height];
+    });
+    const [group, first, between, second] = await Promise.all(["tests", "run", "results", "report"].map(drawn));
+    assert.ok(first[3] < between[1] && between[3] < second[1], "run, then results, then report, down the page");
+    assert.ok(between[0] > group[2] || between[2] < group[0], "results is beside the group");
+    assert.deepEqual(errors, []);
+  } finally {
+    run.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

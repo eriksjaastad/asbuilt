@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ELK from "elkjs/lib/elk.bundled.js";
+import { LANES, lanes } from "../src/asbuilt/page/lanes.js";
 import { layout, MAX_WIDTH } from "../src/asbuilt/page/layout.js";
+import { prepare } from "../src/asbuilt/page/prepare.js";
 import { arrow, big, leaf } from "./plans.js";
 
 const elk = new ELK();
 const inside = (p, b) => p[0] >= b.x - 1 && p[0] <= b.x + b.w + 1 && p[1] >= b.y - 1 && p[1] <= b.y + b.h + 1;
 
-// Holds for any plan: every box and arrow comes back, children sit inside their parent, and each
-// arrow starts on its source and ends on its target (all in absolute coordinates).
+// Holds for any plan: every box and arrow comes back, children sit inside their parent, no box overlaps one that
+// neither holds it nor is held by it, and each arrow starts on its source and ends on its target (all in absolute
+// coordinates).
 function assertSound(plan, laid, boxCount, arrowCount) {
   assert.equal(laid.boxes.length, boxCount);
   assert.equal(laid.arrows.length, arrowCount);
@@ -20,6 +23,11 @@ function assertSound(plan, laid, boxCount, arrowCount) {
     const p = byId[parents[b.id]];
     assert.equal(b.level, p ? p.level + 1 : 1, b.id);
     if (p) assert.ok(inside([b.x, b.y], p) && inside([b.x + b.w, b.y + b.h], p), `${b.id} inside ${p.id}`);
+  }
+  const holds = (id, kid) => parents[kid] !== undefined && (parents[kid] === id || holds(id, parents[kid]));
+  for (const a of laid.boxes) for (const b of laid.boxes) {
+    if (a === b || holds(a.id, b.id) || holds(b.id, a.id)) continue;
+    assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${a.id} clear of ${b.id}`);
   }
   for (const { id, points } of laid.arrows) {
     const [from, to] = ends[id];
@@ -245,4 +253,155 @@ test("a chart the straight layout cannot fit starts again centred, without the h
   assert.equal(seen[first].edges.length, 0);
   assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
   assertSound(plan, laid, 14, 0);
+});
+
+// run and report share a group, and results, outside it, is written by one and read by the other: ELK alone turns
+// one of the two arrows to point up.
+const between = (extra = {}) => ({ id: "r", children: [{ id: "g", children: [leaf("run"), leaf("report")] }, leaf("results")],
+  edges: [{ ...arrow("a", "run", "results"), ...extra }, { ...arrow("b", "results", "report"), ...extra }] });
+const ups = (laid) => laid.arrows.filter((a) => a.points.at(-1)[1] < a.points[0][1]).map((a) => a.id);
+const at = (laid, id) => laid.boxes.find((b) => b.id === id);
+
+test("a box between two boxes of a group is drawn beside the group, and every arrow points down", async () => {
+  const laid = await layout(between(), elk);
+  assertSound(between(), laid, 4, 2);
+  assert.deepEqual(ups(laid), []);
+  const [g, run, results, report] = ["g", "run", "results", "report"].map((id) => at(laid, id));
+  assert.ok(run.y + run.h <= results.y && results.y + results.h <= report.y, "run, then results, then report, down the page");
+  // The group keeps a group's room round its boxes and no more: results is as near the box under it as the one over it.
+  assert.deepEqual([run.x - g.x, run.y - g.y, g.y + g.h - report.y - report.h], [14, 36, 14]);
+  assert.equal(report.y - results.y - results.h, results.y - run.y - run.h);
+});
+
+test("two groups whose boxes take turns stand side by side, each drawn once, with every arrow pointing down", async () => {
+  const plan = { id: "r", children: [{ id: "steps", children: ["s1", "s2", "s3"].map(leaf) }, { id: "files", children: ["f1", "f2", "f3"].map(leaf) }],
+    edges: [["s1", "f1"], ["f1", "s2"], ["s2", "f2"], ["f2", "s3"], ["s3", "f3"], ["s1", "s2"]].map(([a, b], i) => arrow(`e${i}`, a, b)) };
+  const laid = await layout(plan, elk);
+  assertSound(plan, laid, 8, 6);
+  assert.deepEqual(ups(laid), []);
+});
+
+test("an arrow's label gets a row of its own between lanes, so labelled arrows point down too", async () => {
+  const plan = between({ labels: [{ text: "rows" }] });
+  plan.children.push(leaf("you"));
+  plan.edges.push({ ...arrow("c", "you", "run"), labels: [{ text: "runs it" }] }, { ...arrow("d", "you", "report"), labels: [{ text: "reads it" }] });
+  const laid = await layout(plan, elk);
+  assertSound(plan, laid, 5, 4);
+  assert.deepEqual(ups(laid), []);
+  assert.deepEqual(laid.arrows.map((a) => a.label.text), ["rows", "rows", "runs it", "reads it"]);
+});
+
+test("an arrow that names a group cut into lanes lands on the group's top and leaves from its foot", async () => {
+  const plan = between();
+  plan.children.push(leaf("first"), leaf("last"));
+  plan.edges.push(arrow("in", "first", "g"), arrow("out", "g", "last"), arrow("own", "report", "g"));
+  const laid = await layout(plan, elk);
+  assertSound(plan, laid, 6, 5);
+  assert.deepEqual(ups(laid), []);
+  const g = at(laid, "g");
+  const [into, from] = ["in", "out"].map((id) => laid.arrows.find((a) => a.id === id).points);
+  assert.deepEqual([into.at(-1)[1], from[0][1]], [g.y, g.y + g.h]);
+});
+
+test("a group is cut only where it must be: not for a box the knot's arrows miss, nor for one they reach through its own group", async () => {
+  const groups = (other) => [{ id: "h", children: [leaf("mid"), leaf(other)] }, { id: "g", children: [leaf("first"), leaf("last")] }, leaf("out")];
+  const knot = [arrow("a", "first", "mid"), arrow("b", "mid", "last")];
+  for (const plan of [{ id: "r", children: groups("apart"), edges: [...knot, arrow("c", "apart", "out")] }, { id: "r", children: groups("pre"), edges: [...knot, arrow("c", "pre", "mid")] }]) {
+    const laid = await layout(plan, elk);
+    assertSound(plan, laid, 7, 3);
+    assert.deepEqual(ups(laid), []);
+    assert.deepEqual([...lanes(prepare(plan)).parts.values()].map((part) => part.group.id), ["g", "g"], "only g is cut");
+  }
+});
+
+test("a plan with no knot, one whose arrows go round in a ring, and a knot of three are left to ELK", () => {
+  const [ring, three] = [between(), between()];
+  ring.edges.push(arrow("c", "report", "run"));
+  three.children.push(leaf("more"));
+  three.edges = [arrow("a", "run", "results"), arrow("b", "results", "more"), arrow("c", "more", "report")];
+  assert.deepEqual([big, ring, three].map((plan) => lanes(prepare(plan))), [null, null, null]);
+});
+
+test("lanes too wide for a laptop fold inside themselves: the chart fits and every arrow still points down", async () => {
+  const [steps, early, late] = [boxes("s", 3), boxes("e", 7), boxes("l", 7)];
+  const plan = { id: "root", children: [part("steps", steps), part("files", [...early, ...late])],
+    edges: [...early.map((b, i) => arrow(`a${i}`, "s0", b.id)), arrow("b", "e0", "s1"), ...late.map((b, i) => arrow(`c${i}`, "s1", b.id)), arrow("d", "l0", "s2")] };
+  const laid = await layout(plan, elk);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assertSound(plan, laid, 19, 16);
+  assert.deepEqual(ups(laid), []);
+});
+
+test("two lanes too wide together give up a share each, and a group that fits beside them keeps its row", async () => {
+  const [early, files, tools] = [boxes("e", 4), boxes("f", 4), boxes("t", 6)];
+  const plan = { id: "root", children: [part("steps", [...early, ...boxes("z", 1)]), part("files", files), part("tools", tools)],
+    edges: [...files.map((f, i) => arrow(`a${i}`, `e${i}`, f.id)), arrow("b", "f0", "z0"), arrow("c", "z0", "t0")] };
+  const laid = await layout(plan, elk);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assertSound(plan, laid, 18, 6);
+  assert.deepEqual(ups(laid), []);
+  assert.equal(new Set(tools.map((t) => at(laid, t.id).y)).size, 1, "tools is still one row");
+});
+
+test("a knot whose lanes cannot fit is not folded lane under lane: three tries, then ELK's own layout", async () => {
+  const plan = between();
+  plan.children[1] = { id: "results", labels: [{ text: "results".padEnd(180, "-") }] };
+  let tries = 0;
+  const counting = { layout: (graph) => ((tries += graph.children.some((c) => c.id.startsWith(LANES))), elk.layout(graph)) };
+  assertSound(plan, await layout(plan, counting), 4, 2);
+  assert.equal(tries, 3, "as it is, kept straight, and centred");
+});
+
+test("lanes that come back with a box in the wrong lane, or too wide, are dropped for ELK's own layout", async () => {
+  const spoilt = (spoil) => ({ layout: async (graph) => {
+    const out = await elk.layout(graph);
+    const knot = out.children.find((c) => c.id.startsWith(LANES));
+    if (knot) spoil(out, knot.children);
+    return out;
+  } });
+  const intoTheGroup = (out, kids) => (kids.find((k) => k.id === "results").x = kids.find((k) => k.children).x);
+  const tooWide = (out) => (out.width = MAX_WIDTH + 1);
+  for (const spoil of [intoTheGroup, tooWide]) {
+    const laid = await layout(between(), spoilt(spoil));
+    assertSound(between(), laid, 4, 2);
+    assert.equal(ups(laid).length, 1, spoil.name);
+  }
+});
+
+test("when a chart too wide starts again centred, a knot's lanes keep the placement that holds their rails straight", async () => {
+  const seen = [];
+  const wideWhileStraight = { layout: async (graph) => {
+    seen.push(structuredClone(graph));
+    const out = await elk.layout(graph);
+    return placement(graph) === "NETWORK_SIMPLEX" ? { ...out, width: MAX_WIDTH + 1 } : out;
+  } };
+  await layout(between(), wideWhileStraight);
+  const centred = seen.find((graph) => placement(graph) === "SIMPLE");
+  assert.equal(placement(centred.children.find((c) => c.id.startsWith(LANES))), "NETWORK_SIMPLEX");
+});
+
+test("generated plans: every box comes back inside its own group and clear of the others, and a knot of two leaves no arrow pointing up", async () => {
+  // fast-check is not a dependency; a seeded Park-Miller generator picks the plans (same cases every run)
+  let seed = 27_182;
+  const rand = (n) => ((seed = (seed * 48271) % 2147483647), seed % n);
+  let knotted = 0;
+  for (let i = 0; i < 300; i++) {
+    // Two groups and up to two loose boxes, then arrows that only run forward through a shuffled order of the boxes.
+    const groups = [0, 1].map((g) => ({ id: `g${g}`, children: Array.from({ length: 1 + rand(4) }, (_, k) => leaf(`g${g}k${k}`)) }));
+    const loose = Array.from({ length: rand(3) }, (_, k) => leaf(`x${k}`));
+    const order = [...groups.flatMap((g) => g.children), ...loose].map((b) => b.id);
+    for (let k = order.length - 1; k > 0; k--) {
+      const j = rand(k + 1);
+      [order[k], order[j]] = [order[j], order[k]];
+    }
+    const edges = Array.from({ length: 3 + rand(7) }, (_, e) => {
+      const from = rand(order.length - 1);
+      return { ...arrow(`e${e}`, order[from], order[from + 1 + rand(order.length - from - 1)]), ...(rand(3) ? {} : { labels: [{ text: `l${e}` }] }) };
+    });
+    const plan = JSON.parse(JSON.stringify({ id: "r", children: [...groups, ...loose], edges }));
+    const laid = await layout(plan, elk);
+    assertSound(plan, laid, order.length + 2, edges.length);
+    if (lanes(prepare(plan))) assert.deepEqual([++knotted && ups(laid)], [[]], JSON.stringify(plan));
+  }
+  assert.ok(knotted >= 60, `${knotted} of the plans had a knot of two`);
 });

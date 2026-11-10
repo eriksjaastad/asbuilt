@@ -4,7 +4,7 @@ from pathlib import Path
 
 PAGE = Path(__file__).with_name("page")
 FILES = (  # exactly what the page loads, as paths under the page folder
-    "index.html main.js render.js latest.js prepare.js layout.js shapes.js draw.js "
+    "index.html main.js render.js latest.js prepare.js layout.js lanes.js shapes.js draw.js "
     "arrows.js vendor/elk.js vendor/rough.js"
 ).split()
 TYPES = {".html": "text/html", ".js": "text/javascript"}
