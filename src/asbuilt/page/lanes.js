@@ -7,7 +7,8 @@
 // beside the gap. A part is a box ELK sees and the page does not: layout.js draws a group as one box down its whole
 // lane, so every box is still inside the group the plan puts it in and nothing else is.
 // Takes a plan from prepare() and returns a copy to lay out in its place with what layout.js needs to draw it, or
-// null for a plan with no such knot. ELK still places every box and routes every arrow.
+// null for a plan with no such knot. `turned` stands each knot's two lanes the other way round. ELK still places
+// every box and routes every arrow.
 export const LANES = "\0lanes ";
 const GAP = 16; // between two lanes: the width of the rail that keeps them apart
 const EDGE = "[top=0,left=14,bottom=0,right=14]"; // round a knot's lanes, so an arrow never runs along a group's side
@@ -32,7 +33,7 @@ function knots(next) {
   return found;
 }
 
-export function lanes(prepared) {
+export function lanes(prepared, turned = false) {
   const graph = structuredClone(prepared);
   const [hidden, parts, holder] = [new Set(), new Map(), new Map()];
   const index = (box) => box.children?.forEach((kid) => (holder.set(kid.id, box), index(kid)));
@@ -48,6 +49,8 @@ export function lanes(prepared) {
 
   function wrap(box, knot) {
     const inKnot = box.children.filter((kid) => knot.includes(kid.id));
+    const first = inKnot[0];
+    if (turned) inKnot.reverse();
     // A unit is what a lane is cut between: a box straight inside a group, or a lane that holds nothing.
     const units = inKnot.flatMap((lane) => (lane.children?.length ? lane.children : [lane]).map((unit) => ({ unit, lane })));
     const ends = (id) => {
@@ -64,12 +67,12 @@ export function lanes(prepared) {
     }
     // Cut the lanes into runs: go as far down one lane as the arrows allow, then turn to the other. Starting from each
     // lane in turn, the start that cuts the groups into the fewest parts is kept.
-    const cutFrom = (first) => {
+    const cutFrom = (start) => {
       const [runs, done] = [[], new Set()];
       const ready = () => units.filter((u) => !done.has(u) && [...before.get(u).keys()].every((b) => done.has(b)));
       while (done.size < units.length) {
         const open = ready().map((u) => u.lane);
-        const lane = !runs.length && open.includes(first) ? first : open[0];
+        const lane = !runs.length && open.includes(start) ? start : open[0];
         if (!lane) return undefined; // the arrows go round in a ring, which no order can draw downwards
         const run = { lane, units: [] };
         for (let next; (next = ready().find((u) => u.lane === lane)); done.add(next)) run.units.push(next);
@@ -80,7 +83,7 @@ export function lanes(prepared) {
     };
     const runs = inKnot.map(cutFrom).filter(Boolean).sort((a, b) => a.length - b.length)[0];
     if (!runs) return; // a ring: ELK's layout stands
-    const wrapper = { id: `${LANES}${inKnot[0].id}`, children: [], layoutOptions: { "elk.padding": EDGE, "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+    const wrapper = { id: `${LANES}${first.id}`, children: [], layoutOptions: { "elk.padding": EDGE, "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
       "elk.layered.crossingMinimization.semiInteractive": "true" } };
     hidden.add(wrapper.id);
     const rows = Math.max(...runs.map((r) => r.row));
@@ -112,7 +115,7 @@ export function lanes(prepared) {
         if (row > 0) (hidden.add(`\0line ${id}`), graph.edges.push({ id: `\0line ${id}`, sources: [`${rail(at)}${row - 1}`], targets: [id], layoutOptions: { "elk.layered.priority.straightness": "1000" } }));
       }
     });
-    box.children = box.children.flatMap((kid) => (kid === inKnot[0] ? [wrapper] : knot.includes(kid.id) ? [] : [kid]));
+    box.children = box.children.flatMap((kid) => (kid === first ? [wrapper] : knot.includes(kid.id) ? [] : [kid]));
     holder.set(wrapper.id, box);
   }
 

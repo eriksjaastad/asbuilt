@@ -10,8 +10,8 @@ const elk = new ELK();
 const inside = (p, b) => p[0] >= b.x - 1 && p[0] <= b.x + b.w + 1 && p[1] >= b.y - 1 && p[1] <= b.y + b.h + 1;
 
 // Holds for any plan: every box and arrow comes back, children sit inside their parent, no box overlaps one that
-// neither holds it nor is held by it, and each arrow starts on its source and ends on its target (all in absolute
-// coordinates).
+// neither holds it nor is held by it, and each arrow starts on its source, ends on its target and runs through no
+// group that neither of them is in (all in absolute coordinates).
 function assertSound(plan, laid, boxCount, arrowCount) {
   assert.equal(laid.boxes.length, boxCount);
   assert.equal(laid.arrows.length, arrowCount);
@@ -29,9 +29,14 @@ function assertSound(plan, laid, boxCount, arrowCount) {
     if (a === b || holds(a.id, b.id) || holds(b.id, a.id)) continue;
     assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${a.id} clear of ${b.id}`);
   }
+  const groups = laid.boxes.filter((g) => Object.values(parents).includes(g.id));
+  const through = ([px, py], [qx, qy], g) => Math.max(px, qx) > g.x + 1 && Math.min(px, qx) < g.x + g.w - 1 && Math.max(py, qy) > g.y + 1 && Math.min(py, qy) < g.y + g.h - 1;
   for (const { id, points } of laid.arrows) {
     const [from, to] = ends[id];
     assert.ok(inside(points[0], byId[from]) && inside(points.at(-1), byId[to]), `${id} runs from ${from} to ${to}`);
+    for (const g of groups.filter((g) => ![from, to].some((end) => end === g.id || holds(g.id, end)))) {
+      assert.ok(!points.slice(1).some((q, i) => through(points[i], q, g)), `${id} runs clear of ${g.id}`);
+    }
   }
 }
 
@@ -303,6 +308,15 @@ test("an arrow that names a group cut into lanes lands on the group's top and le
   assert.deepEqual([into.at(-1)[1], from[0][1]], [g.y, g.y + g.h]);
 });
 
+test("a knot's lanes stand the other way round when the plan's way would run an arrow through a group it does not end in", async () => {
+  const plan = { id: "r", children: [{ id: "g", children: [leaf("a"), leaf("c")] }, { id: "h", children: [leaf("b"), leaf("d")] }, leaf("out")],
+    edges: [["a", "out"], ["a", "b"], ["b", "c"], ["a", "d"], ["c", "d"]].map(([from, to], i) => arrow(`e${i}`, from, to)) };
+  const laid = await layout(plan, elk);
+  assertSound(plan, laid, 7, 5);
+  assert.deepEqual(ups(laid), []);
+  assert.ok(at(laid, "h").x < at(laid, "g").x, "h, the second group in the plan, stands on the left");
+});
+
 test("a group is cut only where it must be: not for a box the knot's arrows miss, nor for one they reach through its own group", async () => {
   const groups = (other) => [{ id: "h", children: [leaf("mid"), leaf(other)] }, { id: "g", children: [leaf("first"), leaf("last")] }, leaf("out")];
   const knot = [arrow("a", "first", "mid"), arrow("b", "mid", "last")];
@@ -343,13 +357,13 @@ test("two lanes too wide together give up a share each, and a group that fits be
   assert.equal(new Set(tools.map((t) => at(laid, t.id).y)).size, 1, "tools is still one row");
 });
 
-test("a knot whose lanes cannot fit is not folded lane under lane: three tries, then ELK's own layout", async () => {
+test("a knot whose lanes cannot fit is not folded lane under lane: three tries each way round, then ELK's own layout", async () => {
   const plan = between();
   plan.children[1] = { id: "results", labels: [{ text: "results".padEnd(180, "-") }] };
   let tries = 0;
   const counting = { layout: (graph) => ((tries += graph.children.some((c) => c.id.startsWith(LANES))), elk.layout(graph)) };
   assertSound(plan, await layout(plan, counting), 4, 2);
-  assert.equal(tries, 3, "as it is, kept straight, and centred");
+  assert.equal(tries, 6, "as it is, kept straight, and centred, for each way round");
 });
 
 test("lanes that come back with a box in the wrong lane, or too wide, are dropped for ELK's own layout", async () => {
