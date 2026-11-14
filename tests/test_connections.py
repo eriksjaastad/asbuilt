@@ -4,6 +4,7 @@ import random
 import subprocess
 import sys
 import unittest
+import urllib.error
 from unittest import mock
 
 from asbuilt.connections import FLAGS as ARGS
@@ -103,4 +104,51 @@ class ClaudeCLITest(unittest.TestCase):
 
     def test_ask_uses_the_connection_handed_in_else_the_mock(self):
         self.assertEqual(ask("p", lambda p: p + "!"), "p!")
-        self.assertEqual(ask("p"), '{"notes": []}')
+        # A key in the environment does not turn the call on. Only ASBUILT_MODEL=1 does.
+        with mock.patch.dict(os.environ, {"ASBUILT_MODEL": "", "OPENROUTER_API_KEY": "k"}):
+            self.assertEqual(ask("p"), '{"notes": []}')
+
+
+def _reply(content):
+    raw = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+    reply = mock.Mock(read=lambda: raw)
+    reply.__enter__ = lambda *a: reply
+    reply.__exit__ = lambda *a: None
+    return reply
+
+
+class OpenRouterTest(unittest.TestCase):
+    def test_the_real_call_is_off_until_asked_and_then_goes_to_openrouter_without_leaking_the_key(self):
+        from asbuilt import connections as c
+
+        key, seen = "k", {}
+
+        def opener(req, timeout):
+            seen.update(url=req.full_url, auth=req.get_header("Authorization"), body=json.loads(req.data))
+            return _reply('{"notes": []}')
+
+        with mock.patch.dict(os.environ, {"ASBUILT_MODEL": "1"}, clear=False):
+            os.environ.pop(c.KEY_NAME, None)
+            with self.assertRaisesRegex(ConnectionFailed, f"^{c.KEY_NAME} is not set[.]$"):
+                ask("hello")
+            self.assertEqual(seen, {})
+            os.environ[c.KEY_NAME] = key
+            with mock.patch.object(c, "_open", opener):
+                self.assertEqual(ask("hello"), '{"notes": []}')
+            self.assertEqual(
+                (seen["url"], seen["auth"], seen["body"]["model"], seen["body"]["messages"]),
+                (c.URL, "Bearer " + key, c.MODEL, [{"role": "user", "content": "hello"}]),
+            )
+
+            def refused(req, timeout):
+                raise urllib.error.HTTPError(req.full_url, 401, "no", {}, None)
+
+            with mock.patch.object(c, "_open", refused), self.assertRaises(ConnectionFailed) as caught:
+                ask("hello")
+            self.assertEqual(str(caught.exception), "OpenRouter refused the call, status 401.")
+            self.assertNotIn(key, str(caught.exception))
+            with mock.patch.object(c, "_open", lambda req, timeout: _reply("see " + key)):
+                with self.assertRaises(ConnectionFailed) as caught:
+                    ask("hello")
+            self.assertNotIn(key, str(caught.exception))
+        self.assertIsNone(c._NoRedirect().redirect_request(None, None, 302, "", {}, "http://x"))
