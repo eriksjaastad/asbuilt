@@ -15,8 +15,12 @@ export function html(box) {
   const info = box?.asbuilt;
   if (typeof info?.text !== "string") return "";
   const proven = info.proven ? `<p class="proven">${esc(info.proven)}</p>` : "";
+  const model = (Array.isArray(info.model) ? info.model : [])
+    .filter((note) => note && typeof note.text === "string")
+    .map((note) => `<p class="model"><b>model</b> ${esc(note.label)}: ${esc(note.text)}</p>`)
+    .join("");
   const rest = info.rest ? `<p class="rest">${esc(info.rest)}</p>` : "";
-  return `<p class="name">${esc(box.labels?.[0]?.text ?? box.id)}</p>${proven}<pre>${esc(info.text)}</pre>${rest}`;
+  return `<p class="name">${esc(box.labels?.[0]?.text ?? box.id)}</p>${proven}${model}<pre>${esc(info.text)}</pre>${rest}`;
 }
 
 export function boxAt(event) {

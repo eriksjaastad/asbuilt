@@ -15,3 +15,19 @@ test("the panel is that function's lines and the proven sentence, and a box with
   assert.equal(find(plan, "missing"), null);
   assert.equal(html({ id: "e", asbuilt: { text: "<script>" } }).includes("<script>"), false);
 });
+
+test("a model note is labeled model, and the proven sentence is not", () => {
+  const out = html({
+    id: "f",
+    labels: [{ text: "f()" }],
+    asbuilt: {
+      text: "def f():\n    return g()\n",
+      proven: sentence,
+      model: [{ label: "tricky part", text: "the name hides the call" }],
+    },
+  });
+  const [before] = out.split('<p class="model">');
+  assert.ok(before.includes(sentence));
+  assert.equal(before.includes("model"), false);
+  assert.match(out, /<b>model<\/b> tricky part: the name hides the call/);
+});
