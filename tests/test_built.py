@@ -175,6 +175,24 @@ class PythonFileTest(unittest.TestCase):
         )
 
 
+class SourceTextTest(unittest.TestCase):
+    def test_a_definition_keeps_its_own_lines_and_a_long_one_is_cut_not_summarized(self):
+        source = "def one():\n    return 1\n\ndef two():\n    return 2\n"
+        one = python_file("t.py", source.encode())["children"][0]["asbuilt"]
+        self.assertEqual(one["text"], "def one():\n    return 1")
+        self.assertNotIn("two", one["text"])
+        self.assertNotIn("rest", one)
+        lines = ["def long():"] + [f"    x = {i}" for i in range(45)]
+        info = python_file("t.py", ("\n".join(lines) + "\n").encode())["children"][0]["asbuilt"]
+        self.assertEqual(info["lines"], [1, 46])
+        self.assertEqual(info["text"], "\n".join(lines[:40]))
+        self.assertNotIn("x = 39", info["text"])
+        self.assertEqual(info["rest"], "the rest is in the file, lines 41-46.")
+        short = ["def edge():"] + [f"    x = {i}" for i in range(40)]
+        edge = python_file("t.py", ("\n".join(short) + "\n").encode())["children"][0]["asbuilt"]
+        self.assertEqual(edge["rest"], "the rest is in the file, line 41.")
+
+
 class BuiltCommandTest(unittest.TestCase):
     def test_a_file_is_written_as_a_plan_or_a_refusal_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

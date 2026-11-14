@@ -23,6 +23,7 @@ from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
 
 PYTHON = tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language()))
+CAP = 40  # lines of a definition kept on the box; the rest stays in the file, named, not summarized
 
 
 def _note(source):
@@ -83,13 +84,27 @@ def _definitions(root):
     return found
 
 
+def _source(text, start, end):
+    """The definition's own lines, exactly, and a note when they were cut to CAP. `lines` stays the
+    real span either way, so a cut box still says where the rest is."""
+    shown = end if end - start + 1 <= CAP else start + CAP - 1
+    info = {"lines": [start, end], "text": "\n".join(text.split("\n")[start - 1 : shown])}
+    if shown < end:
+        info["rest"] = (
+            f"the rest is in the file, line {end}."
+            if shown + 1 == end
+            else f"the rest is in the file, lines {shown + 1}-{end}."
+        )
+    return info
+
+
 def python_file(name, source):
     """The box for the Python file called `name` with these bytes, and its note if any: why
     Python does not accept them, else that they are not UTF-8 so not read, else that
     tree-sitter misreads code Python accepts. A file that reads cleanly holds a child box for
     each top-level function and class."""
     note = _note(source)
-    definitions = []
+    definitions, decoded = [], None
     if not note:
         text, note = _text(source)
         if not note:
@@ -97,14 +112,14 @@ def python_file(name, source):
             if root.has_error:
                 note = "tree-sitter could not read it all, though Python accepts it"
             else:
-                definitions = _definitions(root)
+                decoded, definitions = text.decode(), _definitions(root)
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
         box["children"] = [
             {
                 "id": f"{name}:{ident}:{start}",
                 "labels": [{"text": ident if is_class else f"{ident}()"}],
-                "asbuilt": {"lines": [start, end]},
+                "asbuilt": _source(decoded, start, end),
             }
             for ident, is_class, start, end in definitions
         ]
