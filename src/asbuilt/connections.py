@@ -1,4 +1,8 @@
-"""The one place As-Built runs a model: the installed Claude Code CLI, so it is swapped here."""
+"""The one place As-Built runs a model, so it is swapped here.
+
+ask() never calls out: with no connection handed in, it returns no notes.
+Pass a connection to use something else. The Claude CLI remains for a caller that names it.
+"""
 
 import json
 import os
@@ -16,6 +20,13 @@ TEXT = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "re
 
 class ConnectionFailed(Exception):
     """A model call that gave no reply, said in one line meant for the person."""
+
+
+class Mock:
+    """A stand-in that never calls out. Its reply is no notes, so nothing is invented."""
+
+    def __call__(self, prompt):
+        return '{"notes": []}'
 
 
 class ClaudeCLI:
@@ -65,8 +76,8 @@ class ClaudeCLI:
 
 
 def ask(prompt, connection=None):
-    """The reply to `prompt` from `connection`, else from the installed Claude CLI."""
-    return (ClaudeCLI() if connection is None else connection)(prompt)
+    """The reply to `prompt`. The default is the mock, which never calls out."""
+    return (Mock() if connection is None else connection)(prompt)
 
 
 def stopped(done):

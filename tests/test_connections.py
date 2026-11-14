@@ -101,7 +101,6 @@ class ClaudeCLITest(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionFailed, NO):
             py(said)("draw")
 
-    def test_ask_uses_the_connection_handed_in_else_the_claude_cli(self):
+    def test_ask_uses_the_connection_handed_in_else_the_mock(self):
         self.assertEqual(ask("p", lambda p: p + "!"), "p!")
-        with mock.patch.object(ClaudeCLI, "__call__", lambda cli, p: (cli.command, p)):
-            self.assertEqual(ask("p"), (["claude"], "p"))
+        self.assertEqual(ask("p"), '{"notes": []}')
