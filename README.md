@@ -15,7 +15,8 @@ original plans. As-Built does the same for code:
 
 Status: the first view works. `asbuilt` draws a plan file as a hand-inked flowchart in your
 browser and redraws it each time you save the file, and it can draw a planned chart and a built one
-as one chart, marked. An agent drafting the plan and the note on why each part changed come later.
+as one chart, marked. It can also chart one Python file and open a function's code beside the chart.
+An agent drafting the plan and the note on why each part changed come later.
 
 ## Use it
 
@@ -46,3 +47,32 @@ uv run asbuilt compared.json
 
 The chart is the built one, with each box and arrow that differs from the plan tagged "new",
 "changed" (dotted) or "dropped" (faded and dashed, where the plan had it), and a legend under it.
+
+## Read one Python file
+
+```
+uv run python -m asbuilt.built t.py plan.json
+uv run asbuilt plan.json
+```
+
+The file is the outer box. Each top-level function and class is a box inside it. Click a
+function or a class and its code opens beside the chart. The chart stays. The two stay within a laptop
+width: the code takes a fixed column and the chart scales down to fit. On a narrow window the
+code sits under the chart.
+
+When a function's only step is to call one other function and return that result, the same line
+appears every time: "This function calls one other function and returns whatever that returns."
+
+A second kind of note can be written by a model. It is labeled "model", and it is separate from
+the line above. Nothing is sent unless you opt in. The key is the environment variable
+`OPENROUTER_API_KEY` (As-Built never stores it). The model is `x-ai/grok-4.7` on OpenRouter.
+
+```
+ASBUILT_MODEL=1 uv run python -m asbuilt.notes plan.json noted.json
+uv run asbuilt noted.json
+```
+
+Without `ASBUILT_MODEL=1` the command does not call out, and it adds no model notes. A reply that
+is not the notes asked for is thrown away and the output file is left unchanged. The model
+cannot add boxes. A function or class nested inside another is not its own box yet, and neither
+is a folder of files or a JavaScript file.
