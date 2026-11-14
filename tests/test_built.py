@@ -1,12 +1,16 @@
+import contextlib
+import io
+import json
 import random
-import tokenize
 import sys
+import tempfile
+import tokenize
 import unittest
 import warnings
 from pathlib import Path
 
 import asbuilt
-from asbuilt.built import _text, python_file
+from asbuilt.built import _text, main, python_file
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
 HEADS += [b"# coding: unicode_escape\n", b"# coding: rot_13\n", b"# coding: nope\n"]
@@ -169,3 +173,25 @@ class PythonFileTest(unittest.TestCase):
         self.assertEqual(
             seen, {"", "does not parse:", "does not parse ", "Python accepts "}
         )
+
+
+class BuiltCommandTest(unittest.TestCase):
+    def test_a_file_is_written_as_a_plan_or_a_refusal_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp, "t.py"), Path(tmp, "out.json")
+            src.write_text("def one():\n    return 1\n")
+            self.assertEqual(main([str(src), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            self.assertEqual(plan["id"], "asbuilt:built")
+            self.assertEqual(plan["children"][0]["children"][0]["labels"][0]["text"], "one()")
+            out.unlink()
+            kept = src.read_text()
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(Path(tmp, "missing.py")), str(out)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertTrue(err.getvalue().startswith("asbuilt.built: "))
+            self.assertFalse(out.exists())
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src), str(src)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertEqual(src.read_text(), kept)

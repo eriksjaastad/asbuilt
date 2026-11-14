@@ -1,14 +1,26 @@
-"""As-built chart: the code, read into the ELK JSON the page draws. One Python file is a box.
-When Python accepts it and tree-sitter can read it, each top-level function and class is a box
-inside it, with the lines it occupies. A note says when Python does not accept the file, when it
-is not UTF-8, or when tree-sitter misreads code Python accepts. Python's own compile, never run,
-decides what is valid; tree-sitter reads only UTF-8 files."""
+"""As-built chart: the code, read into the ELK JSON the page draws.
 
+python -m asbuilt.built FILE OUT writes one Python file as a plan the page can draw. The file is
+one box, and each top-level function and class is a box inside it. OUT is only written. A missing
+file, or OUT being the source file, prints one line and writes nothing.
+
+A file Python accepts, as UTF-8, holds those definitions and the lines they occupy. Otherwise the
+file is one box with a note: Python does not accept it, it is not UTF-8, or tree-sitter misreads
+code Python accepts. Python's own compile, never run, decides what is valid."""
+
+import argparse
+import sys
 import tokenize
 import warnings
+from pathlib import Path
 
 import tree_sitter
 import tree_sitter_python
+
+from asbuilt import output
+from asbuilt.compare import check
+from asbuilt.plan import read_bytes
+from asbuilt.state import PlanError
 
 PYTHON = tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language()))
 
@@ -97,3 +109,32 @@ def python_file(name, source):
             for ident, is_class, start, end in definitions
         ]
     return box
+
+
+def main(argv=None):
+    """Exit 0 with OUT written, or 2 with one line naming the file and why, and nothing written."""
+    parser = argparse.ArgumentParser(
+        prog="python -m asbuilt.built", description=__doc__.split("\n\n")[0]
+    )
+    parser.add_argument("file", type=Path, help="the Python file to chart")
+    parser.add_argument("out", type=Path, help="where the plan is written")
+    args = parser.parse_args(argv)
+    try:
+        try:  # samefile raises when a path cannot be statted
+            same = args.out.exists() and args.file.exists() and args.out.samefile(args.file)
+        except OSError as exc:
+            why = exc.strerror or type(exc).__name__
+            raise PlanError(f"{args.file.name} cannot be read: {why}") from None
+        if same:
+            raise PlanError(f"{args.out.name}: OUT is the source file; it is only read")
+        box = python_file(args.file.name, read_bytes(args.file))
+        plan = {"id": "asbuilt:built", "children": [box]}
+        check(plan, args.out.name)
+        output.write_atomic(args.out, output.plan_bytes(plan, args.out.name))
+    except PlanError as exc:
+        return output.fail("asbuilt.built", exc)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
