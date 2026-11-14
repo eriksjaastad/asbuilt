@@ -175,6 +175,31 @@ class PythonFileTest(unittest.TestCase):
         )
 
 
+class PassThroughTest(unittest.TestCase):
+    def test_only_a_single_returned_call_carries_the_sentence(self):
+        sentence = "This function calls one other function and returns whatever that returns."
+        matches = [
+            "def f():\n    return other(1, x)\n",
+            "async def f():\n    return other()\n",
+            "def f():\n    return (other())\n",
+            "async def f():\n    return await other(1)\n",
+        ]
+        skips = [
+            "def f():\n    return g(h())\n",
+            "async def f():\n    return await g(h())\n",
+            'def f():\n    """doc"""\n    return other()\n',
+            "def f():\n    return other() + 1\n",
+            "def f():\n    return\n",
+            "class C:\n    def f(self):\n        return other()\n",
+        ]
+        for source in matches:
+            info = python_file("t.py", source.encode())["children"][0]["asbuilt"]
+            self.assertEqual(info.get("proven"), sentence, source)
+        for source in skips:
+            info = python_file("t.py", source.encode())["children"][0]["asbuilt"]
+            self.assertNotIn("proven", info, source)
+
+
 class SourceTextTest(unittest.TestCase):
     def test_a_definition_keeps_its_own_lines_and_a_long_one_is_cut_not_summarized(self):
         source = "def one():\n    return 1\n\ndef two():\n    return 2\n"

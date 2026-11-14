@@ -24,6 +24,7 @@ from asbuilt.state import PlanError
 
 PYTHON = tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language()))
 CAP = 40  # lines of a definition kept on the box; the rest stays in the file, named, not summarized
+PASSES = "This function calls one other function and returns whatever that returns."
 
 
 def _note(source):
@@ -80,8 +81,35 @@ def _definitions(root):
         if name is None:
             continue
         start = outer.start_point[0] + 1
-        found.append((name.text.decode(), node.type == "class_definition", start, _line(outer.end_point)))
+        found.append(
+            (name.text.decode(), node.type == "class_definition", start, _line(outer.end_point), node)
+        )
     return found
+
+
+def _calls(node):
+    """How many calls `node` contains, walked on a stack so a deep expression cannot overflow."""
+    count, todo = 0, [node]
+    while todo:
+        cur = todo.pop()
+        count += cur.type == "call"
+        todo.extend(cur.children)
+    return count
+
+
+def _passes(node):
+    """True when the body is a single return of one call. Parentheses and await may wrap that call.
+    A second call, a second statement, or a return of anything else does not match."""
+    if node.type != "function_definition":
+        return False
+    body = node.child_by_field_name("body")
+    stmts = [] if body is None else body.named_children
+    if len(stmts) != 1 or stmts[0].type != "return_statement":
+        return False
+    expr = next(iter(stmts[0].named_children), None)
+    while expr is not None and expr.type in ("parenthesized_expression", "await"):
+        expr = next(iter(expr.named_children), None)
+    return expr is not None and expr.type == "call" and _calls(body) == 1
 
 
 def _source(text, start, end):
@@ -115,14 +143,19 @@ def python_file(name, source):
                 decoded, definitions = text.decode(), _definitions(root)
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
-        box["children"] = [
-            {
-                "id": f"{name}:{ident}:{start}",
-                "labels": [{"text": ident if is_class else f"{ident}()"}],
-                "asbuilt": _source(decoded, start, end),
-            }
-            for ident, is_class, start, end in definitions
-        ]
+        children = []
+        for ident, is_class, start, end, node in definitions:
+            info = _source(decoded, start, end)
+            if _passes(node):
+                info["proven"] = PASSES
+            children.append(
+                {
+                    "id": f"{name}:{ident}:{start}",
+                    "labels": [{"text": ident if is_class else f"{ident}()"}],
+                    "asbuilt": info,
+                }
+            )
+        box["children"] = children
     return box
 
 
