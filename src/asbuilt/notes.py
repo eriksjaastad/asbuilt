@@ -1,14 +1,19 @@
-"""Model notes for boxes that already have source.
+"""Model notes for boxes that already have source. python -m asbuilt.notes PLAN OUT
 
 The model only comments: it cannot add or remove a box. A reply that is not the JSON
-asked for raises PlanError and the plan is left unchanged. Unless ASBUILT_MODEL=1,
+asked for is refused, the command exits 2, and nothing is written. Unless ASBUILT_MODEL=1,
 ask() is the mock and no notes are added.
 """
 
+import argparse
 import json
+import sys
+from pathlib import Path
 
-from asbuilt.connections import ask
-from asbuilt.plan import _object
+from asbuilt import output
+from asbuilt.compare import check
+from asbuilt.connections import ConnectionFailed, ask
+from asbuilt.plan import _object, parse, read_bytes
 from asbuilt.state import PlanError
 
 LABELS = ("tricky part", "common pattern")
@@ -90,3 +95,23 @@ def annotate(plan, name, connection=None):
     except PlanError as exc:
         raise PlanError(f"{name}: the model's reply was not used: {exc}") from None
     return applied(plan, notes)
+
+
+def main(argv=None):
+    """Exit 0 with OUT written, or 2 with one line and nothing written."""
+    parser = argparse.ArgumentParser(prog="python -m asbuilt.notes", description=__doc__.split("\n\n")[0])
+    parser.add_argument("plan", type=Path, help="the plan to annotate")
+    parser.add_argument("out", type=Path, help="where the annotated plan is written")
+    args = parser.parse_args(argv)
+    try:
+        plan = parse(read_bytes(args.plan), args.plan.name)
+        check(plan, args.plan.name)
+        out = annotate(plan, args.plan.name)
+        output.write_atomic(args.out, output.plan_bytes(out, args.out.name))
+    except (PlanError, ConnectionFailed) as exc:
+        return output.fail("asbuilt.notes", exc)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

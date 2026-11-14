@@ -1,9 +1,14 @@
+import contextlib
+import io
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from asbuilt.notes import annotate
+from asbuilt.connections import ConnectionFailed
+from asbuilt.notes import annotate, main
 from asbuilt.state import PlanError
 
 SENTENCE = "This function calls one other function and returns whatever that returns."
@@ -48,3 +53,24 @@ class NotesTest(unittest.TestCase):
             with self.assertRaises(PlanError):
                 annotate(plan, "plan.json", lambda prompt, reply=reply: reply)
         self.assertEqual(json.dumps(plan), before)
+
+    def test_a_bad_reply_or_a_failed_call_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp, "plan.json"), Path(tmp, "out.json")
+            src.write_text(json.dumps(chart()))
+            quiet = mock.patch.dict(os.environ, {"ASBUILT_MODEL": ""})
+            with quiet:
+                self.assertEqual(main([str(src), str(out)]), 0)
+            kept = out.read_text()
+            written = json.loads(kept)
+            self.assertNotIn("model", written["children"][0]["children"][0]["asbuilt"])
+            self.assertEqual(ids(written), ids(chart()))
+            with quiet, mock.patch("asbuilt.notes.ask", return_value="not json"), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src), str(out)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertTrue(err.getvalue().startswith("asbuilt.notes: "))
+            failed = ConnectionFailed("OpenRouter could not be reached.")
+            with quiet, mock.patch("asbuilt.notes.ask", side_effect=failed), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src), str(out)]), 2)
+            self.assertIn("could not be reached", err.getvalue())
+            self.assertEqual(out.read_text(), kept)
