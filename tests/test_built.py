@@ -31,6 +31,45 @@ def note(source, name="t.py"):
 
 
 class PythonFileTest(unittest.TestCase):
+    def test_top_level_functions_and_classes_become_boxes_on_their_lines(self):
+        lines = [
+            "def one():",
+            "    return 1",
+            "",
+            "async def two():",
+            "    return 2",
+            "",
+            "@dec",
+            "def three():",
+            "    return 3",
+            "",
+            "class Box:",
+            "    def hidden(self):",
+            "        return 4",
+            "",
+            "def holder():",
+            "    def inner():",
+            "        return 5",
+            "",
+            "if True:",
+            "    def skipped():",
+            "        return 0",
+        ]
+        box = python_file("t.py", ("\n".join(lines) + "\n").encode())
+        kids = box["children"]
+        self.assertEqual(
+            [kid["labels"][0]["text"] for kid in kids],
+            ["one()", "two()", "three()", "Box", "holder()"],
+        )
+        self.assertEqual(
+            [kid["asbuilt"]["lines"] for kid in kids],
+            [[1, 2], [4, 5], [7, 9], [11, 13], [15, 17]],
+        )
+        self.assertEqual(
+            [kid["id"] for kid in kids],
+            ["t.py:one:1", "t.py:two:4", "t.py:three:7", "t.py:Box:11", "t.py:holder:15"],
+        )
+
     def test_code_python_accepts_has_no_note_when_utf8_and_is_not_run(self):
         sources = [b"", b"x = '\\d'\n", b"\xef\xbb\xbfx = 'caf\xc3\xa9'\n"]
         sources += [b"# coding: utf-8\nx = 1\n", b"# coding: utf-8-sig\nx = 1\n"]

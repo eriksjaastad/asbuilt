@@ -1,6 +1,8 @@
-"""As-built chart: the code, read into the ELK JSON the page draws. So far one Python file as a
-box, with a note when Python does not accept it: Python's own compile, never run, decides
-what is valid; tree-sitter reads only UTF-8 files, and the definitions come next."""
+"""As-built chart: the code, read into the ELK JSON the page draws. One Python file is a box.
+When Python accepts it and tree-sitter can read it, each top-level function and class is a box
+inside it, with the lines it occupies. A note says when Python does not accept the file, when it
+is not UTF-8, or when tree-sitter misreads code Python accepts. Python's own compile, never run,
+decides what is valid; tree-sitter reads only UTF-8 files."""
 
 import tokenize
 import warnings
@@ -43,13 +45,55 @@ def _text(source):
             return None, "Python accepts it; not UTF-8, so not read"
 
 
+def _line(point):
+    """A tree-sitter point as a 1-based line. The end point is the first column not in the node,
+    so a node that ends at column 0 belongs to the previous line."""
+    row, col = point
+    return row if col == 0 else row + 1
+
+
+def _definitions(root):
+    """Top-level functions and classes: (name, class?, start line, end line). A decorator stays
+    with the definition it decorates. Anything nested, including a function inside a class or
+    under an if, is left inside its parent's lines and is not its own box."""
+    found = []
+    for node in root.named_children:
+        outer = node
+        if node.type == "decorated_definition":
+            node = node.child_by_field_name("definition")
+        if node is None or node.type not in ("function_definition", "class_definition"):
+            continue
+        name = node.child_by_field_name("name")
+        if name is None:
+            continue
+        start = outer.start_point[0] + 1
+        found.append((name.text.decode(), node.type == "class_definition", start, _line(outer.end_point)))
+    return found
+
+
 def python_file(name, source):
     """The box for the Python file called `name` with these bytes, and its note if any: why
     Python does not accept them, else that they are not UTF-8 so not read, else that
-    tree-sitter misreads code Python accepts."""
+    tree-sitter misreads code Python accepts. A file that reads cleanly holds a child box for
+    each top-level function and class."""
     note = _note(source)
+    definitions = []
     if not note:
         text, note = _text(source)
-        if not note and PYTHON.parse(text).root_node.has_error:
-            note = "tree-sitter could not read it all, though Python accepts it"
-    return {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
+        if not note:
+            root = PYTHON.parse(text).root_node
+            if root.has_error:
+                note = "tree-sitter could not read it all, though Python accepts it"
+            else:
+                definitions = _definitions(root)
+    box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
+    if definitions:
+        box["children"] = [
+            {
+                "id": f"{name}:{ident}:{start}",
+                "labels": [{"text": ident if is_class else f"{ident}()"}],
+                "asbuilt": {"lines": [start, end]},
+            }
+            for ident, is_class, start, end in definitions
+        ]
+    return box
