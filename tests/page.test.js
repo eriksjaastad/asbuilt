@@ -128,3 +128,42 @@ test("a box between two boxes of a group is drawn beside the group: below the fi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("clicking a function opens its code beside the chart, which stays put, with no sideways scroll", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  const sentence = "This function calls one other function and returns whatever that returns.";
+  const child = (id, text, proven) => ({ id, labels: [{ text: `${id}()` }], asbuilt: { text, ...(proven ? { proven } : {}) } });
+  writeFileSync(file, JSON.stringify({ id: "built", children: [{ id: "t.py", children: [
+    child("one", "def one():\n    return other()\n", sentence), child("two", "def two():\n    return 1\n"),
+  ] }] }));
+  const { run, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='two']").waitFor();
+    await page.getByText("one()", { exact: true }).click();
+    await page.locator("#code").waitFor();
+    const panel = await page.locator("#code").innerText();
+    assert.ok(panel.includes("def one():") && panel.includes(sentence));
+    await page.locator("#chart > svg [data-box='two']").waitFor();
+    const placed = () => page.evaluate(() => {
+      const code = document.getElementById("code").getBoundingClientRect();
+      const svg = document.querySelector("#chart > svg").getBoundingClientRect();
+      const scroll = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+      return [code.left >= svg.right - 1 && code.top < svg.bottom, code.top >= svg.bottom - 1, scroll];
+    });
+    const wide = await placed();
+    assert.deepEqual([wide[0], wide[2]], [true, 0]);
+    await page.setViewportSize({ width: 700, height: 800 });
+    const narrow = await placed();
+    assert.deepEqual([narrow[1], narrow[2]], [true, 0]);
+  } finally {
+    run.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

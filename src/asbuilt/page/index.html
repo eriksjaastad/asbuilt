@@ -4,12 +4,25 @@
 <link rel="icon" href="data:,">
 <style>
   body { margin: 0; background: #F9F5EB; color: #2F2E2C; font: 14px ui-monospace, Menlo, monospace; }
+  /* Open panel: a 1440px row, 420px for the code, the chart scales in what remains. Under 880px, stack. */
+  #screen { display: flex; align-items: flex-start; width: 100%; max-width: 1440px; }
+  #chart { flex: 1 1 auto; min-width: 0; }
   svg { display: block; max-width: 100%; height: auto; } /* layout keeps a chart laptop wide; this is the last resort */
+  #code { flex: 0 0 420px; width: 420px; box-sizing: border-box; max-height: 100vh; overflow: auto; margin: 0; padding: 16px; background: #2F2E2C; color: #F9F5EB; }
+  #code pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; font: inherit; }
+  #code p { margin: 0 0 8px; }
   .error { margin: 24px; padding: 16px; border: 2px solid #8A3B2E; white-space: pre-wrap; }
   .stale p { margin: 0 24px; color: #8A3B2E; }
   .stale svg { opacity: 0.35; }
+  @media (max-width: 880px) {
+    #screen { flex-direction: column; }
+    #code { width: auto; flex-basis: auto; max-height: none; }
+  }
 </style>
+<div id="screen">
 <div id="chart"></div>
+<aside id="code" hidden></aside>
+</div>
 <script src="/vendor/elk.js"></script>
 <script src="/vendor/rough.js"></script>
 <script type="module" src="/main.js"></script>
