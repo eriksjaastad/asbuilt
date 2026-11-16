@@ -352,13 +352,42 @@ class BuiltCommandTest(unittest.TestCase):
             plan = json.loads(out.read_text())
             folder = plan["children"][0]
             self.assertEqual(folder["id"], "shop")
-            files = {box["id"]: box for box in folder["children"]}
-            self.assertEqual(list(files), ["load.py", "main.py"])
-            self.assertEqual(files["load.py"]["children"][1]["id"], "load.py:load:3")
+            self.assertEqual([box["id"] for box in folder["children"]], ["load.py", "main.py", "sub"])
+            load = folder["children"][0]
+            self.assertEqual(load["children"][1]["id"], "load.py:load:3")
             self.assertEqual(
-                files["load.py"]["edges"][0]["sources"] + files["load.py"]["edges"][0]["targets"],
+                load["edges"][0]["sources"] + load["edges"][0]["targets"],
                 ["load.py:load:3", "load.py:read:1"],
             )
+            nested = folder["children"][2]["children"][0]
+            self.assertEqual(nested["id"], "sub/other.py")
+            self.assertEqual(nested["labels"][0]["text"], "other.py")
+            self.assertEqual(nested["children"][0]["id"], "sub/other.py:other:1")
+
+    def test_tests_pycache_and_hidden_directories_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            root.mkdir()
+            (root / "test_load.py").write_text("def test_load():\n    return 1\n")
+            for name in ("tests", "__pycache__", ".venv"):
+                folder = root / name
+                folder.mkdir()
+                (folder / "secret.py").write_text("def secret():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            self.assertEqual(main([str(root), str(out)]), 0)
+            folder = json.loads(out.read_text())["children"][0]
+            self.assertEqual([box["id"] for box in folder["children"]], ["test_load.py"])
+
+    def test_a_python_file_in_a_subfolder_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp, "shop", "sub", "other.py")
+            src.parent.mkdir(parents=True)
+            src.write_text("def other():\n    return 1\n")
+            kept = src.read_text()
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src.parents[1]), str(src)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertEqual(src.read_text(), kept)
 
     def test_a_folder_does_not_overwrite_one_of_its_python_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -394,8 +423,8 @@ class BuiltCommandTest(unittest.TestCase):
     def test_a_folder_with_no_python_file_in_it_prints_a_hint(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp, "shop")
-            (root / "sub").mkdir(parents=True)
-            (root / "sub" / "other.py").write_text("def other():\n    return 1\n")
+            root.mkdir()
+            (root / "notes.txt").write_text("not code\n")
             out = Path(tmp, "out.json")
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(main([str(root), str(out)]), 2)
