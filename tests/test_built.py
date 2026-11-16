@@ -317,6 +317,26 @@ class SourceTextTest(unittest.TestCase):
         self.assertEqual(edge["rest"], "the rest is in the file, line 41.")
 
 
+def _ends(root_name, files):
+    """Arrow ends in a chart of these files, after a successful build."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp, root_name)
+        root.mkdir()
+        for rel, text in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        out = Path(tmp, "out.json")
+        if main([str(root), str(out)]) != 0:
+            return None
+        plan = json.loads(out.read_text())
+    ends, todo = [], [plan]
+    for box in todo:
+        todo += box.get("children", [])
+        ends += [edge["sources"] + edge["targets"] for edge in box.get("edges", [])]
+    return ends
+
+
 class BuiltCommandTest(unittest.TestCase):
     def test_a_file_is_written_as_a_plan_or_a_refusal_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -337,6 +357,82 @@ class BuiltCommandTest(unittest.TestCase):
                 self.assertEqual(main([str(src), str(src)]), 2)
             self.assertEqual(err.getvalue().count("\n"), 1)
             self.assertEqual(src.read_text(), kept)
+
+    def test_a_from_import_draws_an_arrow_to_the_other_file(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from other import load\ndef main():\n    return load()\n",
+        })
+        self.assertIn(["app.py:main:2", "other.py:load:1"], ends)
+
+    def test_an_import_and_an_attribute_call_draw_an_arrow(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "import other\ndef main():\n    return other.load()\n",
+        })
+        self.assertIn(["app.py:main:2", "other.py:load:1"], ends)
+
+    def test_a_relative_import_draws_an_arrow(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from .other import load\ndef main():\n    return load()\n",
+        })
+        self.assertIn(["app.py:main:2", "other.py:load:1"], ends)
+
+    def test_the_package_name_resolves_under_src(self):
+        ends = _ends("repo", {
+            "src/shop/__init__.py": "",
+            "src/shop/other.py": "def load():\n    return 1\n",
+            "src/shop/app.py": "from shop.other import load\ndef main():\n    return load()\n",
+        })
+        self.assertIn(["src/shop/app.py:main:2", "src/shop/other.py:load:1"], ends)
+
+    def test_a_relative_import_in_init_stays_in_the_package(self):
+        ends = _ends("shop", {
+            "notes.py": "def f():\n    return 1\n",
+            "pkg/__init__.py": "from .notes import f\ndef run():\n    return f()\n",
+            "pkg/notes.py": "def f():\n    return 2\n",
+        })
+        self.assertEqual(ends, [["pkg/__init__.py:run:2", "pkg/notes.py:f:1"]])
+
+    def test_a_second_import_under_try_draws_no_arrow(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "_pure.py": "def escape():\n    return 1\n",
+            "_speedups.py": "def escape():\n    return 2\n",
+            "render.py": (
+                "from ._pure import escape\n"
+                "try:\n"
+                "    from ._speedups import escape\n"
+                "except ImportError:\n"
+                "    pass\n"
+                "def render():\n"
+                "    return escape()\n"
+            ),
+        })
+        self.assertEqual(ends, [])
+
+    def test_a_module_level_assignment_draws_no_arrow(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from other import load\nload = print\ndef main():\n    return load()\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_an_imported_name_rebound_locally_has_no_arrow(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from other import load\ndef main():\n    load = 1\n    return load()\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_an_import_of_an_unknown_name_draws_nothing(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from other import missing\ndef main():\n    return missing()\n",
+        })
+        self.assertEqual(ends, [])
 
     def test_a_folder_is_one_box_per_python_file_sitting_in_it(self):
         with tempfile.TemporaryDirectory() as tmp:
