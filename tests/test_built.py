@@ -420,6 +420,30 @@ class BuiltCommandTest(unittest.TestCase):
         })
         self.assertEqual(ends, [])
 
+    def test_a_target_rebound_in_its_file_is_not_an_arrow(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "events.py": "def get():\n    return 1\ntry:\n    from _c import get\nexcept ImportError:\n    pass\n",
+            "tasks.py": "from . import events\ndef run():\n    return events.get()\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_a_from_import_of_a_rebound_name_draws_nothing(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "events.py": "def get():\n    return 1\nget = print\n",
+            "tasks.py": "from .events import get\ndef run():\n    return get()\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_a_reexport_in_init_is_not_the_submodule(self):
+        ends = _ends("shop", {
+            "pkg/app.py": "app = object()\ndef run():\n    return 1\n",
+            "pkg/__init__.py": "from .app import app\n",
+            "main.py": "from pkg import app\ndef main():\n    return app.run()\n",
+        })
+        self.assertEqual(ends, [])
+
     def test_from_pkg_import_mod_then_mod_f_draws_an_arrow(self):
         ends = _ends("shop", {
             "__init__.py": "",
