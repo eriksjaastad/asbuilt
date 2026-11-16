@@ -375,7 +375,8 @@ def _from_mod(stmt, own, init=False):
     dotted = next((c for c in first.named_children if c.type == "dotted_name"), None)
     rest = () if dotted is None else _dots(dotted)
     base = own if init else own[:-1]
-    if level - 1 > len(base):
+    # `..` that climbs past the top package is not a module we can see.
+    if level > len(base):
         return None
     return base[: len(base) - (level - 1)] + rest
 
@@ -406,6 +407,12 @@ def _imports(stmts, own, init=False):
     return calls, mods
 
 
+def _typing(node):
+    """True when the test is the name TYPE_CHECKING, so the import is the one the file means."""
+    cond = next(iter(node.named_children), None)
+    return cond is not None and cond.type == "identifier" and cond.text.decode() == "TYPE_CHECKING"
+
+
 _COND = {
     "if_statement", "elif_clause", "else_clause", "try_statement", "except_clause",
     "finally_clause", "while_statement", "with_statement", "match_statement", "case_clause",
@@ -420,14 +427,20 @@ def _scope(nodes, own, init):
     decided = {}
 
     def bind(name, spec):
-        decided[name] = None if name in decided or spec is None else spec
+        # The same module imported again (`import pkg` and `import pkg.sub`) is still that import.
+        # A second def is a different binding, so the name is no longer that one function.
+        prev = decided.get(name, False)
+        if prev is False:
+            decided[name] = spec
+        elif spec is None or prev is None or prev != spec or prev[0] == "def":
+            decided[name] = None
 
     def walk(node, conditional):
         kind = node.type
         if kind in ("function_definition", "class_definition"):
             name = node.child_by_field_name("name")
             if name is not None:
-                bind(name.text.decode(), None)
+                bind(name.text.decode(), ("def",))
             return
         if kind == "decorated_definition":
             inner = node.child_by_field_name("definition")
@@ -462,6 +475,10 @@ def _scope(nodes, own, init):
             if target is not None:
                 for name in _pattern(next(iter(target.named_children), None)):
                     bind(name, None)
+            return
+        if kind == "if_statement" and not conditional and _typing(node):
+            for child in node.named_children:
+                walk(child, child.type in ("elif_clause", "else_clause"))
             return
         nested = conditional or kind in _COND
         for child in node.named_children:
@@ -516,7 +533,49 @@ def _def_index(boxes, folder_name):
     return index, own
 
 
-def _cross(rel, source, index, own):
+def _top_scope(source, own, init):
+    """How this file binds each name at module level, or {} when it cannot be read."""
+    if _note(source):
+        return {}
+    text, note = _text(source)
+    if note:
+        return {}
+    root = PYTHON.parse(text).root_node
+    if root.has_error:
+        return {}
+    return _scope(list(root.named_children), own, init)
+
+
+def _live(index, scopes, mod, name):
+    """The box for `name` in `mod`, only when that file binds the name once, as this def."""
+    cid = None if mod is None else index.get(mod, {}).get(name)
+    if not cid:
+        return None
+    rel = cid.rsplit(":", 2)[0]
+    if scopes.get(rel, {}).get(name) != ("def",):
+        return None
+    return cid
+
+
+def _attr_mod(spec, scopes, modules):
+    """The module `obj.attr` calls on. A name bound in the package's __init__ is that object,
+    not the submodule, unless the binding is the submodule itself."""
+    if not spec:
+        return None
+    if spec[0] == "mod":
+        return spec[1]
+    if spec[0] != "from":
+        return None
+    sub = spec[1] + (spec[2],)
+    init = next((r for r, m in modules.items() if m == spec[1] and r.endswith("__init__.py")), None)
+    bound = None if init is None else scopes.get(init, {}).get(spec[2], False)
+    if bound is False:
+        return sub
+    same = bound and (bound[0] == "mod" and bound[1] == sub or bound[0] == "from" and bound[1] == spec[1] and bound[2] == spec[2])
+    return sub if same else None
+
+
+def _cross(rel, source, index, own, scopes, modules):
     """Arrows this file's top-level boxes draw to other files, proved by an import."""
     note = _note(source)
     if note:
@@ -543,13 +602,13 @@ def _cross(rel, source, index, own):
         attrs = []
         for callee in _direct_calls(node, _bound(node, imports=False), attrs):
             spec = use(fn_scope, callee)
-            target = None if not spec or spec[0] != "from" else index.get(spec[1], {}).get(spec[2])
+            target = None if not spec or spec[0] != "from" else _live(index, scopes, spec[1], spec[2])
             if target and (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
         for obj, attr in attrs:
-            spec = use(fn_scope, obj)
-            target = None if not spec or spec[0] != "mod" else index.get(spec[1], {}).get(attr)
+            mod = _attr_mod(use(fn_scope, obj), scopes, modules)
+            target = _live(index, scopes, mod, attr)
             if target and (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
@@ -575,9 +634,13 @@ def python_dir(folder):
         todo += cur.get("children", [])
         if cur["id"].endswith(".py"):
             found[cur["id"]] = cur
-    index, own = _def_index(found, name)
+    index, modules = _def_index(found, name)
+    scopes = {
+        rel: _top_scope(read_bytes(path), modules.get(rel), rel.endswith("__init__.py"))
+        for rel, path in files
+    }
     for rel, path in files:
-        extra = _cross(rel, read_bytes(path), index, own.get(rel))
+        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules)
         if extra:
             found[rel].setdefault("edges", []).extend(extra)
     return box, named
