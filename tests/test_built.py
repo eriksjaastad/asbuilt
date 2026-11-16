@@ -351,7 +351,7 @@ class BuiltCommandTest(unittest.TestCase):
             self.assertEqual(main([str(root), str(out)]), 0)
             plan = json.loads(out.read_text())
             folder = plan["children"][0]
-            self.assertEqual(folder["id"], "shop")
+            self.assertEqual(folder["id"], "shop/")
             self.assertEqual([box["id"] for box in folder["children"]], ["load.py", "main.py", "sub"])
             load = folder["children"][0]
             self.assertEqual(load["children"][1]["id"], "load.py:load:3")
@@ -369,7 +369,8 @@ class BuiltCommandTest(unittest.TestCase):
             root = Path(tmp, "shop")
             root.mkdir()
             (root / "test_load.py").write_text("def test_load():\n    return 1\n")
-            for name in ("tests", "__pycache__", ".venv"):
+            skipped = ("tests", "__pycache__", ".venv", "venv", "env", "node_modules", "build", "dist", "site-packages")
+            for name in skipped:
                 folder = root / name
                 folder.mkdir()
                 (folder / "secret.py").write_text("def secret():\n    return 1\n")
@@ -387,6 +388,68 @@ class BuiltCommandTest(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(main([str(src.parents[1]), str(src)]), 2)
             self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertEqual(src.read_text(), kept)
+
+    def test_a_differently_cased_python_name_is_not_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shop = Path(tmp, "shop")
+            shop.mkdir()
+            src = shop / "main.py"
+            src.write_text("def main():\n    return 1\n")
+            kept = src.read_text()
+            with contextlib.chdir(shop), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([".", "MAIN.PY"]), 2)
+            self.assertEqual(src.read_text(), kept)
+
+    def test_a_new_python_output_says_the_chart_is_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp, "t.py"), Path(tmp, "out.py")
+            src.write_text("def one():\n    return 1\n")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src), str(out)]), 2)
+            self.assertIn("JSON", err.getvalue())
+            self.assertFalse(out.exists())
+            self.assertIn("def one", src.read_text())
+
+    def test_a_symlink_to_a_charted_file_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shop = Path(tmp, "shop")
+            shop.mkdir()
+            src = shop / "main.py"
+            src.write_text("def main():\n    return 1\n")
+            (shop / "link.json").symlink_to(src)
+            kept = src.read_text()
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(shop), str(shop / "link.json")]), 2)
+            self.assertIn("source", err.getvalue())
+            self.assertEqual(src.read_text(), kept)
+
+    def test_a_subfolder_with_the_parent_name_keeps_unique_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            nested = Path(tmp, "mysite", "mysite")
+            nested.mkdir(parents=True)
+            (nested / "settings.py").write_text("def debug():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            self.assertEqual(main([str(nested.parent), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            ids, todo = [], [plan]
+            for box in todo:
+                todo += box.get("children", [])
+                ids.append(box["id"])
+            self.assertEqual(len(ids), len(set(ids)))
+            self.assertEqual(plan["children"][0]["id"], "mysite/")
+            self.assertIn("mysite/settings.py", ids)
+
+    def test_dot_as_the_output_names_the_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shop = Path(tmp, "shop")
+            shop.mkdir()
+            src = shop / "load.py"
+            src.write_text("def load():\n    return 1\n")
+            kept = src.read_text()
+            with contextlib.chdir(shop), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([".", "."]), 2)
+            self.assertIn("shop:", err.getvalue())
             self.assertEqual(src.read_text(), kept)
 
     def test_a_folder_does_not_overwrite_one_of_its_python_files(self):
@@ -409,10 +472,10 @@ class BuiltCommandTest(unittest.TestCase):
             with contextlib.chdir(shop):
                 self.assertEqual(main([".", str(out)]), 0)
             built = json.loads(out.read_text())
-            self.assertEqual(built["children"][0]["id"], "shop")
+            self.assertEqual(built["children"][0]["id"], "shop/")
             load = {"id": "load.py:load", "labels": [{"text": "load()"}]}
             file = {"id": "load.py", "labels": [{"text": "load.py"}], "children": [load]}
-            planned = {"id": "asbuilt:built", "children": [{"id": "shop", "labels": [{"text": "shop"}], "children": [file]}]}
+            planned = {"id": "asbuilt:built", "children": [{"id": "shop/", "labels": [{"text": "shop"}], "children": [file]}]}
             marked = compare(planned, built)
             marks, todo = [], [marked]
             for box in todo:

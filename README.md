@@ -70,7 +70,8 @@ code sits under the chart.
 
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
 box inside its parent. A file in the folder you named is `load.py:load`; a nested file is
-`sub/util.py:name`. Directories named tests or __pycache__, and hidden directories, are skipped.
+`sub/util.py:name`. Directories named tests, __pycache__, venv, env, node_modules, build,
+dist, or site-packages, and hidden directories, are skipped.
 
 ```
 uv run python -m asbuilt.built . built.json

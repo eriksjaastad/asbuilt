@@ -3,9 +3,10 @@
 python -m asbuilt.built PATH OUT writes one Python file, or a folder of Python files, as a
 plan the page can draw. A file is one box, and each top-level function and class is a box inside
 it. A folder holds a box per file and a box per subfolder that has one. A nested file's id is
-its path (`sub/util.py:name`). tests, __pycache__, and hidden directories are skipped.
-OUT is only written. A missing path, or OUT being the source or ending in .py, prints one line
-and writes nothing. A folder with no Python file to chart does too.
+its path (`sub/util.py:name`). tests, __pycache__, venv, env, node_modules, build, dist,
+site-packages, and hidden directories are skipped. OUT is only written. A missing path, or OUT
+being the source or ending in .py, prints one line and writes nothing. A folder with nothing
+to chart does too.
 
 A file Python accepts, as UTF-8, holds those definitions, the lines they occupy, and an arrow
 where one of them calls another top-level name in the file. Otherwise the
@@ -297,10 +298,12 @@ def python_file(name, source):
     return box
 
 
+_SKIP_DIRS = {"tests", "__pycache__", "venv", "env", "node_modules", "build", "dist", "site-packages"}
+
+
 def _py_files(folder):
-    """(relative path, file) for each Python file under folder. A directory named tests or
-    __pycache__, a hidden directory, or a directory symlink is skipped. A file whose name
-    contains "test" is kept."""
+    """(relative path, file) for each Python file under folder. A skipped directory, a hidden
+    directory, or a directory symlink is left out. A file whose name contains "test" is kept."""
     found, todo = [], [folder]
     while todo:
         current = todo.pop()
@@ -311,8 +314,7 @@ def _py_files(folder):
             raise PlanError(f"{current} cannot be read: {why}") from None
         for path in entries:
             if path.is_dir():
-                hidden = path.name.startswith(".") or path.name in ("tests", "__pycache__")
-                if hidden or path.is_symlink():
+                if path.name.startswith(".") or path.name in _SKIP_DIRS or path.is_symlink():
                     continue
                 todo.append(path)
             elif path.is_file() and path.suffix == ".py":
@@ -350,16 +352,30 @@ def python_dir(folder):
     files = _py_files(folder)
     if not files:
         raise PlanError(f"{name} has no Python files to chart.")
-    return {"id": name, "labels": [{"text": name}], "children": _place(files)}
+    # A trailing slash cannot be a relative file path, so mysite/mysite/ does not reuse "mysite".
+    return {"id": f"{name}/", "labels": [{"text": name}], "children": _place(files)}
+
+
+def _is_same(out, path):
+    """True when both exist and are the same file, once OUT is resolved. A symlink counts."""
+    try:
+        return out.exists() and path.exists() and out.resolve().samefile(path)
+    except OSError:
+        return False
 
 
 def _clashes(out, source):
-    """True when OUT is the path being charted, or any path ending in .py. The chart is JSON."""
-    if out.suffix == ".py":
-        return True
-    if not out.exists() or not source.exists():
-        return False
-    return out.samefile(source)
+    """The refusal line when OUT would replace a charted file or end in .py, else ""."""
+    target = out.resolve()
+    label = target.name
+    same = _is_same(out, source)
+    if not same and source.is_dir() and out.exists():
+        same = any(_is_same(out, path) for _, path in _py_files(source))
+    if same:
+        return f"{label}: OUT is the source; it is only read"
+    if target.suffix.lower() == ".py":
+        return f"{label}: the chart is JSON, not a Python file"
+    return ""
 
 
 def main(argv=None):
@@ -377,7 +393,7 @@ def main(argv=None):
             why = exc.strerror or type(exc).__name__
             raise PlanError(f"{args.file.name} cannot be read: {why}") from None
         if clash:
-            raise PlanError(f"{args.out.name}: OUT is the source; it is only read")
+            raise PlanError(clash)
         if args.file.is_dir():
             box = python_dir(args.file)
         else:
