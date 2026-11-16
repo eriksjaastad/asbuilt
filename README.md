@@ -66,7 +66,10 @@ joins a box to another top-level name it calls. A parameter or a local of that n
 call, and a name defined twice points at the last definition. Click a
 function or a class and its code opens beside the chart. The chart stays. The two stay within a laptop
 width: the code takes a fixed column and the chart scales down to fit. On a narrow window the
-code sits under the chart.
+code sits under the chart. “Only what this reaches” keeps that box, every box an arrow leads to
+from it, and the file or folder around each of those, and hides the rest. Arrows are followed
+outward. “Whole chart” brings the full chart back. Choosing a file or a folder starts from every
+box inside it, because the arrows leave those boxes, not the folder.
 
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
 box inside its parent. The folder you named keeps its plain name (`shop`). The built chart writes a subfolder as

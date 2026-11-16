@@ -7,10 +7,14 @@
   /* Open panel: a 1440px row, 420px for the code, the chart scales in what remains. Under 880px, stack. */
   #screen { display: flex; align-items: flex-start; width: 100%; max-width: 1440px; }
   #chart { flex: 1 1 auto; min-width: 0; }
+  button { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; padding: 4px 8px; cursor: pointer; }
   svg { display: block; max-width: 100%; height: auto; } /* layout keeps a chart laptop wide; this is the last resort */
-  #code { flex: 0 0 420px; width: 420px; box-sizing: border-box; max-height: 100vh; overflow: auto; margin: 0; padding: 16px; background: #2F2E2C; color: #F9F5EB; }
+  #code { display: flex; flex-direction: column; flex: 0 0 420px; width: 420px; box-sizing: border-box; max-height: 100vh; overflow: hidden; margin: 0; padding: 16px; background: #2F2E2C; color: #F9F5EB; }
+  #code[hidden] { display: none; }
+  #source { overflow: auto; min-height: 0; }
   #code pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; font: inherit; }
   #code p { margin: 0 0 8px; }
+  #code .actions { display: flex; gap: 8px; flex: none; margin: 0 0 12px; }
   #code .model { border-top: 1px solid #F9F5EB; padding-top: 8px; }
   .error { margin: 24px; padding: 16px; border: 2px solid #8A3B2E; white-space: pre-wrap; }
   .stale p { margin: 0 24px; color: #8A3B2E; }
@@ -22,7 +26,10 @@
 </style>
 <div id="screen">
 <div id="chart"></div>
-<aside id="code" hidden></aside>
+<aside id="code" hidden>
+<p class="actions"><button id="pipeline" hidden type="button">Only what this reaches</button><button id="whole" hidden type="button">Whole chart</button></p>
+<div id="source"></div>
+</aside>
 </div>
 <script src="/vendor/elk.js"></script>
 <script src="/vendor/rough.js"></script>
