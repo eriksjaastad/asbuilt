@@ -1,8 +1,9 @@
 """As-built chart: the code, read into the ELK JSON the page draws.
 
-python -m asbuilt.built FILE OUT writes one Python file as a plan the page can draw. The file is
-one box, and each top-level function and class is a box inside it. OUT is only written. A missing
-file, or OUT being the source file, prints one line and writes nothing.
+python -m asbuilt.built PATH OUT writes one Python file, or the Python files in one folder, as a
+plan the page can draw. A file is one box, and each top-level function and class is a box inside
+it. A folder is one box per Python file sitting in it, and a file in a subfolder is not included.
+OUT is only written. A missing path, or OUT being the source, prints one line and writes nothing.
 
 A file Python accepts, as UTF-8, holds those definitions, the lines they occupy, and an arrow
 where one of them calls another top-level name in the file. Otherwise the
@@ -294,12 +295,28 @@ def python_file(name, source):
     return box
 
 
+def python_dir(folder):
+    """One box for the folder, and inside it one box per Python file sitting in that folder.
+    Each file is read the same way as a single file, so its id is its name (`load.py:load:1`).
+    A plan can name that box `load.py:load` before the line exists. A subfolder is left out."""
+    try:
+        files = sorted(path for path in folder.iterdir() if path.is_file() and path.suffix == ".py")
+    except OSError as exc:
+        why = exc.strerror or type(exc).__name__
+        raise PlanError(f"{folder.name} cannot be read: {why}") from None
+    return {
+        "id": folder.name,
+        "labels": [{"text": folder.name}],
+        "children": [python_file(path.name, read_bytes(path)) for path in files],
+    }
+
+
 def main(argv=None):
     """Exit 0 with OUT written, or 2 with one line naming the file and why, and nothing written."""
     parser = argparse.ArgumentParser(
         prog="python -m asbuilt.built", description=__doc__.split("\n\n")[0]
     )
-    parser.add_argument("file", type=Path, help="the Python file to chart")
+    parser.add_argument("file", type=Path, help="the Python file or folder to chart")
     parser.add_argument("out", type=Path, help="where the plan is written")
     args = parser.parse_args(argv)
     try:
@@ -309,8 +326,11 @@ def main(argv=None):
             why = exc.strerror or type(exc).__name__
             raise PlanError(f"{args.file.name} cannot be read: {why}") from None
         if same:
-            raise PlanError(f"{args.out.name}: OUT is the source file; it is only read")
-        box = python_file(args.file.name, read_bytes(args.file))
+            raise PlanError(f"{args.out.name}: OUT is the source; it is only read")
+        if args.file.is_dir():
+            box = python_dir(args.file)
+        else:
+            box = python_file(args.file.name, read_bytes(args.file))
         plan = {"id": "asbuilt:built", "children": [box]}
         check(plan, args.out.name)
         output.write_atomic(args.out, output.plan_bytes(plan, args.out.name))

@@ -336,3 +336,25 @@ class BuiltCommandTest(unittest.TestCase):
                 self.assertEqual(main([str(src), str(src)]), 2)
             self.assertEqual(err.getvalue().count("\n"), 1)
             self.assertEqual(src.read_text(), kept)
+
+    def test_a_folder_is_one_box_per_python_file_sitting_in_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            root.mkdir()
+            (root / "load.py").write_text("def read():\n    return 1\ndef load():\n    return read()\n")
+            (root / "main.py").write_text("def main():\n    return load()\n")
+            (root / "notes.txt").write_text("not code\n")
+            (root / "sub").mkdir()
+            (root / "sub" / "other.py").write_text("def other():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            self.assertEqual(main([str(root), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            folder = plan["children"][0]
+            self.assertEqual(folder["id"], "shop")
+            files = {box["id"]: box for box in folder["children"]}
+            self.assertEqual(list(files), ["load.py", "main.py"])
+            self.assertEqual(files["load.py"]["children"][1]["id"], "load.py:load:3")
+            self.assertEqual(
+                files["load.py"]["edges"][0]["sources"] + files["load.py"]["edges"][0]["targets"],
+                ["load.py:load:3", "load.py:read:1"],
+            )

@@ -15,7 +15,8 @@ original plans. As-Built does the same for code:
 
 Status: the first view works. `asbuilt` draws a plan file as a hand-inked flowchart in your
 browser and redraws it each time you save the file, and it can draw a planned chart and a built one
-as one chart, marked. It can also chart one Python file and open a function's code beside the chart.
+as one chart, marked. It can also chart one Python file, or the Python files in one folder, and open a function's code
+beside the chart.
 An agent drafting the plan and the note on why each part changed come later.
 
 ## Use it
@@ -67,6 +68,15 @@ function or a class and its code opens beside the chart. The chart stays. The tw
 width: the code takes a fixed column and the chart scales down to fit. On a narrow window the
 code sits under the chart.
 
+The Python files sitting in one folder are charted the same way. The folder is one box, each of
+those files is a box inside it, and the functions and classes stay inside the file. A file in a
+subfolder is not included yet.
+
+```
+uv run python -m asbuilt.built src/asbuilt built.json
+uv run asbuilt built.json
+```
+
 When a function's only step is to call one other function and return that result, the same line
 appears every time: "This function calls one other function and returns whatever that returns."
 
@@ -92,4 +102,4 @@ uv run asbuilt noted.json
 Any other value, or leaving it unset, does not call out and adds no model notes. A reply that
 is not the notes asked for is thrown away and the output file is left unchanged. The model
 cannot add boxes. A function or class nested inside another is not its own box yet, and neither
-is a folder of files or a JavaScript file.
+is a JavaScript file.
