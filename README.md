@@ -72,7 +72,10 @@ The Python files in a folder are charted the same way, including subfolders. Eac
 box inside its parent. The folder you named keeps its plain name (`shop`). The built chart writes a subfolder as
 `sub/`, and a plan may name it `sub` or `sub/`. When the subfolder has the same name as the
 folder, the plan uses the slash (`mysite/`) so the two boxes stay different. A file in the
-folder is `load.py:load`; a nested file is `sub/util.py:name`. Directories named tests, venv,
+folder is `load.py:load`; a nested file is `sub/util.py:name`. An arrow crosses files when `from other import load` is
+followed by `load()`, or `import other` by `other.load()`, including `from .other import load`
+and `from shop.other import load` when that module is in the folder. Anything else is not an
+arrow. Directories named tests, venv,
 env, node_modules, build, dist, or site-packages are named when skipped. __pycache__ and
 hidden directories are skipped quietly.
 

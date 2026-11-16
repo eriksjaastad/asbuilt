@@ -3,8 +3,9 @@
 python -m asbuilt.built PATH OUT writes one Python file, or a folder of Python files, as a
 plan the page can draw. A file is one box, and each top-level function and class is a box inside
 it. A folder holds a box per file and a box per subfolder that has one. A nested file's id is
-its path (`sub/util.py:name`). tests, __pycache__, venv, env, node_modules, build, dist,
-site-packages, and hidden directories are skipped. OUT is only written. A missing path, or OUT
+its path (`sub/util.py:name`). An arrow crosses files only when an import proves the call.
+tests, __pycache__, venv, env, node_modules, build, dist, site-packages, and hidden
+directories are skipped. OUT is only written. A missing path, or OUT
 being the source or ending in .py, prints one line and writes nothing. A folder with nothing
 to chart does too.
 
@@ -126,7 +127,7 @@ def _imported(stmt):
     return names
 
 
-def _bound(node):
+def _bound(node, imports=True):
     """Names this box assigns. A call of one of them is not the top-level function of that name.
     `global load` puts the name back: the call is the top-level one."""
     names, glob = set(), set()
@@ -154,7 +155,8 @@ def _bound(node):
             glob.update(c.text.decode() for c in cur.named_children if c.type == "identifier")
             continue
         if cur.type in ("import_statement", "import_from_statement"):
-            names.update(_imported(cur))
+            if imports:
+                names.update(_imported(cur))
             continue
         if cur.type == "as_pattern":
             target = next((c for c in cur.named_children if c.type == "as_pattern_target"), None)
@@ -193,9 +195,10 @@ def _scoped(node, extra):
     return names
 
 
-def _direct_calls(node, scope):
-    """Bare names called in `node`'s body, ignoring names bound there. A call on an attribute,
-    and a call inside a nested function or class, are skipped."""
+def _direct_calls(node, scope, attrs=None):
+    """Bare names called in `node`'s body, ignoring names bound there. A call on an attribute
+    is recorded in `attrs` as (object, name) when the object is a bare name; a chain is not.
+    A call inside a nested function or class is skipped."""
     body = node.child_by_field_name("body")
     found, todo = [], [(c, scope) for c in reversed(body.children)] if body is not None else []
     nested = ("function_definition", "class_definition", "decorated_definition")
@@ -211,6 +214,10 @@ def _direct_calls(node, scope):
             fun = next(iter(cur.named_children), None)
             if fun is not None and fun.type == "identifier" and fun.text.decode() not in names:
                 found.append(fun.text.decode())
+            elif attrs is not None and fun is not None and fun.type == "attribute":
+                obj, attr = fun.child_by_field_name("object"), fun.child_by_field_name("attribute")
+                if obj is not None and obj.type == "identifier" and attr is not None and obj.text.decode() not in names:
+                    attrs.append((obj.text.decode(), attr.text.decode()))
         todo.extend((c, names) for c in reversed(cur.children))
     return found
 
@@ -350,6 +357,140 @@ def _place(files):
     return root["children"]
 
 
+def _dots(node):
+    return tuple(c.text.decode() for c in node.named_children if c.type == "identifier")
+
+
+def _from_mod(stmt, own):
+    """The module tuple a from-import names, or None. Dots are counted from `own`."""
+    first = next(iter(stmt.named_children), None)
+    if first is None:
+        return None
+    if first.type == "dotted_name":
+        return _dots(first)
+    if first.type != "relative_import" or not own:
+        return None
+    prefix = next((c for c in first.named_children if c.type == "import_prefix"), None)
+    level = 0 if prefix is None else prefix.text.decode().count(".")
+    dotted = next((c for c in first.named_children if c.type == "dotted_name"), None)
+    rest = () if dotted is None else _dots(dotted)
+    base = own[:-1]
+    if level - 1 > len(base):
+        return None
+    return base[: len(base) - (level - 1)] + rest
+
+
+def _imports(stmts, own):
+    """Names bound by these statements: from-imports as (module, original), import as the module."""
+    calls, mods = {}, {}
+    for stmt in stmts:
+        if stmt.type == "import_from_statement":
+            mod = _from_mod(stmt, own)
+            for item in stmt.named_children[1:]:
+                if item.type == "dotted_name" and mod:
+                    name = _dots(item)[0]
+                    calls[name] = (mod, name)
+                elif item.type == "aliased_import" and mod:
+                    dotted = next(c for c in item.named_children if c.type == "dotted_name")
+                    alias = next(c for c in item.named_children if c.type == "identifier")
+                    calls[alias.text.decode()] = (mod, _dots(dotted)[0])
+        elif stmt.type == "import_statement":
+            for item in stmt.named_children:
+                if item.type == "dotted_name":
+                    parts = _dots(item)
+                    mods[parts[0]] = (parts[0],)
+                elif item.type == "aliased_import":
+                    dotted = next(c for c in item.named_children if c.type == "dotted_name")
+                    alias = next(c for c in item.named_children if c.type == "identifier")
+                    mods[alias.text.decode()] = _dots(dotted)
+    return calls, mods
+
+
+def _module(rel, pkgs, folder_name):
+    """The public module of this file, or None when it is not an importable module."""
+    init = rel.endswith("__init__.py")
+    if init:
+        directory = rel[: -len("__init__.py")].rstrip("/")
+        parts = tuple(p for p in directory.split("/") if p)
+    else:
+        directory = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        parts = tuple(rel[:-3].split("/"))
+    if "" in pkgs and (directory in pkgs or directory == ""):
+        return (folder_name, *parts)
+    if directory in pkgs:
+        dirs = directory.split("/")
+        start = next(
+            i
+            for i in range(len(dirs))
+            if "/".join(dirs[: i + 1]) in pkgs and (i == 0 or "/".join(dirs[:i]) not in pkgs)
+        )
+        return parts[start:]
+    if directory == "" and not init:
+        return parts
+    return None
+
+
+def _def_index(boxes, folder_name):
+    """{(module, name): box id}. Two files for one module and name make it None, so it is not used."""
+    pkgs = {rel[: -len("__init__.py")].rstrip("/") for rel in boxes if rel.endswith("__init__.py")}
+    index, own = {}, {}
+    for rel, box in boxes.items():
+        mod = _module(rel, pkgs, folder_name)
+        own[rel] = mod
+        if not mod:
+            continue
+        prefix = rel + ":"
+        slot = index.setdefault(mod, {})
+        for child in box.get("children", []):
+            cid = child["id"]
+            if not cid.startswith(prefix):
+                continue
+            ident = cid[len(prefix) :].rpartition(":")[0]
+            slot[ident] = None if ident in slot and slot[ident] != cid else cid
+    return index, own
+
+
+def _cross(rel, source, index, own):
+    """Arrows this file's top-level boxes draw to other files, proved by an import."""
+    note = _note(source)
+    if note:
+        return []
+    text, note = _text(source)
+    if note:
+        return []
+    root = PYTHON.parse(text).root_node
+    if root.has_error:
+        return []
+    file_calls, file_mods = _imports(list(root.named_children), own)
+    defs = _definitions(root)
+    defined = {ident for ident, *_rest in defs}
+    edges, seen = [], set()
+    for ident, _, start, _, node in defs:
+        src = f"{rel}:{ident}:{start}"
+        body = node.child_by_field_name("body")
+        stmts = list(body.named_children) if body is not None else []
+        fn_calls, fn_mods = _imports(stmts, own)
+        attrs = []
+        bare = _direct_calls(node, _bound(node, imports=False), attrs)
+        for callee in bare:
+            if callee not in fn_calls and callee not in file_calls:
+                continue
+            if callee in defined and callee not in fn_calls:
+                continue
+            spec = fn_calls.get(callee) or file_calls.get(callee)
+            target = None if spec is None else index.get(spec[0], {}).get(spec[1])
+            if target and (src, target) not in seen:
+                seen.add((src, target))
+                edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
+        for obj, attr in attrs:
+            mod = fn_mods.get(obj) or file_mods.get(obj)
+            target = None if mod is None else index.get(mod, {}).get(attr)
+            if target and (src, target) not in seen:
+                seen.add((src, target))
+                edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
+    return edges
+
+
 def python_dir(folder):
     """One box for the folder, named with its real name so `.` is not blank. A file in the folder
     is `load.py:load`. A nested file is `sub/util.py:name`, inside a box for each directory."""
@@ -364,6 +505,16 @@ def python_dir(folder):
         extra = f" Skipped {skipped}." if skipped else ""
         raise PlanError(f"{name} has no Python files to chart.{extra}")
     box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
+    found, todo = {}, [box]
+    for cur in todo:
+        todo += cur.get("children", [])
+        if cur["id"].endswith(".py"):
+            found[cur["id"]] = cur
+    index, own = _def_index(found, name)
+    for rel, path in files:
+        extra = _cross(rel, read_bytes(path), index, own.get(rel))
+        if extra:
+            found[rel].setdefault("edges", []).extend(extra)
     return box, named
 
 
