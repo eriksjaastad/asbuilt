@@ -1,6 +1,8 @@
-"""One plan from two ELK plans: each box and arrow marked "planned" (the same parent, label and
-note, or the same ends and label, in both), "changed" (in both, one of those differs), "added" (only built) or "dropped" (only planned),
-with an empty "why". Built's keep their place; a dropped box goes under its planned parent, a
+"""One plan from two ELK plans: each box and arrow marked "planned" (the same parent and
+label, and the same note when the built box has one; or the same ends and label), "changed"
+(in both, one of those differs), "added" (only built) or "dropped" (only planned),
+with an empty "why". A note that is only on the plan is not a change: the built box has no
+caption to differ. Built's keep their place; a dropped box goes under its planned parent, a
 dropped arrow on the top box, joining its planned ends.
 
 python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT, and `asbuilt OUT` draws each
@@ -132,11 +134,20 @@ def _drawn(plan):
 
 
 def _mark(key, old, new):
-    """For a key of `new`: "added", or by what the page draws (all but the last item of each
-    value) "planned" or "changed"."""
+    """For a key of `new`: "added", or by what the page draws "planned" or "changed".
+
+    A box is parent, label, note. An empty note on the built box is not a change: the plan's
+    caption is not drawn there, so the picture of the code is the same. A note the built box
+    does have must match. Arrows stay source, target, and label."""
     if key not in old:
         return "added"
-    return "planned" if old[key][:-1] == new[key][:-1] else "changed"
+    before, after = old[key], new[key]
+    if before[:-1] == after[:-1]:
+        return "planned"
+    # box tuples are (parent, label, note, box); arrows carry "sources" and are left alone
+    if "sources" not in after[-1] and after[2] == "" and before[:2] == after[:2]:
+        return "planned"
+    return "changed"
 
 
 def _marked(item, mark):

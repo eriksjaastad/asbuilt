@@ -176,15 +176,25 @@ class CompareTest(unittest.TestCase):
                 )
                 self.assertIn(mark, ok, key)
 
+    def test_a_note_only_on_the_plan_is_not_a_change(self):
+        planned = box("r", box("load", labels=["load()", "reads the file"]))
+        built = box("r", box("load", labels=["load()"]))
+        self.assertEqual(tree(compare(planned, built)), "load:planned")
+        different = box("r", box("load", labels=["save()", "reads the file"]))
+        self.assertEqual(tree(compare(planned, different)), "load:changed")
+
     def test_only_what_the_page_draws_counts_as_a_change(self):
         same = [None, [], ["a"], ["a", ""], ["a", "", "x"]]
         for labels in same + [[""], ["b"], ["a", "n"], ["b", ""]]:
             want = "a:planned" if labels in same else "a:changed"
-            for p, b in [(None, labels), (labels, None)]:
-                out = compare(
-                    box("r", box("a", labels=p)), box("r", box("a", labels=b))
-                )
-                self.assertEqual(tree(out), want, (p, b))
+        for p, b in [(None, labels), (labels, None)]:
+            # The plan's own caption is not drawn on a built box that has no note.
+            note_only_on_plan = labels == ["a", "n"] and b is None
+            got = "a:planned" if note_only_on_plan else want
+            out = compare(
+                box("r", box("a", labels=p)), box("r", box("a", labels=b))
+            )
+            self.assertEqual(tree(out), got, (p, b))
 
     def test_check_says_what_the_page_says_about_generated_plans(self):
         # Seeded, so the same plans every run.
