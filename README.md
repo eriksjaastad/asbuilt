@@ -51,8 +51,8 @@ The chart is the built one, with each box and arrow that differs from the plan t
 ## Read one Python file
 
 ```
-uv run python -m asbuilt.built t.py plan.json
-uv run asbuilt plan.json
+uv run python -m asbuilt.built t.py built.json
+uv run asbuilt built.json
 ```
 
 The file is the outer box. Each top-level function and class is a box inside it. Click a
@@ -68,10 +68,11 @@ the line above. Nothing is sent unless you opt in. The key is the environment va
 `OPENROUTER_API_KEY` (As-Built never stores it). The model is `x-ai/grok-4.7` on OpenRouter.
 
 ```
-ASBUILT_MODEL=1 uv run python -m asbuilt.notes plan.json noted.json
+ASBUILT_MODEL=1 uv run python -m asbuilt.notes built.json noted.json
 uv run asbuilt noted.json
 ```
 
+`ASBUILT_MODEL=1` sends each function's source code to OpenRouter and may cost money.
 Without `ASBUILT_MODEL=1` the command does not call out, and it adds no model notes. A reply that
 is not the notes asked for is thrown away and the output file is left unchanged. The model
 cannot add boxes. A function or class nested inside another is not its own box yet, and neither
