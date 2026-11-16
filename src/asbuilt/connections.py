@@ -1,8 +1,16 @@
-"""The one place As-Built runs a model: the installed Claude Code CLI, so it is swapped here."""
+"""The one place As-Built runs a model, so it is swapped here.
+
+ask() never calls out unless ASBUILT_MODEL is set. "claude" uses the installed Claude
+program and the user's own login, and does not read an API key. "1" calls OpenRouter
+with OPENROUTER_API_KEY, read at call time and never written into a file or an error.
+Anything else is the mock. Pass a connection to use something else.
+"""
 
 import json
 import os
 import subprocess
+import urllib.error
+import urllib.request
 
 TIMEOUT = 300
 # Only these reach the CLI: no key, token or other provider (Bedrock, Vertex) can be chosen.
@@ -16,6 +24,58 @@ TEXT = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "re
 
 class ConnectionFailed(Exception):
     """A model call that gave no reply, said in one line meant for the person."""
+
+
+MODEL = "x-ai/grok-4.7"  # the strongest Grok model on OpenRouter
+URL = "https://openrouter.ai/api/v1/chat/completions"
+OPT_IN = "ASBUILT_MODEL"
+KEY_NAME = "OPENROUTER_API_KEY"
+
+
+class Mock:
+    """A stand-in that never calls out. Its reply is no notes, so nothing is invented."""
+
+    def __call__(self, prompt):
+        return '{"notes": []}'
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None  # a redirect must not carry the key to another host
+
+
+def _open(req, timeout):
+    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
+class OpenRouter:
+    """One chat completion. The key stays in the header of this call and nowhere else."""
+
+    def __init__(self, opener=None, timeout=60, model=MODEL):
+        self.opener, self.timeout, self.model = opener, timeout, model
+
+    def __call__(self, prompt):
+        key = os.environ.get(KEY_NAME) or ""
+        if not key:
+            raise ConnectionFailed(f"{KEY_NAME} is not set.")
+        body = json.dumps({"model": self.model, "messages": [{"role": "user", "content": prompt}]}).encode()
+        req = urllib.request.Request(
+            URL, data=body, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        )
+        try:  # _open is looked up at call time, so a test can stand in for the network
+            with (self.opener or _open)(req, self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            raise ConnectionFailed(f"OpenRouter refused the call, status {exc.code}.") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise ConnectionFailed("OpenRouter could not be reached.") from None
+        try:
+            text = json.loads(raw)["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise ConnectionFailed("OpenRouter replied with nothing it could read.") from None
+        if not isinstance(text, str) or not text.strip() or key in text:
+            raise ConnectionFailed("OpenRouter replied with nothing it could read.")
+        return text
 
 
 class ClaudeCLI:
@@ -65,8 +125,15 @@ class ClaudeCLI:
 
 
 def ask(prompt, connection=None):
-    """The reply to `prompt` from `connection`, else from the installed Claude CLI."""
-    return (ClaudeCLI() if connection is None else connection)(prompt)
+    """The reply to `prompt`. Mock, unless ASBUILT_MODEL is "claude" or "1"."""
+    if connection is not None:
+        return connection(prompt)
+    choice = os.environ.get(OPT_IN)
+    if choice == "claude":  # the installed program; it never sees OPENROUTER_API_KEY
+        return ClaudeCLI()(prompt)
+    if choice == "1":
+        return OpenRouter()(prompt)
+    return Mock()(prompt)
 
 
 def stopped(done):

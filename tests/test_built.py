@@ -1,12 +1,16 @@
+import contextlib
+import io
+import json
 import random
-import tokenize
 import sys
+import tempfile
+import tokenize
 import unittest
 import warnings
 from pathlib import Path
 
 import asbuilt
-from asbuilt.built import _text, python_file
+from asbuilt.built import _text, main, python_file
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
 HEADS += [b"# coding: unicode_escape\n", b"# coding: rot_13\n", b"# coding: nope\n"]
@@ -31,6 +35,45 @@ def note(source, name="t.py"):
 
 
 class PythonFileTest(unittest.TestCase):
+    def test_top_level_functions_and_classes_become_boxes_on_their_lines(self):
+        lines = [
+            "def one():",
+            "    return 1",
+            "",
+            "async def two():",
+            "    return 2",
+            "",
+            "@dec",
+            "def three():",
+            "    return 3",
+            "",
+            "class Box:",
+            "    def hidden(self):",
+            "        return 4",
+            "",
+            "def holder():",
+            "    def inner():",
+            "        return 5",
+            "",
+            "if True:",
+            "    def skipped():",
+            "        return 0",
+        ]
+        box = python_file("t.py", ("\n".join(lines) + "\n").encode())
+        kids = box["children"]
+        self.assertEqual(
+            [kid["labels"][0]["text"] for kid in kids],
+            ["one()", "two()", "three()", "Box", "holder()"],
+        )
+        self.assertEqual(
+            [kid["asbuilt"]["lines"] for kid in kids],
+            [[1, 2], [4, 5], [7, 9], [11, 13], [15, 17]],
+        )
+        self.assertEqual(
+            [kid["id"] for kid in kids],
+            ["t.py:one:1", "t.py:two:4", "t.py:three:7", "t.py:Box:11", "t.py:holder:15"],
+        )
+
     def test_code_python_accepts_has_no_note_when_utf8_and_is_not_run(self):
         sources = [b"", b"x = '\\d'\n", b"\xef\xbb\xbfx = 'caf\xc3\xa9'\n"]
         sources += [b"# coding: utf-8\nx = 1\n", b"# coding: utf-8-sig\nx = 1\n"]
@@ -130,3 +173,68 @@ class PythonFileTest(unittest.TestCase):
         self.assertEqual(
             seen, {"", "does not parse:", "does not parse ", "Python accepts "}
         )
+
+
+class PassThroughTest(unittest.TestCase):
+    def test_only_a_single_returned_call_carries_the_sentence(self):
+        sentence = "This function calls one other function and returns whatever that returns."
+        matches = [
+            "def f():\n    return other(1, x)\n",
+            "async def f():\n    return other()\n",
+            "def f():\n    return (other())\n",
+            "async def f():\n    return await other(1)\n",
+        ]
+        skips = [
+            "def f():\n    return g(h())\n",
+            "async def f():\n    return await g(h())\n",
+            'def f():\n    """doc"""\n    return other()\n',
+            "def f():\n    return other() + 1\n",
+            "def f():\n    return\n",
+            "class C:\n    def f(self):\n        return other()\n",
+        ]
+        for source in matches:
+            info = python_file("t.py", source.encode())["children"][0]["asbuilt"]
+            self.assertEqual(info.get("proven"), sentence, source)
+        for source in skips:
+            info = python_file("t.py", source.encode())["children"][0]["asbuilt"]
+            self.assertNotIn("proven", info, source)
+
+
+class SourceTextTest(unittest.TestCase):
+    def test_a_definition_keeps_its_own_lines_and_a_long_one_is_cut_not_summarized(self):
+        source = "def one():\n    return 1\n\ndef two():\n    return 2\n"
+        one = python_file("t.py", source.encode())["children"][0]["asbuilt"]
+        self.assertEqual(one["text"], "def one():\n    return 1")
+        self.assertNotIn("two", one["text"])
+        self.assertNotIn("rest", one)
+        lines = ["def long():"] + [f"    x = {i}" for i in range(45)]
+        info = python_file("t.py", ("\n".join(lines) + "\n").encode())["children"][0]["asbuilt"]
+        self.assertEqual(info["lines"], [1, 46])
+        self.assertEqual(info["text"], "\n".join(lines[:40]))
+        self.assertNotIn("x = 39", info["text"])
+        self.assertEqual(info["rest"], "the rest is in the file, lines 41-46.")
+        short = ["def edge():"] + [f"    x = {i}" for i in range(40)]
+        edge = python_file("t.py", ("\n".join(short) + "\n").encode())["children"][0]["asbuilt"]
+        self.assertEqual(edge["rest"], "the rest is in the file, line 41.")
+
+
+class BuiltCommandTest(unittest.TestCase):
+    def test_a_file_is_written_as_a_plan_or_a_refusal_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp, "t.py"), Path(tmp, "out.json")
+            src.write_text("def one():\n    return 1\n")
+            self.assertEqual(main([str(src), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            self.assertEqual(plan["id"], "asbuilt:built")
+            self.assertEqual(plan["children"][0]["children"][0]["labels"][0]["text"], "one()")
+            out.unlink()
+            kept = src.read_text()
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(Path(tmp, "missing.py")), str(out)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertTrue(err.getvalue().startswith("asbuilt.built: "))
+            self.assertFalse(out.exists())
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src), str(src)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertEqual(src.read_text(), kept)
