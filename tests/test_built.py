@@ -351,8 +351,8 @@ class BuiltCommandTest(unittest.TestCase):
             self.assertEqual(main([str(root), str(out)]), 0)
             plan = json.loads(out.read_text())
             folder = plan["children"][0]
-            self.assertEqual(folder["id"], "shop/")
-            self.assertEqual([box["id"] for box in folder["children"]], ["load.py", "main.py", "sub"])
+            self.assertEqual(folder["id"], "shop")
+            self.assertEqual([box["id"] for box in folder["children"]], ["load.py", "main.py", "sub/"])
             load = folder["children"][0]
             self.assertEqual(load["children"][1]["id"], "load.py:load:3")
             self.assertEqual(
@@ -437,8 +437,19 @@ class BuiltCommandTest(unittest.TestCase):
                 todo += box.get("children", [])
                 ids.append(box["id"])
             self.assertEqual(len(ids), len(set(ids)))
-            self.assertEqual(plan["children"][0]["id"], "mysite/")
-            self.assertIn("mysite/settings.py", ids)
+            self.assertEqual(plan["children"][0]["id"], "mysite")
+            sub = plan["children"][0]["children"][0]
+            self.assertEqual(sub["id"], "mysite/")
+            inner = {"id": "mysite/settings.py:debug", "labels": [{"text": "debug()"}]}
+            file = {"id": "mysite/settings.py", "labels": [{"text": "settings.py"}], "children": [inner]}
+            sub_plan = {"id": "mysite/", "labels": [{"text": "mysite"}], "children": [file]}
+            planned = {"id": "asbuilt:built", "children": [{"id": "mysite", "labels": [{"text": "mysite"}], "children": [sub_plan]}]}
+            marked = compare(planned, plan)
+            marks, todo = [], [marked]
+            for box in todo:
+                todo += box.get("children", [])
+                marks += [kid["asbuilt"]["mark"] for kid in box.get("children", [])]
+            self.assertEqual(marks, ["planned", "planned", "planned", "planned"])
 
     def test_dot_as_the_output_names_the_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -472,16 +483,29 @@ class BuiltCommandTest(unittest.TestCase):
             with contextlib.chdir(shop):
                 self.assertEqual(main([".", str(out)]), 0)
             built = json.loads(out.read_text())
-            self.assertEqual(built["children"][0]["id"], "shop/")
+            self.assertEqual(built["children"][0]["id"], "shop")
             load = {"id": "load.py:load", "labels": [{"text": "load()"}]}
             file = {"id": "load.py", "labels": [{"text": "load.py"}], "children": [load]}
-            planned = {"id": "asbuilt:built", "children": [{"id": "shop/", "labels": [{"text": "shop"}], "children": [file]}]}
+            planned = {"id": "asbuilt:built", "children": [{"id": "shop", "labels": [{"text": "shop"}], "children": [file]}]}
             marked = compare(planned, built)
             marks, todo = [], [marked]
             for box in todo:
                 todo += box.get("children", [])
                 marks += [kid["asbuilt"]["mark"] for kid in box.get("children", [])]
             self.assertEqual(marks, ["planned", "planned", "planned"])
+
+    def test_a_skipped_build_directory_is_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            (root / "build").mkdir(parents=True)
+            (root / "load.py").write_text("def load():\n    return 1\n")
+            (root / "build" / "mod.py").write_text("def mod():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(root), str(out)]), 0)
+            self.assertEqual(err.getvalue(), "asbuilt.built: skipped build\n")
+            folder = json.loads(out.read_text())["children"][0]
+            self.assertEqual([box["id"] for box in folder["children"]], ["load.py"])
 
     def test_a_folder_with_no_python_file_in_it_prints_a_hint(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -302,9 +302,10 @@ _SKIP_DIRS = {"tests", "__pycache__", "venv", "env", "node_modules", "build", "d
 
 
 def _py_files(folder):
-    """(relative path, file) for each Python file under folder. A skipped directory, a hidden
-    directory, or a directory symlink is left out. A file whose name contains "test" is kept."""
-    found, todo = [], [folder]
+    """(relative path, file) for each Python file under folder, and the relative paths of
+    directories left out by name. A hidden directory or a directory symlink is left out too.
+    A file whose name contains "test" is kept."""
+    found, skipped, todo = [], [], [folder]
     while todo:
         current = todo.pop()
         try:
@@ -314,13 +315,15 @@ def _py_files(folder):
             raise PlanError(f"{current} cannot be read: {why}") from None
         for path in entries:
             if path.is_dir():
+                if path.name in _SKIP_DIRS:
+                    skipped.append(path.relative_to(folder).as_posix())
                 if path.name.startswith(".") or path.name in _SKIP_DIRS or path.is_symlink():
                     continue
                 todo.append(path)
             elif path.is_file() and path.suffix == ".py":
                 found.append((path.relative_to(folder).as_posix(), path))
     found.sort()
-    return found
+    return found, skipped
 
 
 def _place(files):
@@ -332,7 +335,9 @@ def _place(files):
         for part in parts[:-1]:
             key = f"{parent}/{part}" if parent else part
             if key not in boxes:
-                boxes[key] = {"id": key, "labels": [{"text": part}], "children": []}
+                # A trailing slash is not a file path, so the folder mysite and the subfolder
+                # mysite/ are different boxes. The top folder keeps its plain name.
+                boxes[key] = {"id": f"{key}/", "labels": [{"text": part}], "children": []}
                 boxes[parent]["children"].append(boxes[key])
             parent = key
         box = python_file(rel, read_bytes(path))
@@ -349,11 +354,11 @@ def python_dir(folder):
     except OSError as exc:
         why = exc.strerror or type(exc).__name__
         raise PlanError(f"{folder} cannot be read: {why}") from None
-    files = _py_files(folder)
+    files, skipped = _py_files(folder)
     if not files:
         raise PlanError(f"{name} has no Python files to chart.")
-    # A trailing slash cannot be a relative file path, so mysite/mysite/ does not reuse "mysite".
-    return {"id": f"{name}/", "labels": [{"text": name}], "children": _place(files)}
+    box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
+    return box, skipped
 
 
 def _is_same(out, path):
@@ -370,7 +375,7 @@ def _clashes(out, source):
     label = target.name
     same = _is_same(out, source)
     if not same and source.is_dir() and out.exists():
-        same = any(_is_same(out, path) for _, path in _py_files(source))
+        same = any(_is_same(out, path) for _, path in _py_files(source)[0])
     if same:
         return f"{label}: OUT is the source; it is only read"
     if target.suffix.lower() == ".py":
@@ -394,13 +399,16 @@ def main(argv=None):
             raise PlanError(f"{args.file.name} cannot be read: {why}") from None
         if clash:
             raise PlanError(clash)
+        skipped = []
         if args.file.is_dir():
-            box = python_dir(args.file)
+            box, skipped = python_dir(args.file)
         else:
             box = python_file(args.file.name, read_bytes(args.file))
         plan = {"id": "asbuilt:built", "children": [box]}
         check(plan, args.out.name)
         output.write_atomic(args.out, output.plan_bytes(plan, args.out.name))
+        if skipped:
+            print(f"asbuilt.built: skipped {', '.join(sorted(skipped))}", file=sys.stderr)
     except PlanError as exc:
         return output.fail("asbuilt.built", exc)
     return 0
