@@ -3,7 +3,8 @@
 python -m asbuilt.built PATH OUT writes one Python file, or the Python files in one folder, as a
 plan the page can draw. A file is one box, and each top-level function and class is a box inside
 it. A folder is one box per Python file sitting in it, and a file in a subfolder is not included.
-OUT is only written. A missing path, or OUT being the source, prints one line and writes nothing.
+OUT is only written. A missing path, or OUT being the source or a Python file in the
+folder, prints one line and writes nothing. A folder with no Python file in it does too.
 
 A file Python accepts, as UTF-8, holds those definitions, the lines they occupy, and an arrow
 where one of them calls another top-level name in the file. Otherwise the
@@ -297,18 +298,36 @@ def python_file(name, source):
 
 def python_dir(folder):
     """One box for the folder, and inside it one box per Python file sitting in that folder.
-    Each file is read the same way as a single file, so its id is its name (`load.py:load:1`).
-    A plan can name that box `load.py:load` before the line exists. A subfolder is left out."""
+    The box uses the folder's real name, so `.` is not blank. Each file is read the same way as
+    a single file, so its id is its name (`load.py:load:1`). A plan can name that box
+    `load.py:load` before the line exists. A subfolder is left out."""
     try:
+        name = folder.resolve().name
         files = sorted(path for path in folder.iterdir() if path.is_file() and path.suffix == ".py")
     except OSError as exc:
         why = exc.strerror or type(exc).__name__
-        raise PlanError(f"{folder.name} cannot be read: {why}") from None
+        raise PlanError(f"{folder} cannot be read: {why}") from None
+    if not files:
+        raise PlanError(f"{name} has no Python files sitting in it. A subfolder is not included.")
     return {
-        "id": folder.name,
-        "labels": [{"text": folder.name}],
+        "id": name,
+        "labels": [{"text": name}],
         "children": [python_file(path.name, read_bytes(path)) for path in files],
     }
+
+
+def _clashes(out, source):
+    """True when OUT is the path being charted, or one of the Python files in that folder."""
+    if not out.exists() or not source.exists():
+        return False
+    if out.samefile(source):
+        return True
+    if not source.is_dir():
+        return False
+    for path in source.iterdir():
+        if path.is_file() and path.suffix == ".py" and out.samefile(path):
+            return True
+    return False
 
 
 def main(argv=None):
@@ -321,11 +340,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         try:  # samefile raises when a path cannot be statted
-            same = args.out.exists() and args.file.exists() and args.out.samefile(args.file)
+            clash = _clashes(args.out, args.file)
         except OSError as exc:
             why = exc.strerror or type(exc).__name__
             raise PlanError(f"{args.file.name} cannot be read: {why}") from None
-        if same:
+        if clash:
             raise PlanError(f"{args.out.name}: OUT is the source; it is only read")
         if args.file.is_dir():
             box = python_dir(args.file)
