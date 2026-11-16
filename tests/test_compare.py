@@ -189,6 +189,39 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(tree(out), "shop.py:planned[shop.py:load:12:planned]")
         self.assertEqual(out["children"][0]["children"][0]["id"], "shop.py:load:12")
 
+    def test_a_short_id_with_different_counts_on_each_side_keeps_unique_ids(self):
+        # One `def _` against two registrations of that name. The shared full id matches;
+        # the extra one is added. The page must accept the result.
+        planned = box("r", box("shop.py:_:4"))
+        built = box("r", box("shop.py:_:4"), box("shop.py:_:9"))
+        out = compare(planned, built)
+        self.assertEqual(items(out), {"shop.py:_:4": "planned", "shop.py:_:9": "added"})
+        check(out, "out.json")
+
+    def test_a_short_id_shared_on_both_sides_is_not_collapsed(self):
+        planned = box("r", box("f:_:1"), box("f:_:2"))
+        built = box("r", box("f:_:10"), box("f:_:20"))
+        self.assertEqual(
+            sorted(items(compare(planned, built))),
+            ["f:_:1", "f:_:10", "f:_:2", "f:_:20"],
+        )
+
+    def test_a_dropped_arrow_is_pointed_at_the_built_id(self):
+        planned = box("r", box("shop.py:load"), box("shop.py:gone"))
+        planned["edges"] = [{"id": "e", "sources": ["shop.py:load"], "targets": ["shop.py:gone"]}]
+        built = box("r", box("shop.py:load:12"))
+        arrow = compare(planned, built)["edges"][-1]
+        self.assertEqual(arrow["sources"] + arrow["targets"], ["shop.py:load:12", "shop.py:gone"])
+        self.assertEqual(arrow["asbuilt"]["mark"], "dropped")
+
+    def test_a_dropped_box_sits_under_the_matched_built_parent(self):
+        planned = box("r", box("shop.py:group", box("shop.py:group:old"), labels=["group"]))
+        built = box("r", box("shop.py:group:3", labels=["group"]))
+        self.assertEqual(
+            tree(compare(planned, built)),
+            "shop.py:group:3:planned[shop.py:group:old:dropped]",
+        )
+
     def test_only_what_the_page_draws_counts_as_a_change(self):
         same = [None, [], ["a"], ["a", ""], ["a", "", "x"]]
         for labels in same + [[""], ["b"], ["a", "n"], ["b", ""]]:

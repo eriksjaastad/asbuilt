@@ -142,16 +142,28 @@ def _stable(bid):
     return bid
 
 
-def _rekey(shown):
-    """`shown` keyed by _stable. Two boxes that share that key each keep their own id."""
-    count = {}
-    for bid in shown:
-        count[_stable(bid)] = count.get(_stable(bid), 0) + 1
-    out = {}
-    for bid, item in shown.items():
-        key = _stable(bid)
-        out[key if count[key] == 1 else bid] = item
-    return out
+def _pair(old, new, short):
+    """Key both maps so one item shares a key. Exact ids match first. `short(key, item)`
+    pairs what is left only when that value is unique on both sides together. Order stays."""
+    taken = set(old).intersection(new)
+    def buckets(shown):
+        found = {}
+        for key, item in shown.items():
+            if key in taken:
+                continue
+            found.setdefault(short(key, item), []).append(key)
+        return found
+    old_buckets, new_buckets = buckets(old), buckets(new)
+    use_old = {key: key for key in old}
+    use_new = {key: key for key in new}
+    for key, new_keys in new_buckets.items():
+        old_keys = old_buckets.get(key, [])
+        if len(new_keys) == 1 and len(old_keys) == 1:
+            use_old[old_keys[0]] = key
+            use_new[new_keys[0]] = key
+    def apply(shown, use):
+        return {use[key]: item for key, item in shown.items()}
+    return apply(old, use_old), apply(new, use_new)
 
 
 def _mark(key, old, new):
@@ -178,12 +190,8 @@ def _marked(item, mark):
 def compare(planned, built):
     """Built with every box and arrow marked, plus the planned ones it lacks. Inputs are not
     changed. Both must be plans the page accepts (prepare.js), so ids are unique text in each."""
-    old, new, was, now = (
-        _rekey(_shown(planned)),
-        _rekey(_shown(built)),
-        _drawn(planned),
-        _drawn(built),
-    )
+    old, new = _pair(_shown(planned), _shown(built), lambda key, item: _stable(key))
+    was, now = _drawn(planned), _drawn(built)
     root = {**built, "children": []}
     placed = {None: root}  # a loop, not recursion: parents come first in _shown
     # A matched plan id may differ from the built id (the line number). Placement and a
