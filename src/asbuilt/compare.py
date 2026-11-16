@@ -1,9 +1,10 @@
 """One plan from two ELK plans: each box and arrow marked "planned" (the same parent and
-label, and the same note when the built box has one; or the same ends and label), "changed"
-(in both, one of those differs), "added" (only built) or "dropped" (only planned),
-with an empty "why". A note that is only on the plan is not a change: the built box has no
-caption to differ. Built's keep their place; a dropped box goes under its planned parent, a
-dropped arrow on the top box, joining its planned ends.
+label, and the same note when the built box has one; or the same ends, and the same label
+when the built arrow has one), "changed" (in both, one of those differs), "added" (only
+built) or "dropped" (only planned), with an empty "why". A note or an arrow label that is
+only on the plan is not a change: the built side has no caption to differ. Built's keep
+their place; a dropped box goes under its planned parent, a dropped arrow on the top box,
+joining its planned ends.
 
 python -m asbuilt.compare PLANNED BUILT OUT writes that plan to OUT, and `asbuilt OUT` draws each
 mark with its tag, dash and hue (MARKS in page/shapes.js)."""
@@ -173,15 +174,22 @@ def _mark(key, old, new, ends=None):
 
     A box is parent, label, note. An empty note on the built box is not a change: the plan's
     caption is not drawn there, so the picture of the code is the same. A note the built box
-    does have must match. An arrow is its ends, through `ends` when given, then its label."""
+    does have must match. An arrow is its ends, through `ends` when given, then its label.
+    An empty label on the built arrow is not a change. A label it does have must match."""
     if key not in old:
         return "added"
     before, after = old[key], new[key]
     if before[:-1] == after[:-1]:
         return "planned"
     if "sources" in after[-1]:
-        same = ends is not None and ends(before[0]) == ends(after[0]) and ends(before[1]) == ends(after[1])
-        return "planned" if same and before[2] == after[2] else "changed"
+        same = (
+            ends is not None
+            and ends(before[0]) == ends(after[0])
+            and ends(before[1]) == ends(after[1])
+        )
+        if same and (before[2] == after[2] or after[2] == ""):
+            return "planned"
+        return "changed"
     if after[2] == "" and before[:2] == after[:2]:
         return "planned"
     return "changed"
@@ -214,6 +222,7 @@ def compare(planned, built):
         lambda key, item: (end(item[0]), end(item[1])),
     )
     arrow_at = {item[3]["id"]: key for key, item in now.items()}
+    built_arrows = set(arrow_at)  # the ids, not the (source, target) pairing keys
 
     def put(bid, parent, box, mark):
         placed[bid] = _marked({k: v for k, v in box.items() if k != "children"}, mark)
@@ -230,7 +239,7 @@ def compare(planned, built):
                 bid == built["id"]
             ):  # dropping it would leave it unmarked and move its children
                 raise ValueError(f'box "{bid}" was planned; built has it as its top')
-            if bid in now:  # prepare.js refuses an id used twice
+            if bid in built_arrows:  # prepare.js refuses an id used twice
                 raise ValueError(f'box "{bid}" was planned; built has an arrow "{bid}"')
             put(bid, parent, {k: v for k, v in box.items() if k != "edges"}, "dropped")
     for aid, (*_, arrow) in was.items():
