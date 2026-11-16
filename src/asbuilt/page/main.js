@@ -8,6 +8,8 @@ import { keepLastGood, render } from "./render.js";
 const [elk, gen, keep] = [new ELK(), rough.generator(), keepLastGood()];
 const chart = document.getElementById("chart");
 const code = document.getElementById("code");
+const source = document.getElementById("source");
+const pipelineBtn = document.getElementById("pipeline");
 const whole = document.getElementById("whole");
 let plan = null;
 let open = null;
@@ -17,9 +19,10 @@ let last = null;
 function showCode() {
   const box = plan && open ? find(plan, open) : null;
   const body = html(box);
-  // A file or folder has no lines of its own, and the button is how its pipeline is chosen.
+  source.innerHTML = body;
+  // A file or folder has no lines of its own. The button still shows, above the code.
   code.hidden = body === "" && !box;
-  code.innerHTML = body + (box ? `<p class="actions"><button type="button" id="pipeline">Only what this reaches</button></p>` : "");
+  pipelineBtn.hidden = !box;
   whole.hidden = !focus;
 }
 
@@ -45,8 +48,8 @@ chart.addEventListener("click", (event) => {
   showCode();
 });
 
-code.addEventListener("click", (event) => {
-  if (event.target?.id !== "pipeline" || !open) return;
+pipelineBtn.addEventListener("click", () => {
+  if (!open) return;
   focus = open;
   show(last);
 });
