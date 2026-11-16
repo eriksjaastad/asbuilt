@@ -260,6 +260,16 @@ test("a chart the straight layout cannot fit starts again centred, without the h
   assertSound(plan, laid, 14, 0);
 });
 
+test("a chart already far past a laptop skips the straight search and still fits", async () => {
+  const seen = [];
+  const plan = { id: "root", children: [part("file", boxes("b", 32))] };
+  const laid = await layout(plan, { layout: (graph) => (seen.push(graph.layoutOptions), elk.layout(graph)) });
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assert.ok(seen.length < 20, `${seen.length} layouts`);
+  assert.ok(seen.every((options) => options["elk.layered.thoroughness"] !== "60"));
+  assertSound(plan, laid, 33, 0);
+});
+
 // run and report share a group, and results, outside it, is written by one and read by the other: ELK alone turns
 // one of the two arrows to point up.
 const between = (extra = {}) => ({ id: "r", children: [{ id: "g", children: [leaf("run"), leaf("report")] }, leaf("results")],

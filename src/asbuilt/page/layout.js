@@ -22,29 +22,42 @@ const [ROOM_STEP, MIN_ROOM] = [100, 300];
 
 // The hidden arrows that push what runs past `room` down a layer. ELK has no limit on width, and unjoined boxes share a
 // layer however many there are. Goes deepest first, since a part's width counts towards the row it sits in.
-const folds = (box, room, tried) => {
+// `all` folds every wide box in this pass, not only the deepest: one file a little over its room was holding the
+// chart at the same width while the folder around it was the part that was actually too wide.
+const folds = (box, room, tried, limit, all) => {
   const kids = box.children ?? [];
   // Lanes stand side by side and cannot fold under each other: each gives up its share of what they run over by.
   const abreast = box.id.startsWith(LANES);
+  const found = [];
   for (const kid of kids) {
-    const found = folds(kid, abreast ? kid.width * Math.min(1, room / box.width) : room - NESTED, tried);
-    if (found.length) return found;
+    const inner = folds(kid, abreast ? kid.width * Math.min(1, room / box.width) : room - NESTED, tried, limit, all);
+    if (!inner.length) continue;
+    if (!all) return inner;
+    found.push(...inner);
   }
-  if (box.width <= room || abreast) return [];
+  if (box.width <= room || abreast) return found;
   const rows = [];
   for (const kid of [...kids].sort((a, b) => a.y - b.y)) {
     const row = rows.at(-1);
     if (row && kid.y < row.bottom) (row.kids.push(kid), (row.bottom = Math.max(row.bottom, kid.y + kid.height)));
     else rows.push({ kids: [kid], bottom: kid.y + kid.height });
   }
+  const more = [];
   for (const { kids: row } of rows) {
     const left = Math.min(...row.map((k) => k.x));
     const fits = row.filter((k) => k.x + k.width - left <= room).sort((a, b) => a.x - b.x);
     const over = row.filter((k) => !fits.includes(k));
-    const more = fits.length ? over.map((k) => ({ id: `\0fold ${fits.at(-1).id} ${k.id}`, sources: [fits.at(-1).id], targets: [k.id] })).filter((e) => !tried.has(e.id)) : [];
-    if (more.length) return more;
+    if (fits.length) more.push(...over.map((k) => ({ id: `\0fold ${fits.at(-1).id} ${k.id}`, sources: [fits.at(-1).id], targets: [k.id] })).filter((e) => !tried.has(e.id)));
+    if (more.length >= limit) break;
   }
-  return [];
+  return found.concat(more);
+};
+
+// How wide one box would be if its own leaves sat on a single row. Nested boxes count through their widest child.
+const spread = (box) => {
+  const kids = box.children ?? [];
+  const across = kids.reduce((sum, kid) => sum + (kid.children?.length ? 0 : kid.width), 0);
+  return Math.max(across, ...kids.map(spread), 0);
 };
 
 // How a chart too wide is laid out, tried in turn. Each is set on every box that holds others, or it holds only at the
@@ -66,23 +79,34 @@ const laidOut = (prepared, elk, hidden, options) => {
 };
 
 async function narrow(prepared, elk, hidden, options) {
-  let [out, room] = [null, MAX_WIDTH];
+  let [out, room, best, stall] = [null, MAX_WIDTH, Infinity, 0];
   for (let n = 0; n < MAX_LAYOUTS; n++) {
     out = await laidOut(prepared, elk, hidden, options);
     if (out.width <= MAX_WIDTH) break;
+    // Still more than twice a laptop after a straight try: more of those will not fit it. The centred pass will.
+    if (options === STRAIGHT && out.width > MAX_WIDTH * 2) break;
+    // A row that did not make the chart narrower: fold several rows, and every wide box, on the next try.
+    const limit = 1 + stall * 2;
+    const stalled = !(out.width < best - 1);
+    if (stalled) stall = Math.min(stall + 1, 4);
+    else best = out.width, stall = 0;
     // Arrows running past the boxes take room of their own, so a chart can be too wide with every row inside `room`.
-    let more = folds(out, room, hidden);
-    while (!more.length && room > MIN_ROOM) more = folds(out, (room -= ROOM_STEP), hidden);
+    let more = folds(out, room, hidden, limit, stalled);
+    while (!more.length && room > MIN_ROOM) more = folds(out, (room -= ROOM_STEP), hidden, limit, stalled);
     if (!more.length) break;
     for (const e of more) hidden.set(e.id, e);
   }
   return out;
 }
 
-async function fitted(prepared, elk, hidden) {
-  const out = await narrow(prepared, elk, hidden, STRAIGHT);
-  if (out.width <= MAX_WIDTH) return out;
-  hidden.clear();
+async function fitted(prepared, elk, hidden, firstWidth) {
+  // A first layout already far past a laptop never came back inside one with the straight search,
+  // and that search was almost all of the time. Go straight to the centred pass.
+  if (!(firstWidth > MAX_WIDTH * 3)) {
+    const out = await narrow(prepared, elk, hidden, STRAIGHT);
+    if (out.width <= MAX_WIDTH) return out;
+    hidden.clear();
+  }
   return narrow(prepared, elk, hidden, CENTRED);
 }
 
@@ -90,8 +114,11 @@ async function fitted(prepared, elk, hidden) {
 // `parts` says which group each part of a lane belongs to. Boxes and arrows come back in absolute coordinates.
 async function chart(prepared, elk, hide, parts) {
   const hidden = new Map();
-  let out = await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
-  if (out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden);
+  // A file of many leaves on one row is already far past a laptop. The opening layout and the straight search
+  // were thrown away, and that search was almost all of the time.
+  const wide = spread(prepared);
+  let out = wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
+  if (!out || out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden, out?.width ?? wide);
   const [boxes, cut, held, spot, shown] = [[], new Map(), new Map(), new Map(), new Map()];
   const origin = { [out.id]: [0, 0] };
   const walk = (box, level, holders) => {
