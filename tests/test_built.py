@@ -229,6 +229,39 @@ class CallArrowTest(unittest.TestCase):
         )
 
 
+class CallBindingTest(unittest.TestCase):
+    def test_a_parameter_or_local_of_the_same_name_is_not_an_arrow(self):
+        lines = [
+            "def load():",
+            "    return 1",
+            "def other():",
+            "    return 2",
+            "def main(load):",
+            "    load()",
+            "    other()",
+            "def local():",
+            "    load = 1",
+            "    load()",
+        ]
+        box = python_file("t.py", ("\n".join(lines) + "\n").encode())
+        self.assertEqual(
+            [(e["sources"][0], e["targets"][0]) for e in box["edges"]],
+            [("t.py:main:5", "t.py:other:3")],
+        )
+
+    def test_a_name_defined_twice_points_at_the_last_def(self):
+        lines = [
+            "def load():",
+            "    return 1",
+            "def load():",
+            "    return 2",
+            "def main():",
+            "    load()",
+        ]
+        box = python_file("t.py", ("\n".join(lines) + "\n").encode())
+        self.assertEqual(box["edges"][0]["targets"], ["t.py:load:3"])
+
+
 class SourceTextTest(unittest.TestCase):
     def test_a_definition_keeps_its_own_lines_and_a_long_one_is_cut_not_summarized(self):
         source = "def one():\n    return 1\n\ndef two():\n    return 2\n"

@@ -4,7 +4,8 @@ python -m asbuilt.built FILE OUT writes one Python file as a plan the page can d
 one box, and each top-level function and class is a box inside it. OUT is only written. A missing
 file, or OUT being the source file, prints one line and writes nothing.
 
-A file Python accepts, as UTF-8, holds those definitions and the lines they occupy. Otherwise the
+A file Python accepts, as UTF-8, holds those definitions, the lines they occupy, and an arrow
+where one of them calls another top-level name in the file. Otherwise the
 file is one box with a note: Python does not accept it, it is not UTF-8, or tree-sitter misreads
 code Python accepts. Python's own compile, never run, decides what is valid."""
 
@@ -97,6 +98,47 @@ def _calls(node):
     return count
 
 
+def _bound(node):
+    """Names this box assigns: parameters, locals, and nested defs. A call to one of these is
+    not a call of the top-level function of the same name."""
+    names = set()
+    params = node.child_by_field_name("parameters")
+    for child in params.named_children if params is not None else ():
+        idents = [child] if child.type == "identifier" else child.named_children
+        names.update(c.text.decode() for c in idents if c.type == "identifier")
+    body = node.child_by_field_name("body")
+    todo = list(reversed(body.children)) if body is not None else []
+    while todo:
+        cur = todo.pop()
+        if cur.type in ("function_definition", "class_definition"):
+            name = cur.child_by_field_name("name")
+            if name is not None:
+                names.add(name.text.decode())
+            continue
+        if cur.type == "decorated_definition":
+            inner = cur.child_by_field_name("definition")
+            name = None if inner is None else inner.child_by_field_name("name")
+            if name is not None:
+                names.add(name.text.decode())
+            continue
+        if cur.type in ("assignment", "augmented_assignment", "for_statement", "named_expression"):
+            left = next(iter(cur.named_children), None)
+            names.update(_pattern(left))
+        todo.extend(reversed(cur.children))
+    return names
+
+
+def _pattern(node):
+    """Identifiers bound by an assignment target, not the value or a type."""
+    if node is None:
+        return ()
+    if node.type == "identifier":
+        return (node.text.decode(),)
+    if node.type in ("pattern_list", "tuple_pattern", "list_pattern"):
+        return tuple(name for c in node.named_children for name in _pattern(c))
+    return ()
+
+
 def _direct_calls(node):
     """Bare names called in `node`'s body. A call on an attribute, and a call inside a nested
     function or class, are skipped: they are not this box calling another top-level name."""
@@ -147,7 +189,9 @@ def python_file(name, source):
     """The box for the Python file called `name` with these bytes, and its note if any: why
     Python does not accept them, else that they are not UTF-8 so not read, else that
     tree-sitter misreads code Python accepts. A file that reads cleanly holds a child box for
-    each top-level function and class."""
+    each top-level function and class, and an arrow for a direct call of one of those names.
+    A parameter or local of that name is not the call, and a name defined twice points at the
+    last one, which is the one Python runs."""
     note = _note(source)
     definitions, decoded = [], None
     if not note:
@@ -166,7 +210,7 @@ def python_file(name, source):
             if _passes(node):
                 info["proven"] = PASSES
             child = f"{name}:{ident}:{start}"
-            at.setdefault(ident, child)
+            at[ident] = child  # the last def is the one a call reaches
             children.append(
                 {
                     "id": child,
@@ -176,10 +220,11 @@ def python_file(name, source):
             )
         edges, seen = [], set()
         for ident, _, start, _, node in definitions:
+            bound = _bound(node)
             for callee in _direct_calls(node):
                 pair = (f"{ident}:{start}", callee)
-                if callee not in at or pair in seen:
-                    continue  # not a top-level box in this file, or already drawn
+                if callee in bound or callee not in at or pair in seen:
+                    continue  # a local, not a top-level box, or already drawn
                 seen.add(pair)
                 edges.append(
                     {
