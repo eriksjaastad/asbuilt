@@ -1,10 +1,12 @@
 """As-built chart: the code, read into the ELK JSON the page draws.
 
-python -m asbuilt.built PATH OUT writes one Python file, or the Python files in one folder, as a
+python -m asbuilt.built PATH OUT writes one Python file, or a folder of Python files, as a
 plan the page can draw. A file is one box, and each top-level function and class is a box inside
-it. A folder is one box per Python file sitting in it, and a file in a subfolder is not included.
-OUT is only written. A missing path, or OUT being the source or a Python file in the
-folder, prints one line and writes nothing. A folder with no Python file in it does too.
+it. A folder holds a box per file and a box per subfolder that has one. A nested file's id is
+its path (`sub/util.py:name`). tests, __pycache__, venv, env, node_modules, build, dist,
+site-packages, and hidden directories are skipped. OUT is only written. A missing path, or OUT
+being the source or ending in .py, prints one line and writes nothing. A folder with nothing
+to chart does too.
 
 A file Python accepts, as UTF-8, holds those definitions, the lines they occupy, and an arrow
 where one of them calls another top-level name in the file. Otherwise the
@@ -296,38 +298,89 @@ def python_file(name, source):
     return box
 
 
+_SKIP_DIRS = {"tests", "__pycache__", "venv", "env", "node_modules", "build", "dist", "site-packages"}
+
+
+def _py_files(folder):
+    """(relative path, file) for each Python file under folder, and the relative paths of
+    directories left out by name. A hidden directory or a directory symlink is left out too.
+    A file whose name contains "test" is kept."""
+    found, skipped, todo = [], [], [folder]
+    while todo:
+        current = todo.pop()
+        try:
+            entries = sorted(current.iterdir(), reverse=True)
+        except OSError as exc:
+            why = exc.strerror or type(exc).__name__
+            raise PlanError(f"{current} cannot be read: {why}") from None
+        for path in entries:
+            if path.is_dir():
+                if path.name in _SKIP_DIRS:
+                    skipped.append(path.relative_to(folder).as_posix())
+                if path.name.startswith(".") or path.name in _SKIP_DIRS or path.is_symlink():
+                    continue
+                todo.append(path)
+            elif path.is_file() and path.suffix == ".py":
+                found.append((path.relative_to(folder).as_posix(), path))
+    found.sort()
+    return found, skipped
+
+
+def _place(files):
+    """Each directory in a relative path is a box inside its parent, and the file is inside that."""
+    root, boxes = {"children": []}, {}
+    boxes[""] = root
+    for rel, path in files:
+        parent, parts = "", rel.split("/")
+        for part in parts[:-1]:
+            key = f"{parent}/{part}" if parent else part
+            if key not in boxes:
+                # A trailing slash is not a file path, so the folder mysite and the subfolder
+                # mysite/ are different boxes. The top folder keeps its plain name.
+                boxes[key] = {"id": f"{key}/", "labels": [{"text": part}], "children": []}
+                boxes[parent]["children"].append(boxes[key])
+            parent = key
+        box = python_file(rel, read_bytes(path))
+        box["labels"][0]["text"] = parts[-1]
+        boxes[parent]["children"].append(box)
+    return root["children"]
+
+
 def python_dir(folder):
-    """One box for the folder, and inside it one box per Python file sitting in that folder.
-    The box uses the folder's real name, so `.` is not blank. Each file is read the same way as
-    a single file, so its id is its name (`load.py:load:1`). A plan can name that box
-    `load.py:load` before the line exists. A subfolder is left out."""
+    """One box for the folder, named with its real name so `.` is not blank. A file in the folder
+    is `load.py:load`. A nested file is `sub/util.py:name`, inside a box for each directory."""
     try:
         name = folder.resolve().name
-        files = sorted(path for path in folder.iterdir() if path.is_file() and path.suffix == ".py")
     except OSError as exc:
         why = exc.strerror or type(exc).__name__
         raise PlanError(f"{folder} cannot be read: {why}") from None
+    files, skipped = _py_files(folder)
     if not files:
-        raise PlanError(f"{name} has no Python files sitting in it. A subfolder is not included.")
-    return {
-        "id": name,
-        "labels": [{"text": name}],
-        "children": [python_file(path.name, read_bytes(path)) for path in files],
-    }
+        raise PlanError(f"{name} has no Python files to chart.")
+    box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
+    return box, skipped
+
+
+def _is_same(out, path):
+    """True when both exist and are the same file, once OUT is resolved. A symlink counts."""
+    try:
+        return out.exists() and path.exists() and out.resolve().samefile(path)
+    except OSError:
+        return False
 
 
 def _clashes(out, source):
-    """True when OUT is the path being charted, or one of the Python files in that folder."""
-    if not out.exists() or not source.exists():
-        return False
-    if out.samefile(source):
-        return True
-    if not source.is_dir():
-        return False
-    for path in source.iterdir():
-        if path.is_file() and path.suffix == ".py" and out.samefile(path):
-            return True
-    return False
+    """The refusal line when OUT would replace a charted file or end in .py, else ""."""
+    target = out.resolve()
+    label = target.name
+    same = _is_same(out, source)
+    if not same and source.is_dir() and out.exists():
+        same = any(_is_same(out, path) for _, path in _py_files(source)[0])
+    if same:
+        return f"{label}: OUT is the source; it is only read"
+    if target.suffix.lower() == ".py":
+        return f"{label}: the chart is JSON, not a Python file"
+    return ""
 
 
 def main(argv=None):
@@ -345,14 +398,17 @@ def main(argv=None):
             why = exc.strerror or type(exc).__name__
             raise PlanError(f"{args.file.name} cannot be read: {why}") from None
         if clash:
-            raise PlanError(f"{args.out.name}: OUT is the source; it is only read")
+            raise PlanError(clash)
+        skipped = []
         if args.file.is_dir():
-            box = python_dir(args.file)
+            box, skipped = python_dir(args.file)
         else:
             box = python_file(args.file.name, read_bytes(args.file))
         plan = {"id": "asbuilt:built", "children": [box]}
         check(plan, args.out.name)
         output.write_atomic(args.out, output.plan_bytes(plan, args.out.name))
+        if skipped:
+            print(f"asbuilt.built: skipped {', '.join(sorted(skipped))}", file=sys.stderr)
     except PlanError as exc:
         return output.fail("asbuilt.built", exc)
     return 0

@@ -68,12 +68,16 @@ function or a class and its code opens beside the chart. The chart stays. The tw
 width: the code takes a fixed column and the chart scales down to fit. On a narrow window the
 code sits under the chart.
 
-The Python files sitting in one folder are charted the same way. The folder is one box, each of
-those files is a box inside it, and the functions and classes stay inside the file. A file in a
-subfolder is not included yet.
+The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
+box inside its parent. The folder you named keeps its plain name (`shop`). A subfolder's id
+ends with a slash (`sub/`), so a plan can name it ahead of the code, and a subfolder called
+shop is not the same box as the folder shop. A file in the folder is `load.py:load`; a nested
+file is `sub/util.py:name`. Directories named tests, __pycache__, venv, env, node_modules,
+build, dist, or site-packages, and hidden directories, are skipped, and the command names the
+ones it skipped.
 
 ```
-uv run python -m asbuilt.built src/asbuilt built.json
+uv run python -m asbuilt.built . built.json
 uv run asbuilt built.json
 ```
 
