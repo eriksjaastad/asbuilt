@@ -60,7 +60,9 @@ uv run python -m asbuilt.built t.py built.json
 uv run asbuilt built.json
 ```
 
-The file is the outer box. Each top-level function and class is a box inside it. Click a
+The file is the outer box. Each top-level function and class is a box inside it, and an arrow
+joins a box to another top-level name it calls. A parameter or a local of that name is not the
+call, and a name defined twice points at the last definition. Click a
 function or a class and its code opens beside the chart. The chart stays. The two stay within a laptop
 width: the code takes a fixed column and the chart scales down to fit. On a narrow window the
 code sits under the chart.
