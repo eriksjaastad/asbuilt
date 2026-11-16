@@ -158,27 +158,31 @@ def _pair(old, new, short):
     use_new = {key: key for key in new}
     for key, new_keys in new_buckets.items():
         old_keys = old_buckets.get(key, [])
-        if len(new_keys) == 1 and len(old_keys) == 1:
-            use_old[old_keys[0]] = key
-            use_new[new_keys[0]] = key
+        # An exact match already owns this key: using it again would drop that box.
+        if key in taken or len(new_keys) != 1 or len(old_keys) != 1:
+            continue
+        use_old[old_keys[0]] = key
+        use_new[new_keys[0]] = key
     def apply(shown, use):
         return {use[key]: item for key, item in shown.items()}
     return apply(old, use_old), apply(new, use_new)
 
 
-def _mark(key, old, new):
+def _mark(key, old, new, ends=None):
     """For a key of `new`: "added", or by what the page draws "planned" or "changed".
 
     A box is parent, label, note. An empty note on the built box is not a change: the plan's
     caption is not drawn there, so the picture of the code is the same. A note the built box
-    does have must match. Arrows stay source, target, and label."""
+    does have must match. An arrow is its ends, through `ends` when given, then its label."""
     if key not in old:
         return "added"
     before, after = old[key], new[key]
     if before[:-1] == after[:-1]:
         return "planned"
-    # box tuples are (parent, label, note, box); arrows carry "sources" and are left alone
-    if "sources" not in after[-1] and after[2] == "" and before[:2] == after[:2]:
+    if "sources" in after[-1]:
+        same = ends is not None and ends(before[0]) == ends(after[0]) and ends(before[1]) == ends(after[1])
+        return "planned" if same and before[2] == after[2] else "changed"
+    if after[2] == "" and before[:2] == after[:2]:
         return "planned"
     return "changed"
 
@@ -191,7 +195,6 @@ def compare(planned, built):
     """Built with every box and arrow marked, plus the planned ones it lacks. Inputs are not
     changed. Both must be plans the page accepts (prepare.js), so ids are unique text in each."""
     old, new = _pair(_shown(planned), _shown(built), lambda key, item: _stable(key))
-    was, now = _drawn(planned), _drawn(built)
     root = {**built, "children": []}
     placed = {None: root}  # a loop, not recursion: parents come first in _shown
     # A matched plan id may differ from the built id (the line number). Placement and a
@@ -201,6 +204,16 @@ def compare(planned, built):
         for key, item in source.items():
             at[item[3]["id"]] = key
     built_of = {old[key][3]["id"]: new[key][3]["id"] for key in old if key in new}
+    # Arrows match by those paired ends, not by their own ids. The label is compared after.
+    def end(box_id):
+        return at.get(box_id, _stable(box_id))
+
+    was, now = _pair(
+        _drawn(planned),
+        _drawn(built),
+        lambda key, item: (end(item[0]), end(item[1])),
+    )
+    arrow_at = {item[3]["id"]: key for key, item in now.items()}
 
     def put(bid, parent, box, mark):
         placed[bid] = _marked({k: v for k, v in box.items() if k != "children"}, mark)
@@ -210,7 +223,7 @@ def compare(planned, built):
         put(bid, parent, box, _mark(bid, old, new))
     for box in [root, *map(placed.get, new)]:  # copies: built's arrows stay as they are
         if "edges" in box:
-            box["edges"] = [_marked(a, _mark(a["id"], was, now)) for a in box["edges"]]
+            box["edges"] = [_marked(a, _mark(arrow_at[a["id"]], was, now, end)) for a in box["edges"]]
     for bid, (parent, *_, box) in old.items():
         if bid not in new:
             if (
