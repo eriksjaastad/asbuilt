@@ -11,6 +11,7 @@ from pathlib import Path
 
 import asbuilt
 from asbuilt.built import _text, main, python_file
+from asbuilt.compare import compare
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
 HEADS += [b"# coding: unicode_escape\n", b"# coding: rot_13\n", b"# coding: nope\n"]
@@ -336,3 +337,81 @@ class BuiltCommandTest(unittest.TestCase):
                 self.assertEqual(main([str(src), str(src)]), 2)
             self.assertEqual(err.getvalue().count("\n"), 1)
             self.assertEqual(src.read_text(), kept)
+
+    def test_a_folder_is_one_box_per_python_file_sitting_in_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            root.mkdir()
+            (root / "load.py").write_text("def read():\n    return 1\ndef load():\n    return read()\n")
+            (root / "main.py").write_text("def main():\n    return load()\n")
+            (root / "notes.txt").write_text("not code\n")
+            (root / "sub").mkdir()
+            (root / "sub" / "other.py").write_text("def other():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            self.assertEqual(main([str(root), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            folder = plan["children"][0]
+            self.assertEqual(folder["id"], "shop")
+            files = {box["id"]: box for box in folder["children"]}
+            self.assertEqual(list(files), ["load.py", "main.py"])
+            self.assertEqual(files["load.py"]["children"][1]["id"], "load.py:load:3")
+            self.assertEqual(
+                files["load.py"]["edges"][0]["sources"] + files["load.py"]["edges"][0]["targets"],
+                ["load.py:load:3", "load.py:read:1"],
+            )
+
+    def test_a_folder_does_not_overwrite_one_of_its_python_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp, "shop", "main.py")
+            src.parent.mkdir()
+            src.write_text("def main():\n    return 1\n")
+            kept = src.read_text()
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(src.parent), str(src)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertEqual(src.read_text(), kept)
+
+    def test_charting_dot_names_the_folder_and_compares_as_planned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shop = Path(tmp, "shop")
+            shop.mkdir()
+            (shop / "load.py").write_text("def load():\n    return 1\n")
+            out = Path(tmp, "built.json")
+            with contextlib.chdir(shop):
+                self.assertEqual(main([".", str(out)]), 0)
+            built = json.loads(out.read_text())
+            self.assertEqual(built["children"][0]["id"], "shop")
+            load = {"id": "load.py:load", "labels": [{"text": "load()"}]}
+            file = {"id": "load.py", "labels": [{"text": "load.py"}], "children": [load]}
+            planned = {"id": "asbuilt:built", "children": [{"id": "shop", "labels": [{"text": "shop"}], "children": [file]}]}
+            marked = compare(planned, built)
+            marks, todo = [], [marked]
+            for box in todo:
+                todo += box.get("children", [])
+                marks += [kid["asbuilt"]["mark"] for kid in box.get("children", [])]
+            self.assertEqual(marks, ["planned", "planned", "planned"])
+
+    def test_a_folder_with_no_python_file_in_it_prints_a_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            (root / "sub").mkdir(parents=True)
+            (root / "sub" / "other.py").write_text("def other():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(root), str(out)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertIn("no Python files", err.getvalue())
+            self.assertFalse(out.exists())
+
+    def test_a_single_file_plan_is_still_just_that_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp, "t.py"), Path(tmp, "out.json")
+            src.write_text("def one():\n    return 1\n")
+            self.assertEqual(main([str(src), str(out)]), 0)
+            one = {
+                "id": "t.py:one:1",
+                "labels": [{"text": "one()"}],
+                "asbuilt": {"lines": [1, 2], "text": "def one():\n    return 1"},
+            }
+            want = {"id": "asbuilt:built", "children": [{"id": "t.py", "labels": [{"text": "t.py"}], "children": [one]}]}
+            self.assertEqual(json.loads(out.read_text()), want)
