@@ -18,10 +18,10 @@ export function keepLastGood() {
   };
 }
 
-export async function render(text, elk, gen) {
+export async function render(text, elk, gen, picked = null) {
   try {
     const state = JSON.parse(text);
-    if (state?.ok === true) return draw(await layout(state.plan, elk), gen);
+    if (state?.ok === true) return draw(await layout(picked ?? state.plan, elk), gen);
     return panel(state?.error ?? "The server sent a message the page cannot read.");
   } catch (error) {
     return panel(error?.message ?? error);

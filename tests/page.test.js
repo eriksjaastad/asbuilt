@@ -167,3 +167,35 @@ test("clicking a function opens its code beside the chart, which stays put, with
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("choosing a box hides what its arrows cannot reach, and whole chart brings it back", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  const run = { id: "run", labels: [{ text: "run()" }], asbuilt: { text: "def run():\n    pass\n" } };
+  writeFileSync(file, JSON.stringify({
+    id: "root",
+    children: [{ id: "tests", children: [run, { id: "report" }] }, { id: "results" }, { id: "aside" }],
+    edges: [{ id: "e1", sources: ["run"], targets: ["results"] }, { id: "e2", sources: ["results"], targets: ["report"] }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='aside']").waitFor();
+    await page.getByText("run()", { exact: true }).click();
+    await page.locator("#pipeline").click();
+    await page.locator("[data-box='aside']").waitFor({ state: "detached" });
+    await page.locator("[data-box='results']").waitFor();
+    await page.locator("[data-box='report']").waitFor();
+    await page.locator("[data-box='tests']").waitFor();
+    await page.locator("#whole").click();
+    await page.locator("[data-box='aside']").waitFor();
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
