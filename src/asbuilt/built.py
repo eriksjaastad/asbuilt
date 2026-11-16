@@ -361,8 +361,8 @@ def _dots(node):
     return tuple(c.text.decode() for c in node.named_children if c.type == "identifier")
 
 
-def _from_mod(stmt, own):
-    """The module tuple a from-import names, or None. Dots are counted from `own`."""
+def _from_mod(stmt, own, init=False):
+    """The module tuple a from-import names, or None. In `__init__.py`, `own` is the package."""
     first = next(iter(stmt.named_children), None)
     if first is None:
         return None
@@ -374,18 +374,18 @@ def _from_mod(stmt, own):
     level = 0 if prefix is None else prefix.text.decode().count(".")
     dotted = next((c for c in first.named_children if c.type == "dotted_name"), None)
     rest = () if dotted is None else _dots(dotted)
-    base = own[:-1]
+    base = own if init else own[:-1]
     if level - 1 > len(base):
         return None
     return base[: len(base) - (level - 1)] + rest
 
 
-def _imports(stmts, own):
+def _imports(stmts, own, init=False):
     """Names bound by these statements: from-imports as (module, original), import as the module."""
     calls, mods = {}, {}
     for stmt in stmts:
         if stmt.type == "import_from_statement":
-            mod = _from_mod(stmt, own)
+            mod = _from_mod(stmt, own, init)
             for item in stmt.named_children[1:]:
                 if item.type == "dotted_name" and mod:
                     name = _dots(item)[0]
@@ -404,6 +404,72 @@ def _imports(stmts, own):
                     alias = next(c for c in item.named_children if c.type == "identifier")
                     mods[alias.text.decode()] = _dots(dotted)
     return calls, mods
+
+
+_COND = {
+    "if_statement", "elif_clause", "else_clause", "try_statement", "except_clause",
+    "finally_clause", "while_statement", "with_statement", "match_statement", "case_clause",
+}
+
+
+def _scope(nodes, own, init):
+    """name -> ("from", module, original) or ("mod", module), or None when it is not one import.
+
+    None means the name is bound some other way too, or only inside if/try, so it gets no arrow.
+    Defs and classes count as bindings and are not entered."""
+    decided = {}
+
+    def bind(name, spec):
+        decided[name] = None if name in decided or spec is None else spec
+
+    def walk(node, conditional):
+        kind = node.type
+        if kind in ("function_definition", "class_definition"):
+            name = node.child_by_field_name("name")
+            if name is not None:
+                bind(name.text.decode(), None)
+            return
+        if kind == "decorated_definition":
+            inner = node.child_by_field_name("definition")
+            if inner is not None:
+                walk(inner, conditional)
+            return
+        if kind in ("import_from_statement", "import_statement"):
+            calls, mods = _imports([node], own, init)
+            for name, pair in calls.items():
+                bind(name, None if conditional else ("from", pair[0], pair[1]))
+            for name, mod in mods.items():
+                bind(name, None if conditional else ("mod", mod))
+            return
+        if kind in ("assignment", "augmented_assignment", "named_expression"):
+            for name in _pattern(next(iter(node.named_children), None)):
+                bind(name, None)
+            return
+        if kind == "for_statement":
+            for name in _pattern(next(iter(node.named_children), None)):
+                bind(name, None)
+            body = node.child_by_field_name("body")
+            for child in body.named_children if body is not None else ():
+                walk(child, conditional)
+            return
+        if kind == "delete_statement":
+            for child in node.named_children:
+                for name in _pattern(child):
+                    bind(name, None)
+            return
+        if kind == "as_pattern":
+            target = next((c for c in node.named_children if c.type == "as_pattern_target"), None)
+            if target is not None:
+                for name in _pattern(next(iter(target.named_children), None)):
+                    bind(name, None)
+            return
+        nested = conditional or kind in _COND
+        for child in node.named_children:
+            walk(child, nested)
+
+    for node in nodes:
+        walk(node, False)
+    return decided
 
 
 def _module(rel, pkgs, folder_name):
@@ -461,30 +527,29 @@ def _cross(rel, source, index, own):
     root = PYTHON.parse(text).root_node
     if root.has_error:
         return []
-    file_calls, file_mods = _imports(list(root.named_children), own)
+    init = rel.endswith("__init__.py")
+    file_scope = _scope(list(root.named_children), own, init)
     defs = _definitions(root)
-    defined = {ident for ident, *_rest in defs}
     edges, seen = [], set()
+
+    def use(fn_scope, name):
+        return fn_scope[name] if name in fn_scope else file_scope.get(name)
+
     for ident, _, start, _, node in defs:
         src = f"{rel}:{ident}:{start}"
         body = node.child_by_field_name("body")
         stmts = list(body.named_children) if body is not None else []
-        fn_calls, fn_mods = _imports(stmts, own)
+        fn_scope = _scope(stmts, own, init)
         attrs = []
-        bare = _direct_calls(node, _bound(node, imports=False), attrs)
-        for callee in bare:
-            if callee not in fn_calls and callee not in file_calls:
-                continue
-            if callee in defined and callee not in fn_calls:
-                continue
-            spec = fn_calls.get(callee) or file_calls.get(callee)
-            target = None if spec is None else index.get(spec[0], {}).get(spec[1])
+        for callee in _direct_calls(node, _bound(node, imports=False), attrs):
+            spec = use(fn_scope, callee)
+            target = None if not spec or spec[0] != "from" else index.get(spec[1], {}).get(spec[2])
             if target and (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
         for obj, attr in attrs:
-            mod = fn_mods.get(obj) or file_mods.get(obj)
-            target = None if mod is None else index.get(mod, {}).get(attr)
+            spec = use(fn_scope, obj)
+            target = None if not spec or spec[0] != "mod" else index.get(spec[1], {}).get(attr)
             if target and (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})

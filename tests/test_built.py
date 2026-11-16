@@ -388,6 +388,38 @@ class BuiltCommandTest(unittest.TestCase):
         })
         self.assertIn(["src/shop/app.py:main:2", "src/shop/other.py:load:1"], ends)
 
+    def test_a_relative_import_in_init_stays_in_the_package(self):
+        ends = _ends("shop", {
+            "notes.py": "def f():\n    return 1\n",
+            "pkg/__init__.py": "from .notes import f\ndef run():\n    return f()\n",
+            "pkg/notes.py": "def f():\n    return 2\n",
+        })
+        self.assertEqual(ends, [["pkg/__init__.py:run:2", "pkg/notes.py:f:1"]])
+
+    def test_a_second_import_under_try_draws_no_arrow(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "_pure.py": "def escape():\n    return 1\n",
+            "_speedups.py": "def escape():\n    return 2\n",
+            "render.py": (
+                "from ._pure import escape\n"
+                "try:\n"
+                "    from ._speedups import escape\n"
+                "except ImportError:\n"
+                "    pass\n"
+                "def render():\n"
+                "    return escape()\n"
+            ),
+        })
+        self.assertEqual(ends, [])
+
+    def test_a_module_level_assignment_draws_no_arrow(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from other import load\nload = print\ndef main():\n    return load()\n",
+        })
+        self.assertEqual(ends, [])
+
     def test_an_imported_name_rebound_locally_has_no_arrow(self):
         ends = _ends("shop", {
             "other.py": "def load():\n    return 1\n",
