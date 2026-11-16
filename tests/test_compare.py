@@ -176,6 +176,19 @@ class CompareTest(unittest.TestCase):
                 )
                 self.assertIn(mark, ok, key)
 
+    def test_a_plan_written_ahead_matches_the_built_box_without_its_line_number(self):
+        planned = box("r", box("shop.py", box("shop.py:load", labels=["load()"])))
+        built = box(
+            "r",
+            box(
+                "shop.py",
+                box("shop.py:load:12", labels=["load()"]),
+            ),
+        )
+        out = compare(planned, built)
+        self.assertEqual(tree(out), "shop.py:planned[shop.py:load:12:planned]")
+        self.assertEqual(out["children"][0]["children"][0]["id"], "shop.py:load:12")
+
     def test_only_what_the_page_draws_counts_as_a_change(self):
         same = [None, [], ["a"], ["a", ""], ["a", "", "x"]]
         for labels in same + [[""], ["b"], ["a", "n"], ["b", ""]]:

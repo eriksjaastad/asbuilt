@@ -133,6 +133,27 @@ def _drawn(plan):
     return found
 
 
+def _stable(bid):
+    """`shop.py:load:12` and `shop.py:load` are the same box. A trailing line number is only for
+    the code panel. An id with no line number is already the stable key."""
+    head, sep, tail = bid.rpartition(":")
+    if sep and tail.isdigit() and ":" in head:
+        return head
+    return bid
+
+
+def _rekey(shown):
+    """`shown` keyed by _stable. Two boxes that share that key each keep their own id."""
+    count = {}
+    for bid in shown:
+        count[_stable(bid)] = count.get(_stable(bid), 0) + 1
+    out = {}
+    for bid, item in shown.items():
+        key = _stable(bid)
+        out[key if count[key] == 1 else bid] = item
+    return out
+
+
 def _mark(key, old, new):
     """For a key of `new`: "added", or by what the page draws "planned" or "changed".
 
@@ -157,13 +178,25 @@ def _marked(item, mark):
 def compare(planned, built):
     """Built with every box and arrow marked, plus the planned ones it lacks. Inputs are not
     changed. Both must be plans the page accepts (prepare.js), so ids are unique text in each."""
-    old, new, was, now = _shown(planned), _shown(built), _drawn(planned), _drawn(built)
+    old, new, was, now = (
+        _rekey(_shown(planned)),
+        _rekey(_shown(built)),
+        _drawn(planned),
+        _drawn(built),
+    )
     root = {**built, "children": []}
     placed = {None: root}  # a loop, not recursion: parents come first in _shown
+    # A matched plan id may differ from the built id (the line number). Placement and a
+    # dropped arrow's ends use the id that is actually in the output.
+    at = {}
+    for source in (old, new):  # a planned id and its built id (with the line) share a key
+        for key, item in source.items():
+            at[item[3]["id"]] = key
+    built_of = {old[key][3]["id"]: new[key][3]["id"] for key in old if key in new}
 
     def put(bid, parent, box, mark):
         placed[bid] = _marked({k: v for k, v in box.items() if k != "children"}, mark)
-        placed.get(parent, root).setdefault("children", []).append(placed[bid])
+        placed.get(at.get(parent, parent), root).setdefault("children", []).append(placed[bid])
 
     for bid, (parent, *_, box) in new.items():
         put(bid, parent, box, _mark(bid, old, new))
@@ -183,6 +216,12 @@ def compare(planned, built):
         if aid not in now:  # its ends are built boxes or dropped ones put back
             if aid in new or aid == built["id"]:
                 raise ValueError(f'arrow "{aid}" was planned; built has a box "{aid}"')
+            source, target = arrow["sources"][0], arrow["targets"][0]
+            arrow = {
+                **arrow,
+                "sources": [built_of.get(source, source)],
+                "targets": [built_of.get(target, target)],
+            }
             root.setdefault("edges", []).append(_marked(arrow, "dropped"))
     return root
 
