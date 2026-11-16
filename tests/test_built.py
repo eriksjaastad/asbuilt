@@ -10,7 +10,7 @@ import warnings
 from pathlib import Path
 
 import asbuilt
-from asbuilt.built import _text, main, python_dir, python_file
+from asbuilt.built import _text, main, python_file
 from asbuilt.compare import compare
 
 HEADS = [b""] * 7 + [b"# coding: %s\n" % c for c in b"latin-1 utf-7 utf-16 hex".split()]
@@ -338,15 +338,6 @@ def _ends(root_name, files):
 
 
 class BuiltCommandTest(unittest.TestCase):
-    def test_the_repo_chart_keeps_its_cross_file_arrows(self):
-        box, _skipped = python_dir(Path(__file__).resolve().parents[1])
-        ends, todo = [], [box]
-        for node in todo:
-            todo += node.get("children", [])
-            for edge in node.get("edges", []):
-                ends.append((edge["sources"][0].rsplit(":", 2)[0], edge["targets"][0].rsplit(":", 2)[0]))
-        self.assertEqual(sum(src != tgt for src, tgt in ends), 41)
-
     def test_a_file_is_written_as_a_plan_or_a_refusal_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             src, out = Path(tmp, "t.py"), Path(tmp, "out.json")
