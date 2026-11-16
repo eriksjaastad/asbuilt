@@ -375,7 +375,8 @@ def _from_mod(stmt, own, init=False):
     dotted = next((c for c in first.named_children if c.type == "dotted_name"), None)
     rest = () if dotted is None else _dots(dotted)
     base = own if init else own[:-1]
-    if level - 1 > len(base):
+    # `..` that climbs past the top package is not a module we can see.
+    if level > len(base):
         return None
     return base[: len(base) - (level - 1)] + rest
 
@@ -406,6 +407,12 @@ def _imports(stmts, own, init=False):
     return calls, mods
 
 
+def _typing(node):
+    """True when the test is the name TYPE_CHECKING, so the import is the one the file means."""
+    cond = next(iter(node.named_children), None)
+    return cond is not None and cond.type == "identifier" and cond.text.decode() == "TYPE_CHECKING"
+
+
 _COND = {
     "if_statement", "elif_clause", "else_clause", "try_statement", "except_clause",
     "finally_clause", "while_statement", "with_statement", "match_statement", "case_clause",
@@ -420,7 +427,11 @@ def _scope(nodes, own, init):
     decided = {}
 
     def bind(name, spec):
-        decided[name] = None if name in decided or spec is None else spec
+        # The same module imported again (`import pkg` and `import pkg.sub`) is still that import.
+        if name not in decided:
+            decided[name] = spec
+        elif spec is None or decided[name] != spec:
+            decided[name] = None
 
     def walk(node, conditional):
         kind = node.type
@@ -462,6 +473,10 @@ def _scope(nodes, own, init):
             if target is not None:
                 for name in _pattern(next(iter(target.named_children), None)):
                     bind(name, None)
+            return
+        if kind == "if_statement" and not conditional and _typing(node):
+            for child in node.named_children:
+                walk(child, child.type in ("elif_clause", "else_clause"))
             return
         nested = conditional or kind in _COND
         for child in node.named_children:
@@ -549,7 +564,8 @@ def _cross(rel, source, index, own):
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
         for obj, attr in attrs:
             spec = use(fn_scope, obj)
-            target = None if not spec or spec[0] != "mod" else index.get(spec[1], {}).get(attr)
+            mod = None if not spec else spec[1] if spec[0] == "mod" else spec[1] + (spec[2],)
+            target = None if mod is None else index.get(mod, {}).get(attr)
             if target and (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})

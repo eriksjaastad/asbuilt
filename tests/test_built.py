@@ -420,6 +420,44 @@ class BuiltCommandTest(unittest.TestCase):
         })
         self.assertEqual(ends, [])
 
+    def test_from_pkg_import_mod_then_mod_f_draws_an_arrow(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from shop import other\ndef main():\n    return other.load()\n",
+        })
+        self.assertIn(["app.py:main:2", "other.py:load:1"], ends)
+
+    def test_from_dot_import_mod_then_mod_f_draws_an_arrow(self):
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from . import other\ndef main():\n    return other.load()\n",
+        })
+        self.assertIn(["app.py:main:2", "other.py:load:1"], ends)
+
+    def test_importing_the_same_module_again_keeps_the_arrow(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "import other\nimport other.sub\ndef main():\n    return other.load()\n",
+        })
+        self.assertIn(["app.py:main:3", "other.py:load:1"], ends)
+
+    def test_a_relative_import_above_the_package_draws_nothing(self):
+        ends = _ends("repo", {
+            "other.py": "def load():\n    return 1\n",
+            "pkg/__init__.py": "",
+            "pkg/app.py": "from ..other import load\ndef main():\n    return load()\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_an_import_under_type_checking_still_draws(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "if TYPE_CHECKING:\n    from other import load\ndef main():\n    return load()\n",
+        })
+        self.assertIn(["app.py:main:3", "other.py:load:1"], ends)
+
     def test_an_imported_name_rebound_locally_has_no_arrow(self):
         ends = _ends("shop", {
             "other.py": "def load():\n    return 1\n",
