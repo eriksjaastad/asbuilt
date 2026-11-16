@@ -308,7 +308,7 @@ test("a straight layout still more than twice a laptop wide is left after that o
 
 test("a fold that does not narrow the chart folds every wide box on the next try", async () => {
   const seen = [];
-  const plan = { id: "root", children: [part("p", boxes("p", 3)), part("q", boxes("q", 3))] };
+  const plan = { id: "root", children: [part("p", boxes("p", 3)), part("q", boxes("q", 3)), part("r", boxes("r", 3))] };
   const row = (id) => [{ id: `${id}0`, x: 0, y: 40, width: 190, height: 70 }, { id: `${id}1`, x: 700, y: 40, width: 190, height: 70 }, { id: `${id}2`, x: 1600, y: 40, width: 190, height: 70 }];
   const group = (id, x) => ({ id, x, y: 40, width: 2000, height: 120, children: row(id) });
   let straight = 0;
@@ -316,14 +316,14 @@ test("a fold that does not narrow the chart folds every wide box on the next try
     layout: async (graph) => {
       seen.push(structuredClone(graph));
       const stop = graph.layoutOptions["elk.layered.thoroughness"] === "60" && ++straight >= 3;
-      return { id: "root", width: stop ? MAX_WIDTH : MAX_WIDTH + 80, height: 400, edges: [], children: [group("p", 0), group("q", 2100)] };
+      return { id: "root", width: stop ? MAX_WIDTH : MAX_WIDTH + 80, height: 400, edges: [], children: [group("p", 0), group("q", 2100), group("r", 4200)] };
     },
   };
   await layout(plan, watching);
   const folds = (g) => (g.edges ?? []).filter((e) => e.id.startsWith("\0fold")).map((e) => e.targets[0]);
   const tries = seen.filter((g) => g.layoutOptions["elk.layered.thoroughness"] === "60");
   assert.deepEqual(folds(tries[1]), ["p2"]);
-  assert.deepEqual(folds(tries[2]), ["p2", "q2"]);
+  assert.deepEqual(folds(tries[2]), ["p2", "q2", "r2"]);
 });
 
 // run and report share a group, and results, outside it, is written by one and read by the other: ELK alone turns
