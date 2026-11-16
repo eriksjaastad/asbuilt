@@ -1,8 +1,9 @@
 """Model notes for boxes that already have source. python -m asbuilt.notes PLAN OUT
 
 The model only comments: it cannot add or remove a box. A reply that is not the JSON
-asked for is refused, the command exits 2, and nothing is written. Unless ASBUILT_MODEL=1,
-ask() is the mock and no notes are added.
+asked for is refused, the command exits 2, and nothing is written. A run that returns no
+notes, including the mock used unless ASBUILT_MODEL=1, leaves model notes already there.
+A run that returns notes replaces them.
 """
 
 import argparse
@@ -82,7 +83,7 @@ def applied(plan, notes):
 
 
 def annotate(plan, name, connection=None):
-    """`plan` plus model notes. `connection` defaults to the mock, which adds none."""
+    """`plan` plus model notes. No notes back leaves model notes already there; notes replace them."""
     boxes = _coded(plan)
     if not boxes:
         return plan
@@ -94,6 +95,8 @@ def annotate(plan, name, connection=None):
         notes = read_reply(ask(PROMPT.format(max=NOTE_MAX, boxes=json.dumps(said, ensure_ascii=False)), connection), [b["id"] for b in boxes])
     except PlanError as exc:
         raise PlanError(f"{name}: the model's reply was not used: {exc}") from None
+    if not notes:
+        return plan
     return applied(plan, notes)
 
 

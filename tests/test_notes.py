@@ -74,3 +74,15 @@ class NotesTest(unittest.TestCase):
                 self.assertEqual(main([str(src), str(out)]), 2)
             self.assertIn("could not be reached", err.getvalue())
             self.assertEqual(out.read_text(), kept)
+
+    def test_a_run_that_returns_no_notes_leaves_model_notes_already_there(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp, "plan.json")
+            plan = chart()
+            paid = [{"label": "tricky part", "text": "paid for"}]
+            plan["children"][0]["children"][0]["asbuilt"]["model"] = paid
+            src.write_text(json.dumps(plan))
+            with mock.patch.dict(os.environ, {"ASBUILT_MODEL": ""}):
+                self.assertEqual(main([str(src), str(src)]), 0)
+            kept = json.loads(src.read_text())["children"][0]["children"][0]["asbuilt"]["model"]
+            self.assertEqual(kept, paid)
