@@ -206,6 +206,53 @@ class CompareTest(unittest.TestCase):
             ["f:_:1", "f:_:10", "f:_:2", "f:_:20"],
         )
 
+    def test_an_exact_id_keeps_its_box_when_another_shares_the_short_id(self):
+        planned = box("r", box("f.py:load"), box("f.py:load:5"))
+        built = box("r", box("f.py:load"), box("f.py:load:12"))
+        got = items(compare(planned, built))
+        self.assertEqual(
+            got,
+            {"f.py:load": "planned", "f.py:load:5": "dropped", "f.py:load:12": "added"},
+        )
+
+    def test_an_arrow_matches_by_its_ends_not_its_id(self):
+        planned = box("r", box("shop.py:main"), box("shop.py:load"))
+        planned["edges"] = [
+            {
+                "id": "e1",
+                "sources": ["shop.py:main"],
+                "targets": ["shop.py:load"],
+                "labels": [{"text": "on each save"}],
+            }
+        ]
+        built = box("r", box("shop.py:main:5"), box("shop.py:load:1"))
+        built["edges"] = [
+            {"id": "shop.py:main:5>load", "sources": ["shop.py:main:5"], "targets": ["shop.py:load:1"]}
+        ]
+        out = compare(planned, built)
+        self.assertEqual(
+            [(a["id"], a["asbuilt"]["mark"]) for a in out["edges"]],
+            [("shop.py:main:5>load", "planned")],
+        )
+        built["edges"][0]["labels"] = [{"text": "starts"}]
+        marked = compare(planned, built)["edges"]
+        self.assertEqual(
+            [(a["id"], a["asbuilt"]["mark"]) for a in marked],
+            [("shop.py:main:5>load", "changed")],
+        )
+
+    def test_a_dropped_box_does_not_reuse_a_paired_arrow_id(self):
+        planned = box("r", box("shop.py:main"), box("shop.py:load"), box("shop.py:main:5>load"))
+        planned["edges"] = [{"id": "e1", "sources": ["shop.py:main"], "targets": ["shop.py:load"]}]
+        built = box("r", box("shop.py:main:5"), box("shop.py:load:1"))
+        built["edges"] = [
+            {"id": "shop.py:main:5>load", "sources": ["shop.py:main:5"], "targets": ["shop.py:load:1"]}
+        ]
+        with self.assertRaisesRegex(
+            ValueError, 'box "shop.py:main:5>load" was planned; built has an arrow'
+        ):
+            compare(planned, built)
+
     def test_a_dropped_arrow_is_pointed_at_the_built_id(self):
         planned = box("r", box("shop.py:load"), box("shop.py:gone"))
         planned["edges"] = [{"id": "e", "sources": ["shop.py:load"], "targets": ["shop.py:gone"]}]
