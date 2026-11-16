@@ -326,6 +326,29 @@ test("a fold that does not narrow the chart folds every wide box on the next try
   assert.deepEqual(folds(tries[2]), ["p2", "q2", "r2"]);
 });
 
+test("once the width has already sat still, the next stall folds three arrows at once", async () => {
+  const seen = [];
+  const plan = { id: "root", children: [part("p", [{ id: "hold" }])] };
+  const kids = Array.from({ length: 5 }, (_, i) => [
+    { id: `p${i}a`, x: 0, y: i * 100, width: 190, height: 70 },
+    { id: `p${i}b`, x: 1300, y: i * 100, width: 190, height: 70 },
+  ]).flat();
+  let straight = 0;
+  const watching = {
+    layout: async (graph) => {
+      seen.push(structuredClone(graph));
+      const stop = graph.layoutOptions["elk.layered.thoroughness"] === "60" && ++straight >= 4;
+      return { id: "root", width: stop ? MAX_WIDTH : MAX_WIDTH + 80, height: 800, edges: [], children: [{ id: "p", x: 0, y: 40, width: 2000, height: 600, children: kids }] };
+    },
+  };
+  await layout(plan, watching);
+  const folds = (g) => (g.edges ?? []).filter((e) => e.id.startsWith("\0fold")).map((e) => e.targets[0]);
+  const tries = seen.filter((g) => g.layoutOptions["elk.layered.thoroughness"] === "60");
+  const added = folds(tries[3]).filter((id) => !folds(tries[2]).includes(id));
+  assert.deepEqual(folds(tries[2]), ["p0b", "p1b"]);
+  assert.deepEqual(added, ["p2b", "p3b", "p4b"]);
+});
+
 // run and report share a group, and results, outside it, is written by one and read by the other: ELK alone turns
 // one of the two arrows to point up.
 const between = (extra = {}) => ({ id: "r", children: [{ id: "g", children: [leaf("run"), leaf("report")] }, leaf("results")],
