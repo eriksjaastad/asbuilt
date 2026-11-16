@@ -21,7 +21,8 @@ function showCode() {
   const body = html(box);
   source.innerHTML = body;
   // A file or folder has no lines of its own. The button still shows, above the code.
-  code.hidden = body === "" && !box;
+  // A filter keeps the panel up after the code is closed, so Whole chart stays reachable.
+  code.hidden = body === "" && !box && !focus;
   pipelineBtn.hidden = !box;
   whole.hidden = !focus;
 }
