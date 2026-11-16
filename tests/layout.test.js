@@ -260,6 +260,95 @@ test("a chart the straight layout cannot fit starts again centred, without the h
   assertSound(plan, laid, 14, 0);
 });
 
+test("a chart already far past a laptop skips the straight search and still fits", async () => {
+  const seen = [];
+  const plan = { id: "root", children: [part("file", boxes("b", 32))] };
+  const laid = await layout(plan, { layout: (graph) => (seen.push(graph.layoutOptions), elk.layout(graph)) });
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assert.ok(seen.length < 20, `${seen.length} layouts`);
+  assert.ok(seen.every((options) => options["elk.layered.thoroughness"] !== "60"));
+  assertSound(plan, laid, 33, 0);
+});
+
+test("a first layout more than three laptops wide skips the straight search", async () => {
+  const seen = [];
+  const plan = { id: "root", children: boxes("b", 10) };
+  const watching = {
+    layout: async (graph) => {
+      seen.push(structuredClone(graph));
+      const out = await elk.layout(graph);
+      return seen.length === 1 ? { ...out, width: MAX_WIDTH * 3 + 1 } : out;
+    },
+  };
+  const laid = await layout(plan, watching);
+  assert.equal(placement(seen[0]), "NETWORK_SIMPLEX");
+  assert.equal(seen[0].layoutOptions["elk.layered.thoroughness"], undefined);
+  assert.ok(seen.length > 1);
+  assert.ok(seen.slice(1).every((g) => placement(g) === "SIMPLE" && g.layoutOptions["elk.layered.thoroughness"] !== "60"));
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+});
+
+test("a straight layout still more than twice a laptop wide is left after that one try", async () => {
+  const seen = [];
+  const plan = { id: "root", children: boxes("b", 10) };
+  const watching = {
+    layout: async (graph) => {
+      seen.push(structuredClone(graph));
+      const out = await elk.layout(graph);
+      return graph.layoutOptions["elk.layered.thoroughness"] === "60" ? { ...out, width: MAX_WIDTH * 2 + 1 } : out;
+    },
+  };
+  const laid = await layout(plan, watching);
+  const straight = seen.filter((g) => g.layoutOptions["elk.layered.thoroughness"] === "60");
+  assert.equal(straight.length, 1);
+  const centred = seen.find((g) => placement(g) === "SIMPLE");
+  assert.equal(centred.edges.length, 0);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+});
+
+test("a fold that does not narrow the chart folds every wide box on the next try", async () => {
+  const seen = [];
+  const plan = { id: "root", children: [part("p", boxes("p", 3)), part("q", boxes("q", 3)), part("r", boxes("r", 3))] };
+  const row = (id) => [{ id: `${id}0`, x: 0, y: 40, width: 190, height: 70 }, { id: `${id}1`, x: 700, y: 40, width: 190, height: 70 }, { id: `${id}2`, x: 1600, y: 40, width: 190, height: 70 }];
+  const group = (id, x) => ({ id, x, y: 40, width: 2000, height: 120, children: row(id) });
+  let straight = 0;
+  const watching = {
+    layout: async (graph) => {
+      seen.push(structuredClone(graph));
+      const stop = graph.layoutOptions["elk.layered.thoroughness"] === "60" && ++straight >= 3;
+      return { id: "root", width: stop ? MAX_WIDTH : MAX_WIDTH + 80, height: 400, edges: [], children: [group("p", 0), group("q", 2100), group("r", 4200)] };
+    },
+  };
+  await layout(plan, watching);
+  const folds = (g) => (g.edges ?? []).filter((e) => e.id.startsWith("\0fold")).map((e) => e.targets[0]);
+  const tries = seen.filter((g) => g.layoutOptions["elk.layered.thoroughness"] === "60");
+  assert.deepEqual(folds(tries[1]), ["p2"]);
+  assert.deepEqual(folds(tries[2]), ["p2", "q2", "r2"]);
+});
+
+test("once the width has already sat still, the next stall folds three arrows at once", async () => {
+  const seen = [];
+  const plan = { id: "root", children: [part("p", [{ id: "hold" }])] };
+  const kids = Array.from({ length: 5 }, (_, i) => [
+    { id: `p${i}a`, x: 0, y: i * 100, width: 190, height: 70 },
+    { id: `p${i}b`, x: 1300, y: i * 100, width: 190, height: 70 },
+  ]).flat();
+  let straight = 0;
+  const watching = {
+    layout: async (graph) => {
+      seen.push(structuredClone(graph));
+      const stop = graph.layoutOptions["elk.layered.thoroughness"] === "60" && ++straight >= 4;
+      return { id: "root", width: stop ? MAX_WIDTH : MAX_WIDTH + 80, height: 800, edges: [], children: [{ id: "p", x: 0, y: 40, width: 2000, height: 600, children: kids }] };
+    },
+  };
+  await layout(plan, watching);
+  const folds = (g) => (g.edges ?? []).filter((e) => e.id.startsWith("\0fold")).map((e) => e.targets[0]);
+  const tries = seen.filter((g) => g.layoutOptions["elk.layered.thoroughness"] === "60");
+  const added = folds(tries[3]).filter((id) => !folds(tries[2]).includes(id));
+  assert.deepEqual(folds(tries[2]), ["p0b", "p1b"]);
+  assert.deepEqual(added, ["p2b", "p3b", "p4b"]);
+});
+
 // run and report share a group, and results, outside it, is written by one and read by the other: ELK alone turns
 // one of the two arrows to point up.
 const between = (extra = {}) => ({ id: "r", children: [{ id: "g", children: [leaf("run"), leaf("report")] }, leaf("results")],
