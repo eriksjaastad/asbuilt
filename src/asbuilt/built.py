@@ -98,14 +98,39 @@ def _calls(node):
     return count
 
 
+def _one_name(child):
+    """A parameter's own name. The default (`fn=load`) and the type are not names it binds."""
+    if child.type == "identifier":
+        return child.text.decode()
+    ident = next((c for c in child.named_children if c.type == "identifier"), None)
+    return None if ident is None else ident.text.decode()
+
+
+def _imported(stmt):
+    """Names an import binds. `import pkg as load` and `from pkg import load` bind load, not pkg."""
+    items = stmt.named_children[1:] if stmt.type == "import_from_statement" else stmt.named_children
+    names = []
+    for item in items:
+        if item.type == "aliased_import":
+            alias = next((c for c in item.named_children if c.type == "identifier"), None)
+            if alias is not None:
+                names.append(alias.text.decode())
+        elif item.type == "dotted_name":
+            ident = next((c for c in item.named_children if c.type == "identifier"), None)
+            if ident is not None:
+                names.append(ident.text.decode())
+    return names
+
+
 def _bound(node):
-    """Names this box assigns: parameters, locals, and nested defs. A call to one of these is
-    not a call of the top-level function of the same name."""
-    names = set()
+    """Names this box assigns. A call of one of them is not the top-level function of that name.
+    `global load` puts the name back: the call is the top-level one."""
+    names, glob = set(), set()
     params = node.child_by_field_name("parameters")
     for child in params.named_children if params is not None else ():
-        idents = [child] if child.type == "identifier" else child.named_children
-        names.update(c.text.decode() for c in idents if c.type == "identifier")
+        name = _one_name(child)
+        if name is not None:
+            names.add(name)
     body = node.child_by_field_name("body")
     todo = list(reversed(body.children)) if body is not None else []
     while todo:
@@ -121,11 +146,20 @@ def _bound(node):
             if name is not None:
                 names.add(name.text.decode())
             continue
+        if cur.type == "global_statement":
+            glob.update(c.text.decode() for c in cur.named_children if c.type == "identifier")
+            continue
+        if cur.type in ("import_statement", "import_from_statement"):
+            names.update(_imported(cur))
+            continue
+        if cur.type == "as_pattern":
+            target = next((c for c in cur.named_children if c.type == "as_pattern_target"), None)
+            if target is not None:
+                names.update(_pattern(next(iter(target.named_children), None)))
         if cur.type in ("assignment", "augmented_assignment", "for_statement", "named_expression"):
-            left = next(iter(cur.named_children), None)
-            names.update(_pattern(left))
+            names.update(_pattern(next(iter(cur.named_children), None)))
         todo.extend(reversed(cur.children))
-    return names
+    return names - glob
 
 
 def _pattern(node):
@@ -139,20 +173,41 @@ def _pattern(node):
     return ()
 
 
-def _direct_calls(node):
-    """Bare names called in `node`'s body. A call on an attribute, and a call inside a nested
-    function or class, are skipped: they are not this box calling another top-level name."""
+def _scoped(node, extra):
+    """Names a lambda or a comprehension binds, added to the names already bound outside it."""
+    names = set(extra)
+    if node.type == "lambda":
+        params = next((c for c in node.named_children if c.type == "lambda_parameters"), None)
+        for child in params.named_children if params is not None else ():
+            name = _one_name(child)
+            if name is not None:
+                names.add(name)
+    else:
+        for clause in node.named_children:
+            if clause.type == "for_in_clause":
+                names.update(_pattern(next(iter(clause.named_children), None)))
+    return names
+
+
+def _direct_calls(node, scope):
+    """Bare names called in `node`'s body, ignoring names bound there. A call on an attribute,
+    and a call inside a nested function or class, are skipped."""
     body = node.child_by_field_name("body")
-    found, todo = [], list(reversed(body.children)) if body is not None else []
+    found, todo = [], [(c, scope) for c in reversed(body.children)] if body is not None else []
+    nested = ("function_definition", "class_definition", "decorated_definition")
+    comps = ("list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression")
     while todo:
-        cur = todo.pop()
-        if cur.type in ("function_definition", "class_definition", "decorated_definition"):
+        cur, names = todo.pop()
+        if cur.type in nested:
+            continue
+        if cur.type == "lambda" or cur.type in comps:
+            todo.extend((c, _scoped(cur, names)) for c in reversed(cur.children))
             continue
         if cur.type == "call":
             fun = next(iter(cur.named_children), None)
-            if fun is not None and fun.type == "identifier":
+            if fun is not None and fun.type == "identifier" and fun.text.decode() not in names:
                 found.append(fun.text.decode())
-        todo.extend(reversed(cur.children))
+        todo.extend((c, names) for c in reversed(cur.children))
     return found
 
 
@@ -190,8 +245,9 @@ def python_file(name, source):
     Python does not accept them, else that they are not UTF-8 so not read, else that
     tree-sitter misreads code Python accepts. A file that reads cleanly holds a child box for
     each top-level function and class, and an arrow for a direct call of one of those names.
-    A parameter or local of that name is not the call, and a name defined twice points at the
-    last one, which is the one Python runs."""
+    A parameter, local, import, with or except name, comprehension variable, or lambda
+    parameter of that name is not the call. A default value is not a parameter, and global
+    keeps the call. A name defined twice points at the last one, which is the one Python runs."""
     note = _note(source)
     definitions, decoded = [], None
     if not note:
@@ -220,10 +276,9 @@ def python_file(name, source):
             )
         edges, seen = [], set()
         for ident, _, start, _, node in definitions:
-            bound = _bound(node)
-            for callee in _direct_calls(node):
+            for callee in _direct_calls(node, _bound(node)):
                 pair = (f"{ident}:{start}", callee)
-                if callee in bound or callee not in at or pair in seen:
+                if callee not in at or pair in seen:
                     continue  # a local, not a top-level box, or already drawn
                 seen.add(pair)
                 edges.append(
