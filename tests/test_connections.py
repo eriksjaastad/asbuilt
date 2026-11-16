@@ -104,7 +104,7 @@ class ClaudeCLITest(unittest.TestCase):
 
     def test_ask_uses_the_connection_handed_in_else_the_mock(self):
         self.assertEqual(ask("p", lambda p: p + "!"), "p!")
-        # A key in the environment does not turn the call on. Only ASBUILT_MODEL=1 does.
+        # A key in the environment does not turn the call on. Only 1 and claude do.
         with mock.patch.dict(os.environ, {"ASBUILT_MODEL": "", "OPENROUTER_API_KEY": "k"}):
             self.assertEqual(ask("p"), '{"notes": []}')
 
@@ -152,3 +152,20 @@ class OpenRouterTest(unittest.TestCase):
                     ask("hello")
             self.assertNotIn(key, str(caught.exception))
         self.assertIsNone(c._NoRedirect().redirect_request(None, None, 302, "", {}, "http://x"))
+
+
+class ClaudeChoiceTest(unittest.TestCase):
+    def test_claude_uses_the_installed_program_and_does_not_touch_the_openrouter_key(self):
+        from asbuilt import connections as c
+
+        def program(self, prompt):
+            self.ran = prompt
+            return prompt + "!"
+
+        def paid(self, prompt):
+            raise AssertionError("openrouter")
+
+        with mock.patch.dict(os.environ, {"ASBUILT_MODEL": "claude"}, clear=False):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            with mock.patch.object(c.ClaudeCLI, "__call__", program), mock.patch.object(c.OpenRouter, "__call__", paid):
+                self.assertEqual(ask("hello"), "hello!")

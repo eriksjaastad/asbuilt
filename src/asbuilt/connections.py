@@ -1,9 +1,9 @@
 """The one place As-Built runs a model, so it is swapped here.
 
-ask() never calls out. Set ASBUILT_MODEL=1 and it calls OpenRouter instead, using
-OPENROUTER_API_KEY from the environment. The key is read at call time and is not
-written into a file or an error. Pass a connection to use something else. The Claude
-CLI remains for a caller that names it; nothing uses it unless asked.
+ask() never calls out unless ASBUILT_MODEL is set. "claude" uses the installed Claude
+program and the user's own login, and does not read an API key. "1" calls OpenRouter
+with OPENROUTER_API_KEY, read at call time and never written into a file or an error.
+Anything else is the mock. Pass a connection to use something else.
 """
 
 import json
@@ -125,10 +125,15 @@ class ClaudeCLI:
 
 
 def ask(prompt, connection=None):
-    """The reply to `prompt`. The default is the mock. ASBUILT_MODEL=1 uses OpenRouter."""
+    """The reply to `prompt`. Mock, unless ASBUILT_MODEL is "claude" or "1"."""
     if connection is not None:
         return connection(prompt)
-    return (OpenRouter() if os.environ.get(OPT_IN) == "1" else Mock())(prompt)
+    choice = os.environ.get(OPT_IN)
+    if choice == "claude":  # the installed program; it never sees OPENROUTER_API_KEY
+        return ClaudeCLI()(prompt)
+    if choice == "1":
+        return OpenRouter()(prompt)
+    return Mock()(prompt)
 
 
 def stopped(done):

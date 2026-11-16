@@ -64,16 +64,25 @@ When a function's only step is to call one other function and return that result
 appears every time: "This function calls one other function and returns whatever that returns."
 
 A second kind of note can be written by a model. It is labeled "model", and it is separate from
-the line above. Nothing is sent unless you opt in. The key is the environment variable
-`OPENROUTER_API_KEY` (As-Built never stores it). The model is `x-ai/grok-4.7` on OpenRouter.
+the line above. Nothing is sent unless you opt in. Either setting sends each function and each class.
+
+With a Claude subscription, `ASBUILT_MODEL=claude` uses the Claude program already signed in on
+this machine. There is no per-call charge.
+
+```
+ASBUILT_MODEL=claude uv run python -m asbuilt.notes built.json noted.json
+```
+
+`ASBUILT_MODEL=1` sends each function and class to OpenRouter and may cost money. The key is
+the environment variable `OPENROUTER_API_KEY` (As-Built never stores it). The model is
+`x-ai/grok-4.7`.
 
 ```
 ASBUILT_MODEL=1 uv run python -m asbuilt.notes built.json noted.json
 uv run asbuilt noted.json
 ```
 
-`ASBUILT_MODEL=1` sends each function's source code to OpenRouter and may cost money.
-Without `ASBUILT_MODEL=1` the command does not call out, and it adds no model notes. A reply that
+Any other value, or leaving it unset, does not call out and adds no model notes. A reply that
 is not the notes asked for is thrown away and the output file is left unchanged. The model
 cannot add boxes. A function or class nested inside another is not its own box yet, and neither
 is a folder of files or a JavaScript file.

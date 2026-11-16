@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from asbuilt.connections import ConnectionFailed
+from asbuilt.connections import ClaudeCLI, ConnectionFailed
 from asbuilt.notes import annotate, main
 from asbuilt.state import PlanError
 
@@ -86,3 +86,20 @@ class NotesTest(unittest.TestCase):
                 self.assertEqual(main([str(src), str(src)]), 0)
             kept = json.loads(src.read_text())["children"][0]["children"][0]["asbuilt"]["model"]
             self.assertEqual(kept, paid)
+
+    def test_a_missing_claude_program_prints_one_line_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp, "built.json"), Path(tmp, "noted.json")
+            src.write_text(json.dumps(chart()))
+
+            def missing(command=("claude",), timeout=300):
+                return ClaudeCLI(("/no/such/claude",), timeout)
+
+            with mock.patch.dict(os.environ, {"ASBUILT_MODEL": "claude"}, clear=False):
+                os.environ.pop("OPENROUTER_API_KEY", None)
+                with mock.patch("asbuilt.connections.ClaudeCLI", missing):
+                    with contextlib.redirect_stderr(io.StringIO()) as err:
+                        self.assertEqual(main([str(src), str(out)]), 2)
+            self.assertEqual(err.getvalue().count("\n"), 1)
+            self.assertIn("install Claude Code", err.getvalue())
+            self.assertFalse(out.exists())
