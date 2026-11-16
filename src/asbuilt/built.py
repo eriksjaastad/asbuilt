@@ -25,6 +25,7 @@ import tree_sitter_python
 
 from asbuilt import output
 from asbuilt.compare import check
+from asbuilt.marks import of as _marks
 from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
 
@@ -276,6 +277,9 @@ def python_file(name, source):
             info = _source(decoded, start, end)
             if _passes(node):
                 info["proven"] = PASSES
+            badges = _marks(node)
+            if badges:
+                info["badges"] = badges
             child = f"{name}:{ident}:{start}"
             at[ident] = child  # the last def is the one a call reaches
             children.append(

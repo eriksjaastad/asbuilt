@@ -5,6 +5,7 @@ import { LANES, lanes } from "./lanes.js";
 import { ARROW_ROOM, noteOf, PADDING, prepare } from "./prepare.js";
 
 const markOf = (item) => (item.asbuilt?.mark === undefined ? {} : { mark: item.asbuilt.mark });
+const badgesOf = (item) => (Array.isArray(item.asbuilt?.badges) ? { badges: item.asbuilt.badges } : {});
 const OPTIONS = {
   "elk.algorithm": "layered",
   "elk.direction": "DOWN",
@@ -135,7 +136,7 @@ async function chart(prepared, elk, hide, parts) {
       let drawn = cut.get(whole.id)?.drawn;
       if (drawn) drawn.h = y + b.height - drawn.y; // a further part of a group: the group's box runs down to its foot
       else {
-        drawn = { id: whole.id, x, y, w: b.width, h: b.height, level, label: whole.labels?.[0]?.text ?? whole.id, note: noteOf(whole), ...markOf(whole) };
+        drawn = { id: whole.id, x, y, w: b.width, h: b.height, level, label: whole.labels?.[0]?.text ?? whole.id, note: noteOf(whole), ...markOf(whole), ...badgesOf(whole) };
         boxes.push(drawn);
         held.set(drawn, holders);
         if (part) cut.set(whole.id, { drawn, part });

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ELK from "elkjs/lib/elk.bundled.js";
 import rough from "roughjs/bundled/rough.esm.js";
 import { draw } from "../src/asbuilt/page/draw.js";
+import { layout } from "../src/asbuilt/page/layout.js";
 import { MARKS } from "../src/asbuilt/page/shapes.js";
 import { decode, escaped, evils, laid, pieces } from "./helpers.js";
 
@@ -100,4 +102,14 @@ test("a chart with a mark gets a legend row under it, wide enough for its four e
   assert.deepEqual(rows, cues);
   assert.ok(svg.indexOf("<line") > svg.lastIndexOf("data-box"));
   assert.doesNotMatch(draw(laid, rough.generator()), /<line/);
+});
+
+test("a badge is drawn on the box and the box keeps its id", async () => {
+  const plan = { id: "root", children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env", "calls out"] } }] };
+  const laid = await layout(plan, new ELK());
+  const svg = draw(laid, rough.generator());
+  assert.deepEqual(laid.boxes.find((b) => b.id === "read").badges, ["env", "calls out"]);
+  assert.match(svg, /data-box="read"/);
+  assert.match(svg, /data-badge="env"/);
+  assert.match(svg, /data-badge="calls out"/);
 });

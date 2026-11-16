@@ -71,6 +71,11 @@ from it, and the file or folder around each of those, and hides the rest. Arrows
 outward. “Whole chart” brings the full chart back. Choosing a file or a folder starts from every
 box inside it, because the arrows leave those boxes, not the folder.
 
+A box can carry a small badge for work its own code proves, never for a box it calls.
+`calls out` is requests, httpx, urllib, socket, subprocess, openai, or anthropic.
+`env` is an environment read, `input` is input(), and `writes` is a file opened to be written.
+The badge sits on the box. It does not change the box's id or its arrows.
+
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
 box inside its parent. The folder you named keeps its plain name (`shop`). The built chart writes a subfolder as
 `sub/`, and a plan may name it `sub` or `sub/`. When the subfolder has the same name as the
