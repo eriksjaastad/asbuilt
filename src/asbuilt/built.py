@@ -97,6 +97,23 @@ def _calls(node):
     return count
 
 
+def _direct_calls(node):
+    """Bare names called in `node`'s body. A call on an attribute, and a call inside a nested
+    function or class, are skipped: they are not this box calling another top-level name."""
+    body = node.child_by_field_name("body")
+    found, todo = [], list(reversed(body.children)) if body is not None else []
+    while todo:
+        cur = todo.pop()
+        if cur.type in ("function_definition", "class_definition", "decorated_definition"):
+            continue
+        if cur.type == "call":
+            fun = next(iter(cur.named_children), None)
+            if fun is not None and fun.type == "identifier":
+                found.append(fun.text.decode())
+        todo.extend(reversed(cur.children))
+    return found
+
+
 def _passes(node):
     """True when the body is a single return of one call. Parentheses and await may wrap that call.
     A second call, a second statement, or a return of anything else does not match."""
@@ -143,19 +160,37 @@ def python_file(name, source):
                 decoded, definitions = text.decode(), _definitions(root)
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
-        children = []
+        children, at = [], {}
         for ident, is_class, start, end, node in definitions:
             info = _source(decoded, start, end)
             if _passes(node):
                 info["proven"] = PASSES
+            child = f"{name}:{ident}:{start}"
+            at.setdefault(ident, child)
             children.append(
                 {
-                    "id": f"{name}:{ident}:{start}",
+                    "id": child,
                     "labels": [{"text": ident if is_class else f"{ident}()"}],
                     "asbuilt": info,
                 }
             )
+        edges, seen = [], set()
+        for ident, _, start, _, node in definitions:
+            for callee in _direct_calls(node):
+                pair = (f"{ident}:{start}", callee)
+                if callee not in at or pair in seen:
+                    continue  # not a top-level box in this file, or already drawn
+                seen.add(pair)
+                edges.append(
+                    {
+                        "id": f"{name}:{ident}:{start}>{callee}",
+                        "sources": [f"{name}:{ident}:{start}"],
+                        "targets": [at[callee]],
+                    }
+                )
         box["children"] = children
+        if edges:
+            box["edges"] = edges
     return box
 
 
