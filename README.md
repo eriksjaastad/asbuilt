@@ -48,6 +48,11 @@ uv run asbuilt compared.json
 The chart is the built one, with each box and arrow that differs from the plan tagged "new",
 "changed" (dotted) or "dropped" (faded and dashed, where the plan had it), and a legend under it.
 
+A box you write before the code exists can be named `shop.py:load`: the file, then the function
+or class. The built chart uses that same id with the line number on the end (`shop.py:load:12`),
+which is how the code panel finds the lines. Compare matches the two, and the line number is
+not a difference.
+
 ## Read one Python file
 
 ```
