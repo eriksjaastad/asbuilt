@@ -200,6 +200,35 @@ class PassThroughTest(unittest.TestCase):
             self.assertNotIn("proven", info, source)
 
 
+class CallArrowTest(unittest.TestCase):
+    def test_a_direct_call_of_a_top_level_name_is_one_arrow_and_other_calls_are_not(self):
+        lines = [
+            "def load():",
+            "    return 1",
+            "",
+            "class Box:",
+            "    def hidden(self):",
+            "        load()",
+            "",
+            "def main():",
+            "    load()",
+            "    print(1)",
+            "    obj.save()",
+            "    Box()",
+            "    return load(other())",
+            "",
+            "def holder():",
+            "    def inner():",
+            "        load()",
+            "    load()",
+        ]
+        box = python_file("shop.py", ("\n".join(lines) + "\n").encode())
+        self.assertEqual(
+            [(e["sources"][0], e["targets"][0]) for e in box["edges"]],
+            [("shop.py:main:8", "shop.py:load:1"), ("shop.py:main:8", "shop.py:Box:4"), ("shop.py:holder:15", "shop.py:load:1")],
+        )
+
+
 class SourceTextTest(unittest.TestCase):
     def test_a_definition_keeps_its_own_lines_and_a_long_one_is_cut_not_summarized(self):
         source = "def one():\n    return 1\n\ndef two():\n    return 2\n"
