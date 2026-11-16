@@ -262,6 +262,42 @@ class CallBindingTest(unittest.TestCase):
         self.assertEqual(box["edges"][0]["targets"], ["t.py:load:3"])
 
 
+def called(source):
+    """The top-level names a file's arrows point at."""
+    box = python_file("t.py", source.encode())
+    return sorted(edge["targets"][0].split(":")[1] for edge in box.get("edges", []))
+
+
+class ShadowTest(unittest.TestCase):
+    def test_a_default_value_is_not_a_parameter_name(self):
+        source = "def load():\n    return 1\ndef main(fn=load):\n    load()\n"
+        self.assertEqual(called(source), ["load"])
+
+    def test_global_keeps_the_arrow(self):
+        source = "def load():\n    return 1\ndef use():\n    global load\n    load()\n"
+        self.assertEqual(called(source), ["load"])
+
+    def test_with_as_hides_the_name(self):
+        source = "def load():\n    return 1\ndef use():\n    with open(1) as load:\n        load()\n"
+        self.assertEqual(called(source), [])
+
+    def test_a_comprehension_variable_hides_the_name(self):
+        source = "def load():\n    return 1\ndef use():\n    return [load() for load in xs]\n"
+        self.assertEqual(called(source), [])
+
+    def test_a_local_import_hides_the_name(self):
+        source = "def load():\n    return 1\ndef use():\n    import load\n    load()\n"
+        self.assertEqual(called(source), [])
+
+    def test_except_as_hides_the_name(self):
+        source = "def load():\n    return 1\ndef use():\n    try:\n        pass\n    except E as load:\n        load()\n"
+        self.assertEqual(called(source), [])
+
+    def test_a_lambda_parameter_hides_the_name(self):
+        source = "def load():\n    return 1\ndef use():\n    f = lambda load: load()\n"
+        self.assertEqual(called(source), [])
+
+
 class SourceTextTest(unittest.TestCase):
     def test_a_definition_keeps_its_own_lines_and_a_long_one_is_cut_not_summarized(self):
         source = "def one():\n    return 1\n\ndef two():\n    return 2\n"
