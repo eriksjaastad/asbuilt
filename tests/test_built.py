@@ -494,6 +494,35 @@ class BuiltCommandTest(unittest.TestCase):
                 marks += [kid["asbuilt"]["mark"] for kid in box.get("children", [])]
             self.assertEqual(marks, ["planned", "planned", "planned"])
 
+    def test_the_skip_line_leaves_out_pycache_and_hidden_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            root.mkdir()
+            (root / "load.py").write_text("def load():\n    return 1\n")
+            for name in ("build", "__pycache__", ".venv"):
+                folder = root / name
+                folder.mkdir()
+                (folder / "mod.py").write_text("def mod():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(root), str(out)]), 0)
+            self.assertEqual(err.getvalue(), "asbuilt.built: skipped build\n")
+
+    def test_only_skipped_folders_are_named_in_the_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            (root / "build").mkdir(parents=True)
+            (root / "build" / "mod.py").write_text("def mod():\n    return 1\n")
+            (root / "__pycache__").mkdir()
+            (root / "__pycache__" / "old.py").write_text("def old():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(root), str(out)]), 2)
+            self.assertIn("no Python files", err.getvalue())
+            self.assertIn("build", err.getvalue())
+            self.assertIn("__pycache__", err.getvalue())
+            self.assertFalse(out.exists())
+
     def test_a_skipped_build_directory_is_named(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp, "shop")

@@ -69,12 +69,12 @@ width: the code takes a fixed column and the chart scales down to fit. On a narr
 code sits under the chart.
 
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
-box inside its parent. The folder you named keeps its plain name (`shop`). A subfolder's id
-ends with a slash (`sub/`), so a plan can name it ahead of the code, and a subfolder called
-shop is not the same box as the folder shop. A file in the folder is `load.py:load`; a nested
-file is `sub/util.py:name`. Directories named tests, __pycache__, venv, env, node_modules,
-build, dist, or site-packages, and hidden directories, are skipped, and the command names the
-ones it skipped.
+box inside its parent. The folder you named keeps its plain name (`shop`). The built chart writes a subfolder as
+`sub/`, and a plan may name it `sub` or `sub/`. When the subfolder has the same name as the
+folder, the plan uses the slash (`mysite/`) so the two boxes stay different. A file in the
+folder is `load.py:load`; a nested file is `sub/util.py:name`. Directories named tests, venv,
+env, node_modules, build, dist, or site-packages are named when skipped. __pycache__ and
+hidden directories are skipped quietly.
 
 ```
 uv run python -m asbuilt.built . built.json

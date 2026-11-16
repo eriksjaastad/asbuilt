@@ -298,14 +298,15 @@ def python_file(name, source):
     return box
 
 
-_SKIP_DIRS = {"tests", "__pycache__", "venv", "env", "node_modules", "build", "dist", "site-packages"}
+_NAMED_DIRS = {"tests", "venv", "env", "node_modules", "build", "dist", "site-packages"}
+_SKIP_DIRS = _NAMED_DIRS | {"__pycache__"}
 
 
 def _py_files(folder):
-    """(relative path, file) for each Python file under folder, and the relative paths of
-    directories left out by name. A hidden directory or a directory symlink is left out too.
-    A file whose name contains "test" is kept."""
-    found, skipped, todo = [], [], [folder]
+    """(relative path, file) for each Python file under folder, the named skips, and __pycache__.
+    A hidden directory or a directory symlink is left out too, and is not named. A file whose
+    name contains "test" is kept."""
+    found, named, quiet, todo = [], [], [], [folder]
     while todo:
         current = todo.pop()
         try:
@@ -315,15 +316,18 @@ def _py_files(folder):
             raise PlanError(f"{current} cannot be read: {why}") from None
         for path in entries:
             if path.is_dir():
-                if path.name in _SKIP_DIRS:
-                    skipped.append(path.relative_to(folder).as_posix())
+                rel = path.relative_to(folder).as_posix()
+                if path.name in _NAMED_DIRS:
+                    named.append(rel)
+                elif path.name == "__pycache__":
+                    quiet.append(rel)
                 if path.name.startswith(".") or path.name in _SKIP_DIRS or path.is_symlink():
                     continue
                 todo.append(path)
             elif path.is_file() and path.suffix == ".py":
                 found.append((path.relative_to(folder).as_posix(), path))
     found.sort()
-    return found, skipped
+    return found, named, quiet
 
 
 def _place(files):
@@ -354,11 +358,13 @@ def python_dir(folder):
     except OSError as exc:
         why = exc.strerror or type(exc).__name__
         raise PlanError(f"{folder} cannot be read: {why}") from None
-    files, skipped = _py_files(folder)
+    files, named, quiet = _py_files(folder)
     if not files:
-        raise PlanError(f"{name} has no Python files to chart.")
+        skipped = ", ".join(sorted(named + quiet))
+        extra = f" Skipped {skipped}." if skipped else ""
+        raise PlanError(f"{name} has no Python files to chart.{extra}")
     box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
-    return box, skipped
+    return box, named
 
 
 def _is_same(out, path):

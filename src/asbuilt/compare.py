@@ -135,8 +135,11 @@ def _drawn(plan):
 
 
 def _stable(bid):
-    """`shop.py:load:12` and `shop.py:load` are the same box. A trailing line number is only for
-    the code panel. An id with no line number is already the stable key."""
+    """`shop.py:load:12` and `shop.py:load` are the same box, and so are `sub/` and `sub`. A
+    trailing line number is only for the code panel. A trailing slash only keeps a subfolder
+    off the folder of the same name. An id with neither is already the stable key."""
+    if bid.endswith("/"):
+        bid = bid[:-1]
     head, sep, tail = bid.rpartition(":")
     if sep and tail.isdigit() and ":" in head:
         return head
@@ -169,13 +172,14 @@ def _pair(old, new, short):
     return apply(old, use_old), apply(new, use_new)
 
 
-def _mark(key, old, new, ends=None):
+def _mark(key, old, new, ends=None, at=None):
     """For a key of `new`: "added", or by what the page draws "planned" or "changed".
 
-    A box is parent, label, note. An empty note on the built box is not a change: the plan's
-    caption is not drawn there, so the picture of the code is the same. A note the built box
-    does have must match. An arrow is its ends, through `ends` when given, then its label.
-    An empty label on the built arrow is not a change. A label it does have must match."""
+    A box is parent, label, note. The parent is compared through `at`, the paired key, so a
+    plan's `sub` and the built `sub/` are the same parent. An empty note on the built box is
+    not a change: the plan's caption is not drawn there. A note the built box does have must
+    match. An arrow is its ends, through `ends` when given, then its label. An empty label on
+    the built arrow is not a change. A label it does have must match."""
     if key not in old:
         return "added"
     before, after = old[key], new[key]
@@ -190,8 +194,15 @@ def _mark(key, old, new, ends=None):
         if same and (before[2] == after[2] or after[2] == ""):
             return "planned"
         return "changed"
-    if after[2] == "" and before[:2] == after[:2]:
-        return "planned"
+
+    def parent(pid):
+        if pid is None or at is None:
+            return pid
+        return at.get(pid, _stable(pid))
+
+    if parent(before[0]) == parent(after[0]) and before[1] == after[1]:
+        if before[2] == after[2] or after[2] == "":
+            return "planned"
     return "changed"
 
 
@@ -229,7 +240,7 @@ def compare(planned, built):
         placed.get(at.get(parent, parent), root).setdefault("children", []).append(placed[bid])
 
     for bid, (parent, *_, box) in new.items():
-        put(bid, parent, box, _mark(bid, old, new))
+        put(bid, parent, box, _mark(bid, old, new, at=at))
     for box in [root, *map(placed.get, new)]:  # copies: built's arrows stay as they are
         if "edges" in box:
             box["edges"] = [_marked(a, _mark(arrow_at[a["id"]], was, now, end)) for a in box["edges"]]
