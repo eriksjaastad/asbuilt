@@ -289,6 +289,16 @@ class CompareTest(unittest.TestCase):
         different = box("r", box("load", labels=["save()", "reads the file"]))
         self.assertEqual(tree(compare(planned, different)), "load:changed")
 
+    def test_a_plan_may_name_a_subfolder_without_the_slash(self):
+        file = box("sub/other.py", box("sub/other.py:other", labels=["other()"]), labels=["other.py"])
+        built_fn = box("sub/other.py:other:1", labels=["other()"])
+        planned = box("r", box("shop", box("sub", file, labels=["sub"]), labels=["shop"]))
+        built = box("r", box("shop", box("sub/", box("sub/other.py", built_fn, labels=["other.py"]), labels=["sub"]), labels=["shop"]))
+        got = items(compare(planned, built))
+        self.assertNotIn("sub", got)
+        self.assertEqual(got["sub/"], "planned")
+        self.assertEqual(set(got.values()), {"planned"})
+
     def test_check_says_what_the_page_says_about_generated_plans(self):
         # Seeded, so the same plans every run.
         plans = [made(random.Random(n), []) for n in range(400)]
