@@ -196,6 +196,32 @@ def _in_retry(node, fn):
     return False
 
 
+# These calls wait. A client constructor does not, unless it is given a timeout.
+_WAITS = {
+    "run",
+    "call",
+    "check_call",
+    "check_output",
+    "Popen",
+    "urlopen",
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "head",
+    "options",
+    "request",
+    "send",
+    "create_connection",
+    "create_server",
+    "SMTP",
+    "SMTP_SSL",
+    "IMAP4",
+    "IMAP4_SSL",
+}
+
+
 def _takes_seconds(path, call, facts):
     """True for a call whose timeout is in seconds, not milliseconds."""
     roots = ("requests", "httpx", "socket", "subprocess", "smtplib", "imaplib")
@@ -492,6 +518,7 @@ class _Story:
         self.timeout = None
         self.timeout_default = False
         self.timeout_loop = False
+        self.time_bad = False
         self.given = False
         self.given_at = None
         self.skipped_env = None
@@ -856,7 +883,7 @@ def _fstring(node, words):
         if child.type != "interpolation":
             return None
         body = child.text.decode()[1:-1]
-        if "!" in body or ":" in body:
+        if "!" in body or ":" in body or "=" in body:
             return None
         expr = next(iter(child.named_children), None)
         if expr is not None and expr.type == "string":
@@ -1025,12 +1052,15 @@ def _read_if(node, story, params, assigns, facts, fn):
 def _function(fn, scope, words, bound, story, attrs):
     facts = security_facts(fn, scope, words)
     head = fn.child_by_field_name("parameters")
-    defaults, params = {}, set()
+    defaults, params, literal_defaults = {}, set(), set()
     for child in head.named_children if head is not None else ():
         name = one_name(child)
         if name and name != "self":
             params.add(name)
             defaults[name] = _param_default(child, bound)
+            if child.type in ("default_parameter", "typed_default_parameter"):
+                if child.named_children[-1].type == "integer":
+                    literal_defaults.add(name)
     assigns, local_strings, fixed_env = {}, {}, set()
     timeout_locals = {}
     groups = {name: value for name, value in bound.items() if isinstance(value, tuple)}
@@ -1045,41 +1075,53 @@ def _function(fn, scope, words, bound, story, attrs):
                 return None
         if expr.type == "identifier":
             name = expr.text.decode()
-            if isinstance(defaults.get(name), int):
+            # A named constant or an expression is not a readable literal.
+            if name in literal_defaults and isinstance(defaults.get(name), int):
                 return defaults[name], True
-            if name in timeout_locals and isinstance(
-                attrs.get(timeout_locals[name]), int
-            ):
-                return attrs[timeout_locals[name]], True
-            if isinstance(bound.get(name), int):
-                return bound[name], False
+            attr = timeout_locals.get(name)
+            if attr in story.timeout_attrs and isinstance(attrs.get(attr), int):
+                return attrs[attr], True
         attr = _self_attr(expr)
-        if attr and isinstance(attrs.get(attr), int):
+        if attr in story.timeout_attrs and isinstance(attrs.get(attr), int):
             return attrs[attr], True
         return None
 
     def from_timeout(expr):
-        if expr is None:
+        if expr is None or expr.type != "identifier":
             return False
-        if (
-            expr.type == "identifier"
-            and expr.text.decode() == "timeout"
-            and isinstance(defaults.get("timeout"), int)
-        ):
+        name = expr.text.decode()
+        if name in literal_defaults:
             return True
-        if expr.type == "identifier" and expr.text.decode() in timeout_locals:
+        if name in timeout_locals and timeout_locals[name] in story.timeout_attrs:
             return True
         attr = _self_attr(expr)
         return bool(attr and attr in story.timeout_attrs)
 
-    def use_timeout(expr, keyword, call, path):
-        # A number handed to another function in this file is not claimed.
-        if not (keyword or from_timeout(expr)) or not _takes_seconds(path, call, facts):
+    def note_time(call, expr):
+        """One shared time, or none. Every blocking call must show the same literal."""
+        if story.time_bad:
             return
         found = timeout_of(expr)
-        if found:
-            story.timeout, story.timeout_default = found
-            story.timeout_loop = _in_retry(call, fn)
+        if not found:
+            story.time_bad = True
+            story.timeout = None
+            return
+        number, default = found
+        loop = _in_retry(call, fn)
+        if story.timeout is None:
+            story.timeout, story.timeout_default, story.timeout_loop = (
+                number,
+                default,
+                loop,
+            )
+            return
+        if (story.timeout, story.timeout_default, story.timeout_loop) != (
+            number,
+            default,
+            loop,
+        ):
+            story.time_bad = True
+            story.timeout = None
 
     def visit(cur, in_if=False):
         if cur.type in _NESTED:
@@ -1109,7 +1151,7 @@ def _function(fn, scope, words, bound, story, attrs):
                         attrs[attr] = got
                         if (
                             value.type == "identifier"
-                            and value.text.decode() == "timeout"
+                            and value.text.decode() in literal_defaults
                             and isinstance(got, int)
                         ):
                             story.timeout_attrs.add(attr)
@@ -1158,10 +1200,14 @@ def _function(fn, scope, words, bound, story, attrs):
                     or _keeps(env, scope, groups)
                 ):
                     story.keeps_env = True
-            if "timeout" in named:
-                use_timeout(named["timeout"], True, cur, path)
-            for value in positional:
-                use_timeout(value, False, cur, path)
+            if _takes_seconds(path, cur, facts):
+                expr = named.get("timeout")
+                if expr is None:
+                    expr = next(
+                        (value for value in positional if from_timeout(value)), None
+                    )
+                if expr is not None or (path and path[-1] in _WAITS):
+                    note_time(cur, expr)
             for name in _bearer(cur, assigns, facts):
                 story.keys.add(name)
                 story.bearer = name

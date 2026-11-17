@@ -120,7 +120,6 @@ class PlainTest(unittest.TestCase):
             got["ClaudeCLI"],
             [
                 "ClaudeCLI runs the command claude and keeps only a fixed set of environment names.",
-                "By default ClaudeCLI waits up to 300 seconds.",
                 'ClaudeCLI can stop with an error that says "claude is not signed in to claude.ai: run claude auth login." or "claude replied with nothing.", among others.',
             ],
         )
@@ -679,6 +678,62 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(
             _lines(source, "fetch()"), ["By default fetch waits up to 15 seconds."]
         )
+
+    def test_a_timeout_is_stated_only_when_every_call_shows_the_same_literal(self):
+        expression = (
+            "import subprocess\n"
+            "def _run_in_sandbox():\n"
+            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
+            '    subprocess.run(["python", "run_week.py"], timeout=4 * 3600)\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(expression, "_run_in_sandbox()")))
+        constant = (
+            "import subprocess\n"
+            "LIMIT = 60\n"
+            "def _run_in_sandbox():\n"
+            '    subprocess.run(["git", "ls-files"], timeout=LIMIT)\n'
+        )
+        self.assertEqual(
+            _lines(constant, "_run_in_sandbox()"),
+            ["_run_in_sandbox runs the command git."],
+        )
+        missing = (
+            "import subprocess\n"
+            "def _run_in_sandbox():\n"
+            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
+            '    subprocess.run(["python", "run_week.py"])\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(missing, "_run_in_sandbox()")))
+        different = (
+            "import subprocess\n"
+            "def _run_in_sandbox():\n"
+            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
+            '    subprocess.run(["python", "run_week.py"], timeout=600)\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(different, "_run_in_sandbox()")))
+        same = (
+            "import subprocess\n"
+            "def _run_in_sandbox():\n"
+            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
+            '    subprocess.run(["git", "status"], timeout=60)\n'
+        )
+        self.assertEqual(
+            _lines(same, "_run_in_sandbox()"),
+            [
+                "_run_in_sandbox runs the command git.",
+                "_run_in_sandbox waits up to 60 seconds.",
+            ],
+        )
+
+    def test_a_debug_fstring_is_not_quoted(self):
+        source = (
+            'NAME = "OPENROUTER_API_KEY"\n'
+            "def fail():\n"
+            '    raise RuntimeError(f"{NAME=}")\n'
+        )
+        text = " ".join(_lines(source, "fail()"))
+        self.assertNotIn("says", text)
+        self.assertNotIn("OPENROUTER_API_KEY", text)
 
     def test_a_literal_timeout_names_the_box(self):
         source = 'import requests\ndef send():\n    requests.get("https://example.com/x", timeout=15)\n'
