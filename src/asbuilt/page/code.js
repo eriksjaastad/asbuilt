@@ -15,9 +15,11 @@ export function html(box) {
   const info = box?.asbuilt;
   if (typeof info?.text !== "string") return "";
   const proven = info.proven ? `<p class="proven">${esc(info.proven)}</p>` : "";
+  // Plain is the only level written so far. The sentence is the parser's plain line.
+  // The expert line stays on the plan and is not shown.
   const security = (Array.isArray(info.security) ? info.security : [])
-    .filter((note) => note && typeof note.plain === "string" && typeof note.expert === "string")
-    .map((note) => `<p class="security"><b>Plain</b> ${esc(note.plain)}</p><p class="security"><b>Expert</b> ${esc(note.expert)}</p>`)
+    .filter((note) => note && typeof note.plain === "string")
+    .map((note) => `<p class="security">${esc(note.plain)}</p>`)
     .join("");
   const model = (Array.isArray(info.model) ? info.model : [])
     .filter((note) => note && typeof note.text === "string")

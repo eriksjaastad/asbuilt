@@ -16,6 +16,7 @@
   #code p { margin: 0 0 8px; }
   #toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; padding: 12px 16px 0; max-width: 1440px; }
   #toolbar button[aria-pressed="true"] { background: #2F2E2C; color: #F9F5EB; }
+  #toolbar button:disabled { opacity: 0.4; cursor: default; }
   #marks-note { color: #6B5E4E; }
   .empty { margin: 24px 16px; color: #6B5E4E; }
   #code .model { border-top: 1px solid #F9F5EB; padding-top: 8px; }
@@ -29,6 +30,9 @@
   }
 </style>
 <p id="toolbar">
+  <button id="level-plain" type="button" aria-pressed="true">Plain</button>
+  <button id="level-working" type="button" disabled>Working</button>
+  <button id="level-expert" type="button" disabled>Expert</button>
   <button id="pipeline" hidden type="button">Only what this reaches</button>
   <button id="whole" hidden type="button">Whole chart</button>
   <button id="mark-all" type="button" aria-pressed="true">All</button>

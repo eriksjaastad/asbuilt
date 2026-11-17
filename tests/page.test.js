@@ -470,7 +470,7 @@ test("a dropped server still says the connection was lost while an empty mark is
   }
 });
 
-test("opening a box shows its plain security sentence and its expert one", { timeout: 60_000 }, async (t) => {
+test("plain is on, and opening a box shows the plain sentence without the expert one", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
   const file = join(dir, "plan.json");
   const plain = "This reads OPENROUTER_API_KEY from the environment: os.environ.get(KEY_NAME).";
@@ -492,10 +492,12 @@ test("opening a box shows its plain security sentence and its expert one", { tim
     await page.goto(await address);
     await page.getByText("read()", { exact: true }).click();
     await page.locator("#code").waitFor();
+    assert.equal(await page.locator("#level-plain").getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#level-working").isDisabled(), true);
+    assert.equal(await page.locator("#level-expert").isDisabled(), true);
     const panel = await page.locator("#code").innerText();
-    assert.ok(panel.includes(plain) && panel.includes(expert));
-    assert.match(panel, /Plain/);
-    assert.match(panel, /Expert/);
+    assert.ok(panel.includes(plain));
+    assert.equal(panel.includes(expert), false);
   } finally {
     server.kill();
     await browser?.close();
