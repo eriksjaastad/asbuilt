@@ -271,6 +271,7 @@ def python_file(name, source):
             else:
                 decoded, definitions = text.decode(), _definitions(root)
                 scope = _scope(list(root.named_children), None, False)
+                from asbuilt.plain import for_box as plain_for_box
                 from asbuilt.security import constants as security_constants
                 from asbuilt.security import for_box
 
@@ -288,6 +289,9 @@ def python_file(name, source):
             secured = for_box(node, scope, constants)
             if secured:
                 info["security"] = secured
+            lines = plain_for_box(node, scope, constants)
+            if lines:
+                info["plain"] = lines
             child = f"{name}:{ident}:{start}"
             at[ident] = child  # the last def is the one a call reaches
             children.append(

@@ -470,9 +470,10 @@ test("a dropped server still says the connection was lost while an empty mark is
   }
 });
 
-test("plain is on, and opening a box shows the plain sentence without the expert one", { timeout: 60_000 }, async (t) => {
+test("opening a box shows the everyday note and both security sentences", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
   const file = join(dir, "plan.json");
+  const note = "OpenRouter sends a prompt to openrouter.ai over the internet.";
   const plain = "This reads OPENROUTER_API_KEY from the environment: os.environ.get(KEY_NAME).";
   const expert = "os.environ.get(KEY_NAME) reads OPENROUTER_API_KEY from the environment.";
   writeFileSync(file, JSON.stringify({
@@ -480,7 +481,11 @@ test("plain is on, and opening a box shows the plain sentence without the expert
     children: [{
       id: "read",
       labels: [{ text: "read()" }],
-      asbuilt: { text: "def read():\n    return os.environ.get(KEY_NAME)\n", security: [{ plain, expert }] },
+      asbuilt: {
+        text: "def read():\n    return os.environ.get(KEY_NAME)\n",
+        plain: [note],
+        security: [{ plain, expert }],
+      },
     }],
   }));
   const { run: server, address } = serve(file, t.signal);
@@ -492,12 +497,13 @@ test("plain is on, and opening a box shows the plain sentence without the expert
     await page.goto(await address);
     await page.getByText("read()", { exact: true }).click();
     await page.locator("#code").waitFor();
-    assert.equal(await page.locator("#level-plain").getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator("#level-working").isDisabled(), true);
-    assert.equal(await page.locator("#level-expert").isDisabled(), true);
+    assert.equal(await page.locator("#level-plain").count(), 0);
+    assert.equal(await page.locator("#level-working").count(), 0);
+    assert.equal(await page.locator("#level-expert").count(), 0);
     const panel = await page.locator("#code").innerText();
+    assert.ok(panel.indexOf(note) < panel.indexOf("Plain"));
     assert.ok(panel.includes(plain));
-    assert.equal(panel.includes(expert), false);
+    assert.ok(panel.includes(expert));
   } finally {
     server.kill();
     await browser?.close();
