@@ -499,7 +499,9 @@ test("opening a box shows the everyday note and both security sentences", { time
     await page.locator("#code .plain").waitFor();
     assert.equal(await page.locator("#code .plain").innerText(), note);
     const panel = await page.locator("#code").innerText();
-    assert.ok(panel.indexOf(note) < panel.indexOf("Plain"));
+    const at = panel.indexOf(note);
+    assert.ok(at >= 0);
+    assert.ok(at < panel.indexOf("Expert"));
     assert.ok(panel.includes(plain));
     assert.ok(panel.includes(expert));
   } finally {

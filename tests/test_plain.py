@@ -47,6 +47,26 @@ def _scan(node, returns, state):
         _scan(child, returns, state)
 
 
+def _escaping_raise(fn):
+    def walk(node, handled):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)) and node is not fn:
+            return False
+        if isinstance(node, ast.Raise):
+            return not handled
+        if isinstance(node, ast.Try):
+            if any(walk(stmt, handled or bool(node.handlers)) for stmt in node.body):
+                return True
+            return any(walk(stmt, handled) for stmt in (*node.handlers, *node.orelse, *node.finalbody))
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if walk(child, handled):
+                return True
+        return False
+
+    return walk(fn, False)
+
+
 def _analyze(node):
     returns, state = [], {"yield": False, "raise": False}
     bodies = node.body if isinstance(node, ast.ClassDef) else [node]
@@ -63,14 +83,13 @@ class PlainTest(unittest.TestCase):
         box = python_file("connections.py", _CONNECTIONS.read_bytes())
         got = {child["labels"][0]["text"]: child["asbuilt"].get("plain") for child in box["children"]}
         self.assertEqual(got["ConnectionFailed"], ["ConnectionFailed is an exception."])
-        self.assertEqual(got["Mock"], ["Mock returns a fixed text."])
-        self.assertEqual(got["_NoRedirect"], ["_NoRedirect returns nothing."])
+        self.assertEqual(got["Mock"], None)
+        self.assertEqual(got["_NoRedirect"], None)
         self.assertEqual(got["_open()"], ["_open returns whatever the network request returns."])
         self.assertEqual(
             got["OpenRouter"],
             [
                 "OpenRouter sends what it was given to openrouter.ai over the internet, using a key read from OPENROUTER_API_KEY.",
-                "By default OpenRouter waits up to 60 seconds.",
                 'If the key is missing, OpenRouter stops with an error, and it stops with an error that says "OpenRouter could not be reached." or "OpenRouter replied with nothing it could read.".',
             ],
         )
@@ -107,6 +126,20 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(got["mock()"], ["mock returns a fixed text."])
         self.assertEqual(got["copy()"], ["copy runs the command rclone."])
         self.assertEqual(got["rclone()"], [])
+        self.assertEqual(got["Cache"], [])
+        self.assertEqual(got["stream()"], [])
+        self.assertEqual(got["fetch_mini_data()"], ["fetch_mini_data returns nothing."])
+        self.assertEqual(got["load_config()"], [])
+        self.assertEqual(got["lookup()"], ['lookup stops with an error that says "config was not found".'])
+        self.assertEqual(got["collect()"], ["collect runs the command rclone."])
+        self.assertEqual(got["wait()"], [])
+        self.assertEqual(
+            got["send_email()"],
+            [
+                "send_email sends data to example.com over the internet.",
+                "Each try, send_email waits up to 15 seconds.",
+            ],
+        )
 
     def test_a_return_claim_needs_every_return_to_agree(self):
         lines = _lines('def label(ok):\n    if ok:\n        return "just now"\n    return "yesterday"\n', "label()")
@@ -221,6 +254,13 @@ class PlainTest(unittest.TestCase):
                 text = " ".join(lines)
                 for line in lines:
                     self.assertFalse(line.startswith("It "), line)
+                if isinstance(defined[name], ast.ClassDef):
+                    for phrase in ("returns nothing", "returns the text ", "returns a fixed text", "returns an error.", "returns whatever the network"):
+                        self.assertNotIn(phrase, text, label)
+                    if "stops with an error" in text:
+                        methods = [item for item in defined[name].body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                        self.assertTrue(any(_escaping_raise(method) for method in methods), label)
+                    continue
                 if "returns nothing" in text:
                     self.assertTrue(returns and all(item[0] == "none" for item in returns) and not state["yield"], label)
                 for line in lines:
@@ -235,4 +275,4 @@ class PlainTest(unittest.TestCase):
                 if "returns whatever the network request returns" in text:
                     self.assertTrue(returns and all(item[0] == "call" for item in returns) and not state["yield"], label)
                 if "stops with an error" in text:
-                    self.assertTrue(state["raise"], label)
+                    self.assertTrue(_escaping_raise(defined[name]), label)

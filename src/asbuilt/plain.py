@@ -156,17 +156,58 @@ def _env_name(node, scope, words):
     return found[0] if len(set(found)) == 1 else None
 
 
-def _raises(node):
+def _contains(outer, inner):
+    return outer is not None and inner is not None and outer.start_byte <= inner.start_byte and inner.end_byte <= outer.end_byte
+
+
+def _escapes(node, fn):
+    """True when this raise leaves the function: not swallowed by a try here."""
+    cur = node.parent
+    while cur is not None and cur != fn and cur.type not in ("function_definition", "class_definition"):
+        if cur.type == "try_statement":
+            body = cur.child_by_field_name("body")
+            caught = _contains(body, node) and any(child.type == "except_clause" for child in cur.children)
+            if caught:
+                return False
+        cur = cur.parent
+    return True
+
+
+def _escaping_raise(node, fn):
     found = False
 
     def visit(cur):
         nonlocal found
-        if cur.type == "raise_statement":
+        if cur.type == "raise_statement" and _escapes(cur, fn):
             found = True
 
     if node is not None:
         _walk(node, visit)
     return found
+
+
+def _in_loop(node, fn):
+    cur = node.parent
+    while cur is not None and cur != fn and cur.type not in _NESTED:
+        if cur.type in ("for_statement", "while_statement"):
+            return True
+        cur = cur.parent
+    return False
+
+
+def _takes_seconds(path, call, facts):
+    """True for a call whose timeout is in seconds, not milliseconds."""
+    if path and (path[0] in ("requests", "httpx", "socket", "subprocess") or path[:2] == ("urllib", "request")):
+        return True
+    for fact in facts:
+        if fact.get("timeout") != "passed":
+            continue
+        if not (call.start_byte <= fact.get("start", -1) < call.end_byte):
+            continue
+        at = fact.get("at") or ""
+        if at.startswith(("urllib.", "requests.", "httpx.", "socket.", "subprocess.")):
+            return True
+    return False
 
 
 def _param_default(node, bound):
@@ -206,12 +247,14 @@ def _keeps(node, scope, groups):
         nonlocal reads, fixed
         if cur.type == "call" and reads_env(resolve(next(iter(cur.named_children), None), scope)):
             reads = True
-        if cur.type == "comparison_operator":
-            for child in cur.named_children:
-                if child.type == "identifier" and isinstance(groups.get(child.text.decode()), tuple):
-                    fixed = True
-                if child.type in ("tuple", "list") and child.named_children and all(string_literal(c) for c in child.named_children):
-                    fixed = True
+        if cur.type == "comparison_operator" and "not in" not in cur.text.decode():
+            keeps = any(child.text.decode() == "in" for child in cur.children)
+            if keeps:
+                for child in cur.named_children:
+                    if child.type == "identifier" and isinstance(groups.get(child.text.decode()), tuple):
+                        fixed = True
+                    if child.type in ("tuple", "list") and child.named_children and all(string_literal(c) for c in child.named_children):
+                        fixed = True
         for child in cur.named_children:
             walk(child)
 
@@ -365,8 +408,10 @@ class _Story:
         self.host = None
         self.command = None
         self.keeps_env = False
+        self.is_class = False
         self.timeout = None
         self.timeout_default = False
+        self.timeout_loop = False
         self.given = False
         self.given_at = None
         self.skipped_env = None
@@ -456,14 +501,18 @@ def _sentences(story):
         elif story.exception and not story.returns:
             pending.append(f"{story.name} is an exception.")
     if isinstance(story.timeout, int):
-        if story.timeout_default:
+        if story.timeout_loop and story.timeout_default:
+            pending.append(f"By default each try, {story.name} waits up to {story.timeout} seconds.")
+        elif story.timeout_loop:
+            pending.append(f"Each try, {story.name} waits up to {story.timeout} seconds.")
+        elif story.timeout_default:
             pending.append(f"By default {story.name} waits up to {story.timeout} seconds.")
         else:
             pending.append(f"{story.name} waits up to {story.timeout} seconds.")
     failed = _failure(story)
     if failed:
         pending.append(failed)
-    if story.returns and not story.given and not story.choices and not story.otherwise:
+    if story.returns and not story.is_class and not story.given and not story.choices and not story.otherwise:
         pending.append(_return_line(story))
     return [line for line in pending if line][:3]
 
@@ -490,13 +539,13 @@ def _returned_call(block):
     return None
 
 
-def _read_if(node, story, params, assigns, scope, words):
+def _read_if(node, story, params, assigns, scope, words, fn):
     cond = node.child_by_field_name("condition")
     body = _block(node)
     if cond is None:
         return
     text = cond.text.decode()
-    if cond.type == "not_operator" and body is not None and _raises(body):
+    if cond.type == "not_operator" and body is not None and _escaping_raise(body, fn):
         ident = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
         source = assigns.get(ident) if ident else next(iter(cond.named_children), None)
         name = _env_name(source, scope, words)
@@ -520,6 +569,7 @@ def _read_if(node, story, params, assigns, scope, words):
 
 
 def _function(fn, scope, words, bound, story, attrs):
+    facts = security_facts(fn, scope, words)
     head = fn.child_by_field_name("parameters")
     defaults, params = {}, set()
     for child in head.named_children if head is not None else ():
@@ -562,11 +612,13 @@ def _function(fn, scope, words, bound, story, attrs):
         attr = _self_attr(expr)
         return bool(attr and attr in story.timeout_attrs)
 
-    def use_timeout(expr, keyword):
-        if keyword or from_timeout(expr):
-            found = timeout_of(expr)
-            if found:
-                story.timeout, story.timeout_default = found
+    def use_timeout(expr, keyword, call, path):
+        if not (keyword or from_timeout(expr)) or not _takes_seconds(path, call, facts):
+            return
+        found = timeout_of(expr)
+        if found:
+            story.timeout, story.timeout_default = found
+            story.timeout_loop = _in_loop(call, fn)
 
     def visit(cur, in_if=False):
         if cur.type in _NESTED:
@@ -597,8 +649,8 @@ def _function(fn, scope, words, bound, story, attrs):
                         if value.type == "identifier" and value.text.decode() == "timeout" and isinstance(got, int):
                             story.timeout_attrs.add(attr)
         if cur.type == "if_statement":
-            _read_if(cur, story, params, assigns, scope, words)
-        if cur.type == "raise_statement":
+            _read_if(cur, story, params, assigns, scope, words, fn)
+        if cur.type == "raise_statement" and _escapes(cur, fn):
             story.raises = True
             text = _message(next(iter(cur.named_children), None), words, local_strings)
             if text and text not in story.messages:
@@ -642,9 +694,9 @@ def _function(fn, scope, words, bound, story, attrs):
                 ):
                     story.keeps_env = True
             if "timeout" in named:
-                use_timeout(named["timeout"], True)
+                use_timeout(named["timeout"], True, cur, path)
             for value in positional:
-                use_timeout(value, False)
+                use_timeout(value, False, cur, path)
             for name in _bearer(cur, assigns, scope, words):
                 story.keys.add(name)
                 story.bearer = name
@@ -661,7 +713,9 @@ def _function(fn, scope, words, bound, story, attrs):
         if _doc(stmt):
             continue
         visit(stmt)
-    claim = _return_claim(fn, scope, security_facts(fn, scope, words))
+    if story.is_class:
+        return
+    claim = _return_claim(fn, scope, facts)
     if claim is None:
         return
     if claim[0] in ("yield", "other") or (story.returns not in (None, False) and story.returns != claim):
@@ -676,6 +730,7 @@ def for_box(node, scope, words):
         return []
     label = node.child_by_field_name("name")
     story = _Story(label.text.decode() if label is not None else "This")
+    story.is_class = node.type == "class_definition"
     bases = node.child_by_field_name("superclasses") if node.type == "class_definition" else None
     if bases is not None and any(part.type == "identifier" and part.text.decode() == "Exception" for part in bases.children):
         story.exception = True

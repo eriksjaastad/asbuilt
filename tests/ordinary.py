@@ -55,3 +55,50 @@ def copy():
 
 def rclone(cmd):
     subprocess.run(cmd)
+
+
+class Cache:
+    def get(self):
+        return None
+
+
+def stream():
+    yield 1
+    return None
+
+
+def fetch_mini_data():
+    for _ in range(3):
+        try:
+            raise RuntimeError("nope")
+        except RuntimeError:
+            continue
+    return None
+
+
+def load_config():
+    print("config was not found")
+    return ""
+
+
+def lookup(row):
+    raise KeyError("config was not found")
+
+
+SECRET_ENV = ("TOKEN",)
+
+
+def collect():
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
+    subprocess.run(["rclone", "sync"], env=env)
+
+
+def wait(page):
+    page.wait_for_selector("#ok", timeout=30000)
+
+
+def send_email():
+    import requests
+
+    for _ in range(3):
+        requests.post("https://example.com/send", data=b"hi", timeout=15)
