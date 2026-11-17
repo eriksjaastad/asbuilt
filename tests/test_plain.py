@@ -373,17 +373,16 @@ class PlainTest(unittest.TestCase):
             "        return None\n"
             "    return result.stdout\n"
         )
-        text = " ".join(_lines(mixed, "run_git()"))
-        self.assertIn("runs the command git", text)
-        self.assertNotIn("command's output", text)
+        self.assertEqual(_lines(mixed, "run_git()"), ["run_git runs the command git."])
         only = (
             "import subprocess\n"
             "def run_git(args):\n"
             "    result = subprocess.run(['git', *args], capture_output=True)\n"
             "    return result.stdout\n"
         )
-        self.assertIn(
-            "returns the command's output", " ".join(_lines(only, "run_git()"))
+        self.assertEqual(
+            _lines(only, "run_git()"),
+            ["run_git runs the command git and returns the command's output."],
         )
         none = (
             "import subprocess\n"
@@ -393,7 +392,10 @@ class PlainTest(unittest.TestCase):
             "        return None\n"
             "    return result.stdout\n"
         )
-        self.assertNotIn("command's output", " ".join(_lines(none, "output_or_none()")))
+        self.assertEqual(
+            _lines(none, "output_or_none()"),
+            ["output_or_none runs the command rclone."],
+        )
         empty = (
             "import subprocess\n"
             "def output_or_empty(args):\n"
@@ -402,9 +404,49 @@ class PlainTest(unittest.TestCase):
             '        return ""\n'
             "    return result.stdout\n"
         )
-        self.assertNotIn(
-            "command's output", " ".join(_lines(empty, "output_or_empty()"))
+        self.assertEqual(
+            _lines(empty, "output_or_empty()"),
+            ["output_or_empty runs the command rclone."],
         )
+
+    def test_two_commands_are_not_named(self):
+        source = (
+            "import subprocess\n"
+            "def _cleanup_temp_worktree():\n"
+            '    subprocess.run(["git", "worktree", "remove", "tmp"])\n'
+            '    subprocess.run(["rm", "-rf", "tmp"])\n'
+        )
+        self.assertEqual(_lines(source, "_cleanup_temp_worktree()"), [])
+
+    def test_the_env_name_is_only_the_guarded_value(self):
+        source = (
+            "import os\n"
+            "def human_address():\n"
+            '    other = os.environ.get("OTHER_NAME")\n'
+            '    value = os.environ.get("AGENT_CHAT_HUMAN", "")\n'
+            "    if not value:\n"
+            '        raise ValueError("missing")\n'
+            "    return other\n"
+        )
+        self.assertEqual(
+            _lines(source, "human_address()"),
+            [
+                'If the environment value AGENT_CHAT_HUMAN is missing, human_address stops with an error that says "missing".'
+            ],
+        )
+        loose = (
+            "import os\n"
+            "def _get_jwt_secret():\n"
+            '    secret = os.environ.get("JWT_SECRET")\n'
+            '    other = os.environ.get("OTHER_NAME")\n'
+            "    if not check(secret):\n"
+            '        raise RuntimeError("bad secret")\n'
+            "    return other\n"
+        )
+        text = " ".join(_lines(loose, "_get_jwt_secret()"))
+        self.assertNotIn("JWT_SECRET", text)
+        self.assertNotIn("OTHER_NAME", text)
+        self.assertNotIn("is missing", text)
 
     def test_an_fstring_of_a_module_constant_is_the_message(self):
         source = (

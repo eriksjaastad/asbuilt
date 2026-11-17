@@ -15,24 +15,8 @@ from asbuilt.built import COND, imported, one_name, pattern
 from asbuilt.marks import layer, reaches_out, reads_env, resolve
 
 _HTTP = ("request", "get", "post", "put", "patch", "delete", "head", "options", "send")
-_ENV_OP = (
-    "get",
-    "pop",
-    "setdefault",
-    "getenv",
-    "update",
-    "items",
-    "values",
-    "keys",
-    "copy",
-    "environ",
-)
-_RUN_TIMEOUT = (
-    "run",
-    "call",
-    "check_call",
-    "check_output",
-)  # Popen has no timeout argument
+_ENV_OP = ("get", "pop", "setdefault", "getenv", "update", "items", "values", "keys", "copy", "environ")
+_RUN_TIMEOUT = ("run", "call", "check_call", "check_output")  # Popen has no timeout argument
 _DATA = ("post", "put", "patch")  # the second positional argument is the body
 
 
@@ -94,9 +78,7 @@ def assigned(nodes):
         if kind == "assignment":
             names = pattern(next(iter(node.named_children), None))
             value = node.named_children[-1] if len(node.named_children) > 1 else None
-            lit = (
-                _assigned_value(value) if not conditional and len(names) == 1 else None
-            )
+            lit = _assigned_value(value) if not conditional and len(names) == 1 else None
             if lit is None or names[0] in found:
                 ban(names)
             else:
@@ -121,9 +103,7 @@ def assigned(nodes):
 
 def constants(nodes):
     """name -> string for one top-level assignment of a string. A second binding drops it."""
-    return {
-        name: value for name, value in assigned(nodes).items() if isinstance(value, str)
-    }
+    return {name: value for name, value in assigned(nodes).items() if isinstance(value, str)}
 
 
 def _fn_constants(fn, outer):
@@ -148,23 +128,15 @@ def _fn_constants(fn, outer):
                 walk(inner, False)
             return
         if node.type == "global_statement":
-            banned.update(
-                c.text.decode() for c in node.named_children if c.type == "identifier"
-            )
+            banned.update(c.text.decode() for c in node.named_children if c.type == "identifier")
             return
         if node.type in ("import_statement", "import_from_statement"):
             banned.update(imported(node))
             return
-        target = (
-            next(iter(node.named_children), node)
-            if node.type == "expression_statement" and top
-            else node
-        )
+        target = next(iter(node.named_children), node) if node.type == "expression_statement" and top else node
         if target.type == "assignment":
             names = pattern(next(iter(target.named_children), None))
-            value = (
-                target.named_children[-1] if len(target.named_children) > 1 else None
-            )
+            value = target.named_children[-1] if len(target.named_children) > 1 else None
             lit = string_literal(value) if top and len(names) == 1 else None
             name = names[0] if len(names) == 1 else None
             if lit and name and name not in direct:
@@ -181,11 +153,7 @@ def _fn_constants(fn, outer):
 
     for stmt in body.named_children if body is not None else ():
         walk(stmt, True)
-    kept = {
-        name: text
-        for name, text in outer.items()
-        if name not in banned and name not in direct
-    }
+    kept = {name: text for name, text in outer.items() if name not in banned and name not in direct}
     kept.update({name: text for name, text in direct.items() if name not in banned})
     return kept
 
@@ -195,10 +163,7 @@ def call_arguments(call):
     positional, named, splat = [], {}, False
     for child in args.named_children if args is not None else ():
         if child.type == "keyword_argument":
-            key, val = (
-                child.child_by_field_name("name"),
-                child.child_by_field_name("value"),
-            )
+            key, val = child.child_by_field_name("name"), child.child_by_field_name("value")
             if key is not None and val is not None:
                 named[key.text.decode()] = val
         elif child.type in ("dictionary_splat", "list_splat"):
@@ -239,10 +204,7 @@ def _label(fun):
     if fun.type == "identifier":
         return fun.text.decode()
     if fun.type == "attribute":
-        obj, attr = (
-            fun.child_by_field_name("object"),
-            fun.child_by_field_name("attribute"),
-        )
+        obj, attr = fun.child_by_field_name("object"), fun.child_by_field_name("attribute")
         attr_name = attr.text.decode() if attr is not None else ""
         if obj is not None and obj.type == "call":
             return f"{_label(next(iter(obj.named_children), None))}.{attr_name}"
@@ -254,18 +216,6 @@ def _label(fun):
 def _shown(fun, bits):
     name = _label(fun) or "call"
     return f"{name}({', '.join(bits)})" if bits else f"{name}(...)"
-
-
-def _url_text(node, local):
-    """A URL string and whether the call writes it in place. A constant name is not in place."""
-    if node is None:
-        return None, False
-    if node.type == "string":
-        return string_literal(node), True
-    if node.type == "identifier":
-        value = local.get(node.text.decode())
-        return (value, False) if isinstance(value, str) else (None, False)
-    return None, False
 
 
 def _bound_name(node, local):
@@ -286,6 +236,18 @@ def _name_bit(node, found):
     if node.type == "identifier":
         return node.text.decode()
     return None
+
+
+def _url_text(node, local):
+    """A URL string, and whether the call writes it in place. A constant name is not in place."""
+    if node is None:
+        return None, False
+    if node.type == "string":
+        return string_literal(node), True
+    if node.type == "identifier":
+        value = local.get(node.text.decode())
+        return (value, False) if isinstance(value, str) else (None, False)
+    return None, False
 
 
 def host_name(text):
@@ -407,12 +369,7 @@ def call_way(path):
         return "send"
     if path[:1] in {("requests",), ("httpx",)} and last in _HTTP:
         return "send"
-    if path[:2] == ("urllib", "request") and last in (
-        "urlopen",
-        "urlretrieve",
-        "open",
-        "Request",
-    ):
+    if path[:2] == ("urllib", "request") and last in ("urlopen", "urlretrieve", "open", "Request"):
         return "send"
     return None
 
@@ -434,11 +391,7 @@ def _within(node, *kinds):
     while cur is not None:
         if cur.type in kinds:
             body = cur.child_by_field_name("body")
-            if (
-                body is not None
-                and body.start_byte <= node.start_byte
-                and node.end_byte <= body.end_byte
-            ):
+            if body is not None and body.start_byte <= node.start_byte and node.end_byte <= body.end_byte:
                 return True
         cur = cur.parent
     return False
@@ -460,9 +413,7 @@ def facts(node, module, consts=None):
     found, claimed = [], []
 
     def inside(cur):
-        return any(
-            start <= cur.start_byte and cur.end_byte <= end for start, end in claimed
-        )
+        return any(start <= cur.start_byte and cur.end_byte <= end for start, end in claimed)
 
     def add(kind, span, shown, fields):
         if inside(span):
@@ -486,11 +437,7 @@ def facts(node, module, consts=None):
                 chosen = (current, fun, path, "env")
                 break
             way = call_way(path)
-            if (
-                reaches_out(path)
-                and way
-                and not (path[-1] == "Request" and sent_body(current, path) is None)
-            ):
+            if reaches_out(path) and way and not (path[-1] == "Request" and sent_body(current, path) is None):
                 chosen = (current, fun, path, "calls out")
                 break
         if chosen is None:
@@ -538,8 +485,7 @@ def facts(node, module, consts=None):
             fields["host"] = host
             if local_host(host):
                 fields["local"] = True
-        # A name bound to one URL is a host for the plain note. The security line keeps
-        # the call as written, so a constant does not change that sentence.
+        # A constant URL is a host for the plain note. The security line keeps the call as written.
         add("calls out", callee, _shown(fun, [host] if shown else []), fields)
 
     def on_subscript(cur, scope, local, how):
@@ -554,9 +500,7 @@ def facts(node, module, consts=None):
         fields = {"how": how}
         if found_name:
             fields["name"] = found_name
-        base = (
-            " ".join(value.text.decode().split()) if value is not None else "os.environ"
-        )
+        base = " ".join(value.text.decode().split()) if value is not None else "os.environ"
         if index is not None and index.type == "identifier":
             shown = f"{base}[{index.text.decode()}]"
         elif found_name:
@@ -590,14 +534,7 @@ def facts(node, module, consts=None):
             on_subscript(cur, scope, local, "set" if _is_target(cur) else "read")
         elif cur.type == "comparison_operator" and not inside(cur):
             kids = list(cur.named_children)
-            op = next(
-                (
-                    c.text.decode()
-                    for c in cur.children
-                    if c.text.decode() in ("in", "not in")
-                ),
-                None,
-            )
+            op = next((c.text.decode() for c in cur.children if c.text.decode() in ("in", "not in")), None)
             if op and len(kids) == 2 and reads_env(resolve(kids[1], scope)):
                 path = resolve(kids[1], scope)
                 if path is not None and path[-1] == "environ" and len(path) == 2:
@@ -609,12 +546,7 @@ def facts(node, module, consts=None):
         elif cur.type in ("identifier", "attribute") and not inside(cur):
             path = resolve(cur, scope)
             if reads_env(path) and path[-1] in _ENV_OP:
-                add(
-                    "env",
-                    cur,
-                    _label(cur) or cur.text.decode(),
-                    {"how": _env_how(path)},
-                )
+                add("env", cur, _label(cur) or cur.text.decode(), {"how": _env_how(path)})
         for child in cur.children:
             visit(child, scope, local)
 
@@ -632,23 +564,11 @@ def _plain(fact):
             which = f"whether {name} is set" if name else "the environment"
             return f"This checks {which}, and does not read the value: {at}."
         if how == "remove":
-            return (
-                f"This removes {name} from the environment: {at}."
-                if name
-                else f"This removes a value from the environment: {at}."
-            )
+            return f"This removes {name} from the environment: {at}." if name else f"This removes a value from the environment: {at}."
         if how == "default":
-            return (
-                f"This sets a default for {name} in the environment: {at}."
-                if name
-                else f"This sets a default in the environment: {at}."
-            )
+            return f"This sets a default for {name} in the environment: {at}." if name else f"This sets a default in the environment: {at}."
         if how == "set":
-            return (
-                f"This sets {name} in the environment: {at}."
-                if name
-                else f"This sets an environment value: {at}."
-            )
+            return f"This sets {name} in the environment: {at}." if name else f"This sets an environment value: {at}."
         if how == "write":
             return f"This changes the environment: {at}."
         if name:
@@ -658,12 +578,7 @@ def _plain(fact):
         return f"This runs a command outside this program: {at}."
     if fact.get("way") == "connect":
         return f"This opens a network connection: {at}."
-    if (
-        fact.get("sends")
-        and fact.get("host")
-        and not fact.get("local")
-        and fact["host"] in at
-    ):
+    if fact.get("sends") and fact.get("host") and not fact.get("local") and fact["host"] in at:
         return f"This sends your data to an outside service: {at}."
     if fact.get("sends"):
         return f"This sends data in a network request: {at}."
@@ -691,23 +606,11 @@ def _expert(fact):
             which = f"{name} is set" if name else "a name is set"
             return f"{at} checks whether {which}. It does not read the value."
         if how == "remove":
-            return (
-                f"{at} removes {name} from the environment."
-                if name
-                else f"{at} removes a value from the environment."
-            )
+            return f"{at} removes {name} from the environment." if name else f"{at} removes a value from the environment."
         if how == "default":
-            return (
-                f"{at} sets a default for {name} in the environment."
-                if name
-                else f"{at} sets a default in the environment."
-            )
+            return f"{at} sets a default for {name} in the environment." if name else f"{at} sets a default in the environment."
         if how == "set":
-            return (
-                f"{at} sets {name} in the environment."
-                if name
-                else f"{at} sets an environment value."
-            )
+            return f"{at} sets {name} in the environment." if name else f"{at} sets an environment value."
         if how == "write":
             return f"{at} changes the environment."
         if name:
@@ -717,11 +620,7 @@ def _expert(fact):
     timeout = _timeout_line(fact)
     if timeout:
         parts.append(timeout)
-    parts.append(
-        "This call is inside try."
-        if fact.get("caught")
-        else "This call is not inside try."
-    )
+    parts.append("This call is inside try." if fact.get("caught") else "This call is not inside try.")
     if fact.get("repeats"):
         parts.append("This call is inside a loop in this box.")
     return " ".join(parts)
@@ -729,7 +628,4 @@ def _expert(fact):
 
 def for_box(node, scope, consts):
     """The plain and expert sentences for this box, one pair per fact. [] when there is no fact."""
-    return [
-        {"fact": fact, "plain": _plain(fact), "expert": _expert(fact)}
-        for fact in facts(node, scope, consts)
-    ]
+    return [{"fact": fact, "plain": _plain(fact), "expert": _expert(fact)} for fact in facts(node, scope, consts)]

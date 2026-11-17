@@ -620,11 +620,8 @@ def _failure(story):
             extras.append(phrase)
     if extras:
         line += f", and if {_or(extras)}"
-    # A quote is not the whole story when any other raise escapes, even a bare one.
-    covered = sum(
-        1 for _cond, msg, _has, _branch in story.events if msg and msg in shown
-    )
-    if shown and len(story.events) > covered and ", among others" not in line:
+    others = any(has and msg not in shown for _cond, msg, has, _branch in story.events)
+    if shown and others and ", among others" not in line:
         line += ", among others"
     return [_finish(line)]
 
@@ -733,21 +730,6 @@ def _if_stops(node, fn):
             if body is not None and _contains(body, node):
                 return _seq(body.named_children, fn) == "raise"
         cur = cur.parent
-    return False
-
-
-def _message_arg(expr, words, local_strings):
-    """True when this raise carries a message, quoted or not."""
-    if expr is None or expr.type != "call":
-        return False
-    positional, _named, _splat = call_arguments(expr)
-    for arg in positional:
-        if arg.type == "string":
-            return True
-        if arg.type == "identifier":
-            value = local_strings.get(arg.text.decode(), words.get(arg.text.decode()))
-            if isinstance(value, str):
-                return True
     return False
 
 
@@ -1156,9 +1138,9 @@ def _function(fn, scope, words, bound, story, attrs):
             expr = next(iter(cur.named_children), None)
             cond = _guard(cur, fn, assigns, facts, params)
             text = _quoted_message(expr, words, local_strings, _module(fn))
-            has = bool(text) or _message_arg(expr, words, local_strings)
+            # Every escaping raise counts, including a bare raise with no message.
             story.events.append(
-                (cond, text, has, _if_stops(cur, fn) if cond else False)
+                (cond, text, True, _if_stops(cur, fn) if cond else False)
             )
         if cur.type == "return_statement":
             expr = next(iter(cur.named_children), None)
@@ -1186,10 +1168,11 @@ def _function(fn, scope, words, bound, story, attrs):
                     story.skipped_env = _fact_name(cur, facts) or story.skipped_env
             if call_way(path) == "command" and positional:
                 command = _exec(positional[0], assigns, defaults, attrs)
-                if isinstance(command, str):
-                    story.command = (
-                        command if story.command in (None, command) else False
-                    )
+                # Two commands have no single name. The last one does not win.
+                if story.command is None:
+                    story.command = command if isinstance(command, str) else False
+                else:
+                    story.command = False
                 env = named.get("env")
                 if env is not None and (
                     (env.type == "identifier" and env.text.decode() in fixed_env)
