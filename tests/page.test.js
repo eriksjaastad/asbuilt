@@ -325,7 +325,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (2)");
     assert.equal(await page.locator("[data-mark='input']").innerText(), "asks a person to type (0)");
     assert.equal(await page.locator("[data-mark='input']").isDisabled(), true);
-    assert.match(await page.locator("[data-mark='input']").getAttribute("title"), /No function or class in this view does this/);
+    assert.match(await page.locator("[data-mark='input']").getAttribute("title"), /asBuilt found none in this view\. It looks only in functions and classes, for: input\(\)\./);
     assert.equal(await page.locator("[data-mark='env']").isDisabled(), false);
     assert.equal(await page.locator("[data-mark='env']").getAttribute("title"), "");
     await page.locator("[data-mark='env']").click();
@@ -346,7 +346,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor();
     await page.locator("[data-box='a.py']").waitFor();
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 3 functions and classes whose own code does not: local(), ask(), far(). Also hiding 3 arrows that do not join two such functions or classes.");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 3 functions and classes where asBuilt found none of it: local(), ask(), far(). It looks only in functions and classes, for: os.environ, os.getenv; requests, httpx, urllib.request, http.client, socket, subprocess, os.system. Also hiding 3 arrows that do not join two shown functions or classes.");
     await page.locator("#mark-all").click();
     await page.locator("[data-box='local']").waitFor();
     await page.locator("[data-arrow='aside']").waitFor();
@@ -365,7 +365,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='out']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor({ state: "detached" });
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code talks to the network or runs programs or uses the OpenAI or Anthropic library, and the boxes that hold them. Hiding 2 functions and classes whose own code does not: read(), local(). Also hiding 2 arrows that do not join two such functions or classes.");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code talks to the network or runs programs or uses the OpenAI or Anthropic library, and the boxes that hold them. Hiding 2 functions and classes where asBuilt found none of it: read(), local(). It looks only in functions and classes, for: requests, httpx, urllib.request, http.client, socket, subprocess, os.system; openai, anthropic. Also hiding 2 arrows that do not join two shown functions or classes.");
     assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (1)");
     assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
   } finally {
@@ -398,7 +398,7 @@ test("a mark no box carries is a plain empty chart, not an error over the old on
     await page.locator("[data-box='local']").waitFor({ state: "detached" });
     writeFileSync(file, JSON.stringify({ id: "app", children: [{ id: "local", labels: [{ text: "local()" }] }] }));
     await page.locator(".empty").waitFor();
-    assert.equal(await page.locator(".empty").innerText(), "No function or class here has its own code that uses environment settings. Code outside a function or class is not checked.");
+    assert.equal(await page.locator(".empty").innerText(), "asBuilt found no function or class here whose own code uses environment settings. It looks only in functions and classes, for: os.environ, os.getenv.");
     assert.equal(await page.locator("#marks-note").innerText(), "");
     assert.equal(await page.locator(".error").count(), 0);
     assert.equal(await page.locator(".stale").count(), 0);
@@ -415,7 +415,7 @@ test("a mark no box carries is a plain empty chart, not an error over the old on
     await page.locator("[data-mark='env']").click();
     await page.locator("#pipeline").click();
     await page.locator(".empty").waitFor();
-    assert.equal(await page.locator(".empty").innerText(), "No function or class in what local() reaches has its own code that uses environment settings. Code outside a function or class is not checked.");
+    assert.equal(await page.locator(".empty").innerText(), "asBuilt found no function or class in what local() reaches whose own code uses environment settings. It looks only in functions and classes, for: os.environ, os.getenv.");
     assert.equal(await page.locator("#marks-note").innerText(), "");
     assert.equal(await page.locator(".error").count(), 0);
   } finally {

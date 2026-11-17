@@ -72,9 +72,8 @@ export function markCounts(plan) {
   return tally;
 }
 
-// What each mark means in everyday words, as the end of "a function whose own code ...". Each phrase
-// claims only what marks.py checks: os.environ or os.getenv; input(); a file opened or written to
-// write; requests, httpx, urllib.request, http.client, socket, subprocess or os.system; openai or anthropic.
+// What each mark means in everyday words, as the end of "a function whose own code ...". A marked
+// box really does it, so these phrases are only ever used for what asBuilt found.
 export const SAYS = {
   env: "uses environment settings",
   input: "asks a person to type",
@@ -83,16 +82,26 @@ export const SAYS = {
   model: "uses the OpenAI or Anthropic library",
 };
 
+// What marks.py looks for, one list per mark, kept beside its checks there (_env, input, _open_writes,
+// write_text, _calls_out, _MODEL). Anything else is not looked for, so a missing mark proves nothing.
+export const LOOKS_FOR = {
+  env: "os.environ, os.getenv",
+  input: "input()",
+  writes: "open(), Path.open() or os.fdopen() with a write mode, write_text(), write_bytes()",
+  "calls out": "requests, httpx, urllib.request, http.client, socket, subprocess, os.system",
+  model: "openai, anthropic",
+};
+
 const what = (kinds) => names(kinds).map((kind) => SAYS[kind]).join(" or ");
 
-// Marks are proven only inside a function or class box, the boxes that carry their own code.
-// A file, folder or hand-written box was never checked, so nothing is said about its own code.
-const UNCHECKED = "Code outside a function or class is not checked.";
+// A negative is only ever what asBuilt found: it names what is looked for, and where it looks.
+export const looked = (kinds) =>
+  `It looks only in functions and classes, for: ${names(kinds).map((kind) => LOOKS_FOR[kind]).join("; ")}.`;
 
 // A view with no matching box. `reached` is the label of the pipeline's start, when one is on.
 export function carries(kinds, reached) {
   const where = reached ? `in what ${reached} reaches` : "here";
-  return `No function or class ${where} has its own code that ${what(kinds)}. ${UNCHECKED}`;
+  return `asBuilt found no function or class ${where} whose own code ${what(kinds)}. ${looked(kinds)}`;
 }
 
 // The boxes in `plan` whose ids are not in `kept`, as { name, checked }. checked means a function
@@ -117,7 +126,13 @@ export function hiddenBoxes(plan, kept) {
 
 const SHOWN = 6;
 const count = (n, one, many) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
-const list = (items) => items.slice(0, SHOWN).map((item) => item.name).join(", ") + (items.length > SHOWN ? `, and ${items.length - SHOWN} more` : "");
+// Names that are still the same after the holder is added are one entry with a count.
+const list = (items) => {
+  const tally = new Map();
+  for (const item of items) tally.set(item.name, (tally.get(item.name) ?? 0) + 1);
+  const shown = [...tally].map(([name, n]) => (n > 1 ? `${name} (${n})` : name));
+  return shown.slice(0, SHOWN).join(", ") + (shown.length > SHOWN ? `, and ${shown.length - SHOWN} more` : "");
+};
 
 // Several marks mean any of them. Then which boxes that hides and why, and how many arrows.
 // A function calling another that does it is hidden too: a mark comes from a box's own code.
@@ -126,8 +141,9 @@ export function showing(kinds, hidden, arrows) {
   if (!hidden.length && !arrows) return `${head} Hiding nothing.`;
   const [checked, other] = [hidden.filter((h) => h.checked), hidden.filter((h) => !h.checked)];
   const parts = [head];
-  if (checked.length) parts.push(`Hiding ${count(checked.length, "function or class", "functions and classes")} whose own code does not: ${list(checked)}.`);
-  if (other.length) parts.push(`Hiding ${count(other.length, "other box", "other boxes")} holding no such function or class: ${list(other)}. ${UNCHECKED}`);
-  if (arrows) parts.push(`Also hiding ${count(arrows, "arrow that does", "arrows that do")} not join two such functions or classes.`);
+  if (checked.length) parts.push(`Hiding ${count(checked.length, "function or class", "functions and classes")} where asBuilt found none of it: ${list(checked)}.`);
+  if (other.length) parts.push(`Hiding ${count(other.length, "other box", "other boxes")} with no such function or class inside: ${list(other)}.`);
+  if (checked.length || other.length) parts.push(looked(kinds));
+  if (arrows) parts.push(`Also hiding ${count(arrows, "arrow that does", "arrows that do")} not join two shown functions or classes.`);
   return parts.join(" ");
 }

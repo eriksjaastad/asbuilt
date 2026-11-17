@@ -2,7 +2,7 @@
 // A click on a box opens that box's code beside the chart. The chart stays; the panel is not part of the SVG.
 import { boxAt, find, html } from "./code.js";
 import { latest } from "./latest.js";
-import { carries, hiddenBoxes, markCounts, SAYS, showing, shown } from "./marks.js";
+import { carries, hiddenBoxes, looked, markCounts, SAYS, showing, shown } from "./marks.js";
 import { pipeline } from "./pipeline.js";
 import { keepLastGood, render } from "./render.js";
 import { esc } from "./shapes.js";
@@ -54,7 +54,7 @@ function sayHidden() {
     button.textContent = `${SAYS[button.dataset.mark]} (${count})`;
     // A chosen mark stays clickable at 0, so it can still be turned off.
     button.disabled = count === 0 && !chosen.has(button.dataset.mark);
-    button.title = button.disabled ? "No function or class in this view does this, so there is nothing to show." : "";
+    button.title = button.disabled ? `asBuilt found none in this view. ${looked([button.dataset.mark])}` : "";
   }
   // The chart says the empty sentence. The toolbar line is only for a chart that still has boxes.
   if (!chosen.size || !plan || view.empty) {
