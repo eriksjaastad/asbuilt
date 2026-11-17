@@ -480,6 +480,56 @@ class PlainTest(unittest.TestCase):
         self.assertNotIn("If effective", text)
         self.assertNotIn("extra", text)
 
+    def test_a_local_class_named_usage_error_is_not_clicks(self):
+        source = (
+            "class UsageError(Exception):\n"
+            "    def __init__(self, code):\n"
+            '        super().__init__("fixed failure")\n'
+            "def fail():\n"
+            '    raise UsageError("024")\n'
+        )
+        text = " ".join(_lines(source, "fail()"))
+        self.assertNotIn("024", text)
+        self.assertNotIn("says", text)
+
+    def test_an_fstring_conversion_is_not_quoted(self):
+        source = (
+            'PATTERN = "regex"\n'
+            "def run_simulation():\n"
+            '    raise RuntimeError(f"{PATTERN!r} got regex")\n'
+        )
+        text = " ".join(_lines(source, "run_simulation()"))
+        self.assertNotIn("got regex", text)
+        self.assertNotIn("says", text)
+
+    def test_the_same_command_twice_keeps_its_name(self):
+        source = (
+            "import subprocess\n"
+            "def reload():\n"
+            '    subprocess.run(["git", "status"])\n'
+            '    subprocess.run(["git", "diff"])\n'
+        )
+        self.assertEqual(_lines(source, "reload()"), ["reload runs the command git."])
+
+    def test_a_second_condition_is_not_tacked_on(self):
+        source = (
+            "import os\n"
+            "def _get_jwt_secret():\n"
+            '    name = os.environ.get("APP_NAME")\n'
+            '    secret = os.environ.get("JWT_SECRET")\n'
+            "    if not name:\n"
+            '        raise RuntimeError("no name")\n'
+            "    if not secret:\n"
+            '        raise RuntimeError("no secret")\n'
+            "    return secret\n"
+        )
+        text = " ".join(_lines(source, "_get_jwt_secret()"))
+        self.assertNotIn("and if", text)
+        self.assertNotIn("JWT_SECRET", text)
+        self.assertIn("APP_NAME", text)
+        self.assertIn("no name", text)
+        self.assertIn(", among others", text)
+
     def test_a_flag_is_not_called_empty(self):
         source = (
             "def toggle(enabled):\n"

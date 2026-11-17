@@ -181,19 +181,6 @@ def _escapes(node, fn):
     return True
 
 
-def _escaping_raise(node, fn):
-    found = False
-
-    def visit(cur):
-        nonlocal found
-        if cur.type == "raise_statement" and _escapes(cur, fn):
-            found = True
-
-    if node is not None:
-        _walk(node, visit)
-    return found
-
-
 def _in_retry(node, fn):
     """A loop that catches and tries again. A plain loop over items is not one."""
     cur = node.parent
@@ -513,7 +500,6 @@ class _Story:
         self.always = True
         self.raises = False
         self.events = []
-        self.guards = []
         self.keys = set()
         self.bearer = None
         self.timeout_attrs = set()
@@ -591,7 +577,7 @@ def _failure(story):
     tied = None
     bare = None
     loose = []
-    for cond, msg, _has, branch in story.events:
+    for cond, msg, branch in story.events:
         phrase = _phrase(cond, story.keys)
         if phrase and msg and tied is None:
             tied = (phrase, msg, branch)
@@ -612,16 +598,7 @@ def _failure(story):
         line = f"{name} {_verb(story, False)} with an error that says {_or([f'"{text}"' for text in loose])}"
     else:
         line = f"{name} {_verb(story, False)} with an error"
-    lead = tied[0] if tied else (bare[0] if bare else None)
-    extras = []
-    for cond in story.guards:
-        phrase = _phrase(cond, story.keys)
-        if phrase and phrase != lead and phrase not in extras:
-            extras.append(phrase)
-    if extras:
-        line += f", and if {_or(extras)}"
-    others = any(has and msg not in shown for _cond, msg, has, _branch in story.events)
-    if shown and others and ", among others" not in line:
+    if shown and any(msg not in shown for _cond, msg, _branch in story.events):
         line += ", among others"
     return [_finish(line)]
 
@@ -837,8 +814,6 @@ def _super_message(init):
 
 def _message_slot(name, module):
     """How this error takes its message: one positional, the first, or a named parameter."""
-    if name in ("ClickException", "UsageError"):
-        return ("first", None)
     if _builtin_error(name):
         return ("sole", None)
     cls = _class_node(module, name)
@@ -866,7 +841,7 @@ def _message_slot(name, module):
 def _fstring(node, words):
     """An f-string made only of literals and module constants, or None."""
     raw = node.text.decode().lstrip()
-    if not raw[:1].lower() == "f" and not raw[:2].lower() in ("fr", "rf"):
+    if raw[:1].lower() != "f" and raw[:2].lower() not in ("fr", "rf"):
         return None
     parts = []
     for child in node.named_children:
@@ -912,11 +887,22 @@ def _string_value(node, words, local_strings):
     return None
 
 
-def _quoted_message(expr, words, local_strings, module):
+def _click_message(expr, scope):
+    """click.ClickException and click.UsageError take the message first. A same-named class does not."""
+    fun = next(iter(expr.named_children), None) if expr is not None else None
+    path = resolve(fun, scope)
+    return path in {("click", "ClickException"), ("click", "UsageError")}
+
+
+def _quoted_message(expr, words, local_strings, module, scope):
     """The message, when this raise proves which argument is that message. A helper's argument is not one."""
     if expr is None or expr.type != "call":
         return None
-    slot = _message_slot(_callee(expr), module)
+    slot = (
+        ("first", None)
+        if _click_message(expr, scope)
+        else _message_slot(_callee(expr), module)
+    )
     if slot is None:
         return None
     positional, named, splat = call_arguments(expr)
@@ -1014,10 +1000,6 @@ def _read_if(node, story, params, assigns, facts, fn):
     if cond is None:
         return
     text = cond.text.decode()
-    if cond.type == "not_operator" and body is not None and _escaping_raise(body, fn):
-        found = _condition(cond, assigns, facts, params)
-        if found and found not in story.guards:
-            story.guards.append(found)
     if cond.type == "comparison_operator" and "is not" in text and "None" in text:
         ident = next(
             (c.text.decode() for c in cond.named_children if c.type == "identifier"),
@@ -1137,11 +1119,8 @@ def _function(fn, scope, words, bound, story, attrs):
             story.raises = True
             expr = next(iter(cur.named_children), None)
             cond = _guard(cur, fn, assigns, facts, params)
-            text = _quoted_message(expr, words, local_strings, _module(fn))
-            # Every escaping raise counts, including a bare raise with no message.
-            story.events.append(
-                (cond, text, True, _if_stops(cur, fn) if cond else False)
-            )
+            text = _quoted_message(expr, words, local_strings, _module(fn), scope)
+            story.events.append((cond, text, _if_stops(cur, fn) if cond else False))
         if cur.type == "return_statement":
             expr = next(iter(cur.named_children), None)
             stdout = bool(_command_stdout(expr, assigns, scope, fn))
@@ -1168,10 +1147,10 @@ def _function(fn, scope, words, bound, story, attrs):
                     story.skipped_env = _fact_name(cur, facts) or story.skipped_env
             if call_way(path) == "command" and positional:
                 command = _exec(positional[0], assigns, defaults, attrs)
-                # Two commands have no single name. The last one does not win.
+                named_command = command if isinstance(command, str) else False
                 if story.command is None:
-                    story.command = command if isinstance(command, str) else False
-                else:
+                    story.command = named_command
+                elif story.command != named_command:
                     story.command = False
                 env = named.get("env")
                 if env is not None and (
