@@ -77,7 +77,7 @@ The name is followed back to its import, and a parameter or a local of that name
 `model` is the openai or anthropic SDK, including a client built once at the top (`client = OpenAI()`). `env` is an environment read, `input` is input(),
 and `writes` is a file opened or written. A change in later behavior cannot be read from the
 code, so it is not a badge. The badge sits on the box. It does not change the box's id or its arrows.
-The buttons above the chart, next to “Only what this reaches” and “Whole chart”, show only the boxes that carry a chosen badge, and the arrows between those boxes. Several badges means a box with any of them. Each button shows how many boxes in the current view prove that mark. The line beside them says how many boxes and arrows are hidden, or that no box here carries the mark. All puts the full chart back. With “Only what this reaches” on as well, a box has to be in that pipeline and carry a chosen badge.
+The buttons above the chart, next to “Only what this reaches” and “Whole chart”, show only the boxes that carry a chosen badge, and the arrows between those boxes. Several badges means a box with any of them. Each button shows how many boxes in the current view prove that mark. The line beside them says how many boxes and arrows are hidden. When no box carries the mark, the chart says so once, in place of the drawing. All puts the full chart back. With “Only what this reaches” on as well, a box has to be in that pipeline and carry a chosen badge.
 
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
 box inside its parent. The folder you named keeps its plain name (`shop`). The built chart writes a subfolder as

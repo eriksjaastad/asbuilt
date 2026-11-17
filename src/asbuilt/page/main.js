@@ -35,24 +35,27 @@ const listed = (box) => {
 
 const focusId = () => (focus && plan && find(plan, focus) ? focus : null);
 
-const basePlan = () => (focusId() ? pipeline(plan, focusId()) : plan);
-
-const picked = () => shown(plan, focusId(), [...chosen]);
+// One reading of the current view: the pipeline when one is on, then the chosen marks.
+// The empty line lives here so the chart and the toolbar cannot each decide it.
+function picture() {
+  const id = focusId();
+  const base = id ? pipeline(plan, id) : plan;
+  const draw = shown(plan, id, [...chosen]);
+  const empty = Boolean(chosen.size && draw && !draw.children?.length);
+  const reached = id ? (find(plan, id).labels?.[0]?.text ?? id) : null;
+  return { base, draw, empty, line: empty ? carries([...chosen], reached) : "" };
+}
 
 function sayHidden() {
-  const tally = markCounts(plan ? basePlan() : null);
+  const view = picture();
+  const tally = markCounts(view.base);
   for (const button of markButtons) button.textContent = `${button.dataset.mark} ${tally[button.dataset.mark] ?? 0}`;
-  if (!chosen.size || !plan) {
+  // The chart says the empty sentence. The toolbar line is only for a chart that still has boxes.
+  if (!chosen.size || !plan || view.empty) {
     marksNote.textContent = "";
     return;
   }
-  const drawn = picked();
-  const reached = focusId() ? (find(plan, focusId()).labels?.[0]?.text ?? focusId()) : null;
-  if (drawn && !drawn.children?.length) {
-    marksNote.textContent = carries([...chosen], reached);
-    return;
-  }
-  const [full, kept] = [listed(basePlan()), listed(drawn ?? basePlan())];
+  const [full, kept] = [listed(view.base), listed(view.draw)];
   const boxes = full.boxes.filter((id) => !kept.boxes.includes(id)).length;
   const arrows = full.arrows.filter((id) => !kept.arrows.includes(id)).length;
   marksNote.textContent = showing([...chosen], boxes, arrows);
@@ -70,19 +73,20 @@ function showCode() {
 
 const show = latest(async (text) => {
   last = text;
+  let ok = false;
   try {
     const state = JSON.parse(text);
-    if (state?.ok === true) plan = state.plan;
+    ok = state?.ok === true;
+    if (ok) plan = state.plan;
   } catch {
     // render turns a message it cannot read into the error panel
   }
   if (focus && !find(plan, focus)) focus = null;
-  const draw = picked();
-  if (chosen.size && draw && !draw.children?.length) {
-    const reached = focusId() ? (find(plan, focusId()).labels?.[0]?.text ?? focusId()) : null;
-    return `<p class="empty">${esc(carries([...chosen], reached))}</p>`;
-  }
-  return render(text, elk, gen, draw);
+  const view = picture();
+  // An empty mark is a calm chart only for a plan the server accepted. An error, or a lost
+  // connection, has to win, or the empty line hides it and becomes the last good chart.
+  if (ok && view.empty) return `<p class="empty">${esc(view.line)}</p>`;
+  return render(text, elk, gen, ok ? view.draw : null);
 }, (svg) => {
   chart.innerHTML = keep(svg);
   showCode();

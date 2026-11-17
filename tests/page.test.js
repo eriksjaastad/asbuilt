@@ -309,7 +309,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
         { id: "aside", sources: ["read"], targets: ["local"] },
       ],
     }, badge("ask", ["model"]), badge("far", ["model"])],
-    edges: [{ id: "out", sources: ["post"], targets: ["ask"] }],
+    edges: [{ id: "out", sources: ["post"], targets: ["ask"] }, { id: "gone", sources: ["far"], targets: ["local"] }],
   }));
   const { run: server, address } = serve(file, t.signal);
   address.catch(() => {});
@@ -342,13 +342,16 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor();
     await page.locator("[data-box='a.py']").waitFor();
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: env, calls out. Hiding 3 boxes and 2 arrows.");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: env, calls out. Hiding 3 boxes and 3 arrows.");
     await page.locator("#mark-all").click();
     await page.locator("[data-box='local']").waitFor();
     await page.locator("[data-arrow='aside']").waitFor();
     assert.equal(await page.locator("#marks-note").innerText(), "");
     await page.getByText("read()", { exact: true }).click();
     await page.locator("#pipeline").click();
+    await page.locator("[data-box='far']").waitFor({ state: "detached" });
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 1");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
     await page.locator("[data-mark='calls out']").click();
     await page.locator("[data-mark='model']").click();
     await page.locator("[data-box='local']").waitFor({ state: "detached" });
@@ -358,6 +361,9 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='out']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor({ state: "detached" });
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: calls out, model. Hiding 2 boxes and 2 arrows.");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 1");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
   } finally {
     server.kill();
     await browser?.close();
@@ -387,7 +393,7 @@ test("a mark no box carries is a plain empty chart, not an error over the old on
     await page.locator("[data-mark='input']").click();
     await page.locator(".empty").waitFor();
     assert.equal(await page.locator(".empty").innerText(), "No box here carries input.");
-    assert.equal(await page.locator("#marks-note").innerText(), "No box here carries input.");
+    assert.equal(await page.locator("#marks-note").innerText(), "");
     assert.equal(await page.locator(".error").count(), 0);
     assert.equal(await page.locator(".stale").count(), 0);
     assert.equal(await page.locator("[data-box]").count(), 0);
@@ -399,7 +405,64 @@ test("a mark no box carries is a plain empty chart, not an error over the old on
     await page.locator("[data-mark='model']").click();
     await page.locator(".empty").waitFor();
     assert.equal(await page.locator(".empty").innerText(), "No box in what read() reaches carries model.");
+    assert.equal(await page.locator("#marks-note").innerText(), "");
     assert.equal(await page.locator(".error").count(), 0);
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a bad plan still shows the error while an empty mark is on", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"] } }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='read']").waitFor();
+    await page.locator("[data-mark='input']").click();
+    await page.locator("#chart > .empty").waitFor();
+    writeFileSync(file, "{ not json");
+    await page.locator("#chart > .error").waitFor();
+    assert.match(await page.locator("#chart > .error").innerText(), /is not valid JSON/);
+    assert.equal(await page.locator("#chart > .empty").count(), 0);
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a dropped server still says the connection was lost while an empty mark is on", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"] } }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='read']").waitFor();
+    await page.locator("[data-mark='input']").click();
+    await page.locator("#chart > .empty").waitFor();
+    server.kill();
+    await page.locator("#chart > .error").waitFor();
+    assert.match(await page.locator("#chart > .error").innerText(), /Lost the connection to asbuilt/);
+    assert.equal(await page.locator("#chart > .empty").count(), 0);
   } finally {
     server.kill();
     await browser?.close();
