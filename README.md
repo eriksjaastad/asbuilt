@@ -71,6 +71,13 @@ from it, and the file or folder around each of those, and hides the rest. Arrows
 outward. “Whole chart” brings the full chart back. Choosing a file or a folder starts from every
 box inside it, because the arrows leave those boxes, not the folder.
 
+A box can carry a small badge for work its own code proves, never for a box it calls.
+The name is followed back to its import, and a parameter or a local of that name does not count.
+`calls out` is a request, urllib.request, a socket, subprocess, or os.system.
+`model` is the openai or anthropic SDK, including a client built once at the top (`client = OpenAI()`). `env` is an environment read, `input` is input(),
+and `writes` is a file opened or written. A change in later behavior cannot be read from the
+code, so it is not a badge. The badge sits on the box. It does not change the box's id or its arrows.
+
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
 box inside its parent. The folder you named keeps its plain name (`shop`). The built chart writes a subfolder as
 `sub/`, and a plan may name it `sub` or `sub/`. When the subfolder has the same name as the

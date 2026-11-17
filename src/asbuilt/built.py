@@ -25,6 +25,7 @@ import tree_sitter_python
 
 from asbuilt import output
 from asbuilt.compare import check
+from asbuilt.marks import of as _marks
 from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
 
@@ -260,7 +261,7 @@ def python_file(name, source):
     parameter of that name is not the call. A default value is not a parameter, and global
     keeps the call. A name defined twice points at the last one, which is the one Python runs."""
     note = _note(source)
-    definitions, decoded = [], None
+    definitions, decoded, scope = [], None, {}
     if not note:
         text, note = _text(source)
         if not note:
@@ -269,6 +270,7 @@ def python_file(name, source):
                 note = "tree-sitter could not read it all, though Python accepts it"
             else:
                 decoded, definitions = text.decode(), _definitions(root)
+                scope = _scope(list(root.named_children), None, False)
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
         children, at = [], {}
@@ -276,6 +278,9 @@ def python_file(name, source):
             info = _source(decoded, start, end)
             if _passes(node):
                 info["proven"] = PASSES
+            badges = _marks(node, scope)
+            if badges:
+                info["badges"] = badges
             child = f"{name}:{ident}:{start}"
             at[ident] = child  # the last def is the one a call reaches
             children.append(
@@ -419,10 +424,24 @@ _COND = {
 }
 
 
+def _client_spec(node, decided):
+    """("mod", module) when this assignment is one call of a marked constructor, else None."""
+    from asbuilt.marks import _path, client_module
+
+    kids = list(node.named_children)
+    if len(kids) < 2 or kids[-1].type != "call":
+        return None
+    fun = next(iter(kids[-1].named_children), None)
+    path = _path(fun, decided)
+    module = None if path is None else client_module(path)
+    return None if module is None else ("mod", module)
+
+
 def _scope(nodes, own, init):
     """name -> ("from", module, original) or ("mod", module), or None when it is not one import.
 
     None means the name is bound some other way too, or only inside if/try, so it gets no arrow.
+    One assignment of a marked constructor is that module; a second binding is not.
     Defs and classes count as bindings and are not entered."""
     decided = {}
 
@@ -454,7 +473,15 @@ def _scope(nodes, own, init):
             for name, mod in mods.items():
                 bind(name, None if conditional else ("mod", mod))
             return
-        if kind in ("assignment", "augmented_assignment", "named_expression"):
+        if kind == "assignment":
+            # One assignment of OpenAI(), Anthropic(), or requests.Session() is that module.
+            # A second binding, of any kind, is not. The same rule as an import.
+            names = list(_pattern(next(iter(node.named_children), None)))
+            spec = _client_spec(node, decided) if not conditional and len(names) == 1 else None
+            for name in names:
+                bind(name, spec)
+            return
+        if kind in ("augmented_assignment", "named_expression"):
             for name in _pattern(next(iter(node.named_children), None)):
                 bind(name, None)
             return
