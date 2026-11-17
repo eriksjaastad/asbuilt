@@ -19,6 +19,8 @@ function assertSound(plan, laid, boxCount, arrowCount) {
   const [parents, ends] = [{}, {}];
   const mark = (box) => (box.edges?.forEach((e) => (ends[e.id] = [e.sources[0], e.targets[0]])), (box.children ?? []).forEach((c) => ((parents[c.id] = box.id), mark(c))));
   mark(plan);
+  assert.deepEqual(laid.boxes.map((b) => b.id).sort(), Object.keys(parents).sort());
+  assert.deepEqual(laid.arrows.map((a) => a.id).sort(), Object.keys(ends).sort());
   for (const b of laid.boxes) {
     const p = byId[parents[b.id]];
     assert.equal(b.level, p ? p.level + 1 : 1, b.id);
@@ -467,12 +469,15 @@ const wideFold = (id, width) => ({ id, width, height: 8000, edges: [], children:
 
 test("a knot that is still narrowing stays lanes, with no arrow pointing up", async () => {
   const plan = stillNarrowing();
-  const laid = await layout(plan, elk);
-  assert.deepEqual(shape(laid), [0, 4, 242, 1388, 4140]);
+  const engine = counted();
+  const laid = await layout(plan, engine);
+  assert.deepEqual(ups(laid), []);
+  assert.ok(laid.width <= MAX_WIDTH && laid.height < 8300);
+  assert.ok(engine.runs <= 3, `${engine.runs} layouts`);
   assertSound(plan, laid, 79, 2);
 });
 
-test("the other way round is tried when the first lane fold is not narrowing", async () => {
+test("the other way round is tried when the first lane fold exhausts its search", async () => {
   const plan = stillNarrowing();
   const head = (box) => {
     if (box.id?.startsWith(LANES)) return box.children?.[0]?.id;
@@ -488,6 +493,28 @@ test("the other way round is tried when the first lane fold is not narrowing", a
   } };
   const laid = await layout(plan, stuckFirst);
   assert.deepEqual(shape(laid), [0, 4, 242, 1388, 4140]);
+});
+
+test("a wide candidate that stays too wide or turns an arrow upward keeps the original lane search", async () => {
+  for (const spoil of [
+    (out) => { out.width = MAX_WIDTH + 1; },
+    (out) => { out.edges.find((e) => e.id === "a").sections[0].endPoint.y = -100; },
+  ]) {
+    let attempts = 0;
+    const engine = { layout: async (graph) => {
+      const out = await elk.layout(graph);
+      if (graph.layoutOptions["elk.layered.layering.strategy"] === "COFFMAN_GRAHAM") {
+        attempts++;
+        spoil(out);
+      }
+      return out;
+    } };
+    const plan = stillNarrowing();
+    const laid = await layout(plan, engine);
+    assert.ok(attempts > 0 && attempts <= 3);
+    assert.deepEqual(shape(laid), [0, 4, 242, 1388, 4140]);
+    assertSound(plan, laid, 79, 2);
+  }
 });
 
 // Two groups with an arrow from each of the smaller side into the other, and one arrow back. The centred fold
@@ -513,6 +540,28 @@ test("a wide knot of six and twelve that pauses above two laptops still finishes
   assertSound(plan, laid, 20, 7);
 });
 
+test("six functions beside thirty stay lanes with every box and arrow intact", async () => {
+  const plan = wideKnot(6, 30, 190);
+  const laid = await layout(plan, elk);
+  assert.deepEqual(ups(laid), []);
+  assert.ok(laid.width <= MAX_WIDTH && laid.height < 12000);
+  assertSound(plan, laid, 38, 7);
+});
+
+test("generated wide plans keep each box in its group and every arrow pointing down", async () => {
+  let seed = 9076;
+  const rand = (n) => ((seed = seed * 48271 % 2147483647), seed % n);
+  for (let i = 0; i < 30; i++) {
+    const plan = between(i % 2 ? { labels: [{ text: "next" }] } : {});
+    const sizes = Array.from({ length: 1 + rand(4) }, () => 24 + rand(10));
+    plan.children.unshift(...sizes.map((n, j) => part(`m${j}`, boxes(`m${j}f`, n))));
+    const laid = await layout(plan, elk);
+    assert.deepEqual(ups(laid), []);
+    assert.ok(laid.width <= MAX_WIDTH);
+    assertSound(plan, laid, 4 + sizes.length + sizes.reduce((a, b) => a + b), 2);
+  }
+});
+
 // creep-w100-F2N40. The narrowest width gains only 674 px across one run of four layouts, then the fold fits.
 const twoNarrowFiles = () => {
   const knot = between();
@@ -534,25 +583,14 @@ const nestedPackages = (depth) => {
   return { id: "root", children: [part("src", Array.from({ length: depth }, (_, i) => pkg(i))), ...knot.children], edges: knot.edges };
 };
 
-test("two subpackages beside a knot stay lanes", async () => {
-  const plan = nestedPackages(2);
-  const laid = await layout(plan, elk);
-  assert.deepEqual(shape(laid), [0, 4, 242, 1320, 4530]);
-  assertSound(plan, laid, 83, 2);
-});
-
-test("three subpackages beside a knot stay lanes", async () => {
-  const plan = nestedPackages(3);
-  const laid = await layout(plan, elk);
-  assert.deepEqual(shape(laid), [0, 4, 242, 1331, 6540]);
-  assertSound(plan, laid, 122, 2);
-});
-
-test("four subpackages beside a knot stay lanes", async () => {
-  const plan = nestedPackages(4);
-  const laid = await layout(plan, elk);
-  assert.deepEqual(shape(laid), [0, 4, 242, 1342, 8610]);
-  assertSound(plan, laid, 161, 2);
+test("two, three and four subpackages beside a knot stay lanes", async () => {
+  for (const depth of [2, 3, 4]) {
+    const plan = nestedPackages(depth);
+    const laid = await layout(plan, elk);
+    assert.deepEqual(ups(laid), []);
+    assert.ok(laid.width <= MAX_WIDTH && laid.height < depth * 4400);
+    assertSound(plan, laid, depth * 39 + 5, 2);
+  }
 });
 
 test("a knot whose lanes cannot fit is not folded lane under lane: three tries each way round, then ELK's own layout", async () => {

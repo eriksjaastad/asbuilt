@@ -2,8 +2,8 @@
 // save shows the error over the last good chart, dimmed, and fixing the file brings the chart back.
 // Only this test runs main.js, EventSource and the DOM; the others test the page's modules as functions.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -32,6 +32,53 @@ function serve(file, signal) {
   });
   return { run, address };
 }
+
+test("the repo-root chart draws all parsed boxes and arrows in a few layouts", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-root-"));
+  const file = join(dir, "plan.json");
+  let server, browser;
+  try {
+    execFileSync("uv", ["run", "--offline", "python", "-m", "asbuilt.built", ".", file], { timeout: 30_000 });
+    const plan = JSON.parse(readFileSync(file, "utf8"));
+    const [boxes, arrows] = [[], []];
+    const walk = (box) => {
+      for (const kid of box.children ?? []) { boxes.push(kid.id); walk(kid); }
+      arrows.push(...(box.edges ?? []).map((e) => e.id));
+    };
+    walk(plan);
+    const serving = serve(file, t.signal);
+    server = serving.run;
+    serving.address.catch(() => {});
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.addInitScript(() => {
+      let engine;
+      window.layoutCalls = 0;
+      Object.defineProperty(window, "ELK", {
+        get: () => engine,
+        set: (Base) => { engine = class extends Base {
+          layout(...args) { window.layoutCalls++; return super.layout(...args); }
+        }; },
+      });
+    });
+    await page.goto(await serving.address);
+    await page.locator("#chart > svg").waitFor();
+    const drawn = await page.evaluate(() => ({
+      boxes: [...document.querySelectorAll("[data-box]")].map((b) => b.dataset.box).sort(),
+      arrows: [...document.querySelectorAll("[data-arrow]")].map((a) => a.dataset.arrow).sort(),
+      calls: window.layoutCalls,
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }));
+    assert.deepEqual(drawn.boxes, boxes.sort());
+    assert.deepEqual(drawn.arrows, arrows.sort());
+    assert.ok(drawn.calls <= 3, `${drawn.calls} layouts`);
+    assert.equal(drawn.overflow, 0);
+  } finally {
+    server?.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // At the timeout the server is killed, so a server that never prints its address fails the run; Playwright's waits
 // end on their own timeouts. finally stops the server and the browser whatever fails.

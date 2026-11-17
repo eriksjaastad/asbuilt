@@ -68,8 +68,12 @@ const spread = (box) => {
 const PLACEMENT = "elk.layered.nodePlacement.strategy";
 const STRAIGHT = { [PLACEMENT]: "NETWORK_SIMPLEX", "elk.layered.thoroughness": "60" };
 const CENTRED = { [PLACEMENT]: "SIMPLE" };
+// ELK can bound the number of boxes in each layer itself. One per layer avoids spending dozens of full layouts
+// folding a whole program into a laptop. This is only a candidate: the existing search still decides if it fails.
+const STACKED = { ...CENTRED, "elk.layered.layering.strategy": "COFFMAN_GRAHAM", "elk.layered.layering.coffmanGraham.layerBound": "1" };
 const setOn = (box, options) => {
   box.layoutOptions = { ...box.layoutOptions, ...options, ...(box.id.startsWith(LANES) ? box.layoutOptions : {}) }; // lanes keep their rails straight
+  if (options === STACKED && box.id.startsWith(LANES)) box.layoutOptions["elk.layered.layering.strategy"] = "NETWORK_SIMPLEX";
   (box.children ?? []).filter((c) => c.children?.length).forEach((c) => setOn(c, options));
 };
 
@@ -81,7 +85,7 @@ const laidOut = (prepared, elk, hidden, options) => {
 
 async function narrow(prepared, elk, hidden, options) {
   let [out, room, best, stall] = [null, MAX_WIDTH, Infinity, 0];
-  for (let n = 0; n < MAX_LAYOUTS; n++) {
+  for (let n = 0; n < (options === STACKED ? 3 : MAX_LAYOUTS); n++) {
     out = await laidOut(prepared, elk, hidden, options);
     if (out.width <= MAX_WIDTH) break;
     // Still more than twice a laptop after a straight try: more of those will not fit it. The centred pass will.
@@ -113,13 +117,14 @@ async function fitted(prepared, elk, hidden, firstWidth) {
 
 // One chart from a plan ready for ELK: `hide` holds the ids of what ELK lays out and the page does not draw, and
 // `parts` says which group each part of a lane belongs to. Boxes and arrows come back in absolute coordinates.
-async function chart(prepared, elk, hide, parts) {
+async function chart(prepared, elk, hide, parts, stacked = false) {
   const hidden = new Map();
   // A file of many leaves on one row is already far past a laptop. The opening layout and the straight search
   // were thrown away, and that search was almost all of the time.
   const wide = spread(prepared);
-  let out = wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
-  if (!out || out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden, out?.width ?? wide);
+  let out = stacked ? await narrow(prepared, elk, hidden, STACKED)
+    : wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
+  if (!stacked && (!out || out.width > MAX_WIDTH)) out = await fitted(prepared, elk, hidden, out?.width ?? wide);
   const [boxes, cut, held, spot, shown] = [[], new Map(), new Map(), new Map(), new Map()];
   const origin = { [out.id]: [0, 0] };
   const walk = (box, level, holders) => {
@@ -175,6 +180,16 @@ async function chart(prepared, elk, hide, parts) {
 
 export async function layout(plan, elk) {
   const prepared = prepare(plan);
+  // Try a bounded, narrow starting layout for lanes in the very wide plans that already skip the straight search.
+  // Keep it only when it fits, its lanes are sound, and every arrow points down. A failed candidate never cuts short
+  // either orientation of the original lane search below.
+  if (spread(prepared) > MAX_WIDTH * 3) {
+    const candidate = lanes(prepared);
+    if (candidate) {
+      const made = await chart(candidate.graph, elk, candidate.hidden, candidate.parts, true);
+      if (made.sound && made.laid.arrows.every((a) => a.points.at(-1)[1] >= a.points[0][1])) return made.laid;
+    }
+  }
   // A knot's two lanes can stand either way round: the plan's way is tried first, then the other.
   for (const turned of [false, true]) {
     const laned = lanes(prepared, turned);
