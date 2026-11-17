@@ -11,6 +11,23 @@ export function find(plan, id) {
   return null;
 }
 
+// A short name for one security fact, from the fields security.py stored with it. Each matches
+// what that fact's Plain sentence already says, and claims nothing more.
+export function titled(fact) {
+  if (fact?.kind === "input") return "Reads what a person types";
+  if (fact?.kind === "env") {
+    if (fact.how === "check") return "Checks an environment setting";
+    if (["remove", "default", "set", "write"].includes(fact.how)) return "Changes an environment setting";
+    return "Reads an environment setting";
+  }
+  if (fact?.kind === "calls out") {
+    if (fact.way === "command") return "Runs a program outside this one";
+    if (fact.way === "connect") return "Opens a network connection";
+    return "Makes a network request";
+  }
+  return "Something to know";
+}
+
 export function html(box) {
   const info = box?.asbuilt;
   if (typeof info?.text !== "string") return "";
@@ -19,10 +36,14 @@ export function html(box) {
     .filter((line) => typeof line === "string")
     .map((line) => `<p class="plain">${esc(line)}</p>`)
     .join("");
-  const security = (Array.isArray(info.security) ? info.security : [])
-    .filter((note) => note && typeof note.plain === "string" && typeof note.expert === "string")
-    .map((note) => `<p class="security"><b>Plain</b> ${esc(note.plain)}</p><p class="security"><b>Expert</b> ${esc(note.expert)}</p>`)
-    .join("");
+  const facts = (Array.isArray(info.security) ? info.security : [])
+    .filter((note) => note && typeof note.plain === "string" && typeof note.expert === "string");
+  const security = facts.length
+    ? `<p class="security-head">Security: ${facts.length} ${facts.length === 1 ? "thing" : "things"} to know</p>` +
+      facts.map((note, i) => `<p class="fact">${i + 1}. ${esc(titled(note.fact))}</p>` +
+        `<p class="security"><b>Plain (everyday words):</b> ${esc(note.plain)}</p>` +
+        `<p class="security"><b>Expert (the code):</b> ${esc(note.expert)}</p>`).join("")
+    : "";
   const model = (Array.isArray(info.model) ? info.model : [])
     .filter((note) => note && typeof note.text === "string")
     .map((note) => `<p class="model"><b>model</b> ${esc(note.label)}: ${esc(note.text)}</p>`)

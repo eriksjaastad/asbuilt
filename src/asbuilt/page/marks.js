@@ -61,7 +61,7 @@ export function shown(plan, focus, kinds) {
 }
 
 // How many boxes in this view prove each mark. The count is the view before a mark is chosen,
-// so a button can read "model 0" before anyone clicks it.
+// so a button can show 0, and be disabled, before anyone clicks it.
 export function markCounts(plan) {
   const tally = Object.fromEntries(KINDS.map((kind) => [kind, 0]));
   const walk = (box) => {
@@ -72,22 +72,34 @@ export function markCounts(plan) {
   return tally;
 }
 
-const what = (kinds) => {
-  const list = names(kinds);
-  return list.length > 1 ? `any of: ${list.join(", ")}` : list[0];
+// What each mark means in everyday words, as the end of "a box whose own code ...". Each phrase
+// claims only what marks.py checks: os.environ or os.getenv; input(); a file opened or written to
+// write; requests, httpx, urllib.request, http.client, socket, subprocess or os.system; openai or anthropic.
+export const SAYS = {
+  env: "uses environment settings",
+  input: "asks a person to type",
+  writes: "writes files",
+  "calls out": "talks to the network or runs programs",
+  model: "uses an AI library",
 };
+
+const what = (kinds) => names(kinds).map((kind) => SAYS[kind]).join(" or ");
 
 // A view with no matching box. `reached` is the label of the pipeline's start, when one is on.
 export function carries(kinds, reached) {
   const where = reached ? `in what ${reached} reaches` : "here";
-  return `No box ${where} carries ${what(kinds)}.`;
+  return `No box ${where} has its own code that ${what(kinds)}.`;
 }
 
-const bit = (count, one, many) => (count ? `${count} ${count === 1 ? one : many}` : "");
+const SHOWN = 6;
 
-// Several marks mean any of them. The rest of the line is how many boxes and arrows that hides.
-export function showing(kinds, boxes, arrows) {
-  const hidden = [bit(boxes, "box", "boxes"), bit(arrows, "arrow", "arrows")].filter(Boolean);
-  const rest = hidden.length ? `Hiding ${hidden.join(" and ")}.` : "Hiding nothing.";
-  return `Showing boxes with ${what(kinds)}. ${rest}`;
+// Several marks mean any of them. Then which boxes that hides and why, and how many arrows.
+// A box calling another box that does it is hidden too: a mark comes from a box's own code.
+export function showing(kinds, hidden, arrows) {
+  const head = `Showing boxes whose own code ${what(kinds)}.`;
+  if (!hidden.length && !arrows) return `${head} Hiding nothing.`;
+  const more = hidden.length > SHOWN ? `, and ${hidden.length - SHOWN} more` : "";
+  const boxes = hidden.length ? ` Hiding ${hidden.length === 1 ? "1 box" : `${hidden.length} boxes`} whose own code does not: ${hidden.slice(0, SHOWN).join(", ")}${more}.` : "";
+  const lines = arrows ? ` Also hiding ${arrows === 1 ? "1 arrow" : `${arrows} arrows`} to or from a box whose own code does not.` : "";
+  return `${head}${boxes}${lines}`;
 }

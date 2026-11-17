@@ -68,13 +68,14 @@ test("marks and the pipeline both apply: a box has to be reached and carry a cho
   assert.equal(ids(both).includes("local"), false);
 });
 
-test("the line names every chosen mark, and says any of them when there are several", () => {
-  assert.equal(showing(["env"], 2, 1), "Showing boxes with env. Hiding 2 boxes and 1 arrow.");
-  assert.equal(showing(["calls out", "env"], 2, 2), "Showing boxes with any of: env, calls out. Hiding 2 boxes and 2 arrows.");
-  assert.equal(showing(["env"], 0, 0), "Showing boxes with env. Hiding nothing.");
-  assert.equal(carries(["input"]), "No box here carries input.");
-  assert.equal(carries(["env", "calls out"]), "No box here carries any of: env, calls out.");
-  assert.equal(carries(["model"], "main()"), "No box in what main() reaches carries model.");
+test("the line says in plain words what is shown, which boxes are hidden and why", () => {
+  assert.equal(showing(["env"], ["a()", "b()"], 1), "Showing boxes whose own code uses environment settings. Hiding 2 boxes whose own code does not: a(), b(). Also hiding 1 arrow to or from a box whose own code does not.");
+  assert.equal(showing(["calls out", "env"], ["a()"], 0), "Showing boxes whose own code uses environment settings or talks to the network or runs programs. Hiding 1 box whose own code does not: a().");
+  assert.equal(showing(["env"], [], 0), "Showing boxes whose own code uses environment settings. Hiding nothing.");
+  assert.equal(showing(["writes"], ["a", "b", "c", "d", "e", "f", "g", "h"], 2), "Showing boxes whose own code writes files. Hiding 8 boxes whose own code does not: a, b, c, d, e, f, and 2 more. Also hiding 2 arrows to or from a box whose own code does not.");
+  assert.equal(carries(["input"]), "No box here has its own code that asks a person to type.");
+  assert.equal(carries(["env", "calls out"]), "No box here has its own code that uses environment settings or talks to the network or runs programs.");
+  assert.equal(carries(["model"], "main()"), "No box in what main() reaches has its own code that uses an AI library.");
 });
 
 test("a mark button's count is how many boxes in this view prove it", () => {

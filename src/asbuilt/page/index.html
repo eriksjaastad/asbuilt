@@ -19,7 +19,9 @@
   #marks-note { color: #6B5E4E; }
   .empty { margin: 24px 16px; color: #6B5E4E; }
   #code .model { border-top: 1px solid #F9F5EB; padding-top: 8px; }
-  #code .security b { color: #E7C27D; }
+  #code .security b, #code .security-head { color: #E7C27D; }
+  #code .security-head, #code .fact { font-weight: bold; }
+  #toolbar button:disabled { opacity: 0.4; cursor: default; }
   .error { margin: 24px; padding: 16px; border: 2px solid #8A3B2E; white-space: pre-wrap; }
   .stale p { margin: 0 24px; color: #8A3B2E; }
   .stale svg { opacity: 0.35; }
@@ -32,11 +34,11 @@
   <button id="pipeline" hidden type="button">Only what this reaches</button>
   <button id="whole" hidden type="button">Whole chart</button>
   <button id="mark-all" type="button" aria-pressed="true">All</button>
-  <button type="button" data-mark="env">env</button>
-  <button type="button" data-mark="input">input</button>
-  <button type="button" data-mark="writes">writes</button>
-  <button type="button" data-mark="calls out">calls out</button>
-  <button type="button" data-mark="model">model</button>
+  <button type="button" data-mark="env">uses environment settings</button>
+  <button type="button" data-mark="input">asks a person to type</button>
+  <button type="button" data-mark="writes">writes files</button>
+  <button type="button" data-mark="calls out">talks to the network or runs programs</button>
+  <button type="button" data-mark="model">uses an AI library</button>
   <span id="marks-note"></span>
 </p>
 <div id="screen">
