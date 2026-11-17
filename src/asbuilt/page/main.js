@@ -2,9 +2,10 @@
 // A click on a box opens that box's code beside the chart. The chart stays; the panel is not part of the SVG.
 import { boxAt, find, html } from "./code.js";
 import { latest } from "./latest.js";
-import { byMarks } from "./marks.js";
+import { carries, markCounts, showing, shown } from "./marks.js";
 import { pipeline } from "./pipeline.js";
 import { keepLastGood, render } from "./render.js";
+import { esc } from "./shapes.js";
 
 const [elk, gen, keep] = [new ELK(), rough.generator(), keepLastGood()];
 const chart = document.getElementById("chart");
@@ -32,36 +33,37 @@ const listed = (box) => {
   return { boxes, arrows };
 };
 
-const basePlan = () => (focus && plan && find(plan, focus) ? pipeline(plan, focus) : plan);
+const focusId = () => (focus && plan && find(plan, focus) ? focus : null);
 
-const view = () => {
-  if (!plan) return null;
-  const base = basePlan();
-  const filtered = chosen.size ? byMarks(base, [...chosen]) : base;
-  return filtered === plan ? null : filtered;
-};
+const basePlan = () => (focusId() ? pipeline(plan, focusId()) : plan);
 
-const hiddenLine = (one, many, count) => (count ? `${count} ${count === 1 ? one : many}` : "");
+const picked = () => shown(plan, focusId(), [...chosen]);
 
 function sayHidden() {
+  const tally = markCounts(plan ? basePlan() : null);
+  for (const button of markButtons) button.textContent = `${button.dataset.mark} ${tally[button.dataset.mark] ?? 0}`;
   if (!chosen.size || !plan) {
     marksNote.textContent = "";
     return;
   }
-  const [full, shown] = [listed(basePlan()), listed(byMarks(basePlan(), [...chosen]))];
-  const boxes = full.boxes.filter((id) => !shown.boxes.includes(id)).length;
-  const arrows = full.arrows.filter((id) => !shown.arrows.includes(id)).length;
-  const parts = [hiddenLine("box", "boxes", boxes), hiddenLine("arrow", "arrows", arrows)].filter(Boolean);
-  marksNote.textContent = parts.length ? `Hiding ${parts.join(" and ")}.` : "Hiding nothing.";
+  const drawn = picked();
+  const reached = focusId() ? (find(plan, focusId()).labels?.[0]?.text ?? focusId()) : null;
+  if (drawn && !drawn.children?.length) {
+    marksNote.textContent = carries([...chosen], reached);
+    return;
+  }
+  const [full, kept] = [listed(basePlan()), listed(drawn ?? basePlan())];
+  const boxes = full.boxes.filter((id) => !kept.boxes.includes(id)).length;
+  const arrows = full.arrows.filter((id) => !kept.arrows.includes(id)).length;
+  marksNote.textContent = showing([...chosen], boxes, arrows);
 }
 
 function showCode() {
   const box = plan && open ? find(plan, open) : null;
   const body = html(box);
   source.innerHTML = body;
-  // A file or folder has no lines of its own. The button still shows, above the code.
-  // A filter keeps the panel up after the code is closed, so Whole chart stays reachable.
-  code.hidden = body === "" && !box && !focus;
+  // Whole chart sits in the toolbar, so the panel closes when it has no code to show.
+  code.hidden = body === "";
   pipelineBtn.hidden = !box;
   whole.hidden = !focus;
 }
@@ -75,7 +77,12 @@ const show = latest(async (text) => {
     // render turns a message it cannot read into the error panel
   }
   if (focus && !find(plan, focus)) focus = null;
-  return render(text, elk, gen, view());
+  const draw = picked();
+  if (chosen.size && draw && !draw.children?.length) {
+    const reached = focusId() ? (find(plan, focusId()).labels?.[0]?.text ?? focusId()) : null;
+    return `<p class="empty">${esc(carries([...chosen], reached))}</p>`;
+  }
+  return render(text, elk, gen, draw);
 }, (svg) => {
   chart.innerHTML = keep(svg);
   showCode();

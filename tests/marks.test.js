@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { byMarks } from "../src/asbuilt/page/marks.js";
+import { byMarks, carries, markCounts, showing, shown } from "../src/asbuilt/page/marks.js";
 import { pipeline } from "../src/asbuilt/page/pipeline.js";
 
 const badge = (id, badges) => ({ id, asbuilt: { badges } });
@@ -16,7 +16,7 @@ const plan = {
   }, {
     id: "b.py",
     children: [badge("ask", ["model"])],
-  }],
+  }, badge("far", ["model"])],
   edges: [{ id: "out", sources: ["post"], targets: ["ask"] }],
 };
 
@@ -27,6 +27,8 @@ test("no chosen mark is the plan itself", () => {
   assert.equal(byMarks(plan, []), plan);
   assert.equal(byMarks(plan, null), plan);
   assert.equal(byMarks(plan, ["nope"]), plan);
+  assert.equal(shown(plan, null, []), null);
+  assert.equal(shown(plan, null, ["nope"]), null);
 });
 
 test("chosen marks keep every matching box and the arrows between them, and nothing else", () => {
@@ -48,7 +50,7 @@ test("chosen marks keep every matching box and the arrows between them, and noth
 
 test("a mark on its own still keeps that box when another mark is not chosen", () => {
   const out = byMarks(plan, ["model"]);
-  assert.deepEqual(ids(out).sort(), ["app", "ask", "b.py"]);
+  assert.deepEqual(ids(out).sort(), ["app", "ask", "b.py", "far"]);
   assert.deepEqual(arrows(out), []);
 });
 
@@ -56,10 +58,26 @@ test("marks and the pipeline both apply: a box has to be reached and carry a cho
   const reached = pipeline(plan, "read");
   const out = byMarks(reached, ["calls out"]);
   assert.ok(ids(reached).includes("local") && ids(reached).includes("ask"));
+  assert.equal(ids(reached).includes("far"), false);
   assert.deepEqual(ids(out).sort(), ["a.py", "app", "post"]);
   assert.deepEqual(arrows(out), []);
-  const both = byMarks(reached, ["calls out", "model"]);
+  const both = shown(plan, "read", ["calls out", "model"]);
   assert.deepEqual(arrows(both), ["out"]);
   assert.equal(ids(both).includes("ask"), true);
+  assert.equal(ids(both).includes("far"), false);
   assert.equal(ids(both).includes("local"), false);
+});
+
+test("the line names every chosen mark, and says any of them when there are several", () => {
+  assert.equal(showing(["env"], 2, 1), "Showing boxes with env. Hiding 2 boxes and 1 arrow.");
+  assert.equal(showing(["calls out", "env"], 2, 2), "Showing boxes with any of: env, calls out. Hiding 2 boxes and 2 arrows.");
+  assert.equal(showing(["env"], 0, 0), "Showing boxes with env. Hiding nothing.");
+  assert.equal(carries(["input"]), "No box here carries input.");
+  assert.equal(carries(["env", "calls out"]), "No box here carries any of: env, calls out.");
+  assert.equal(carries(["model"], "main()"), "No box in what main() reaches carries model.");
+});
+
+test("a mark button's count is how many boxes in this view prove it", () => {
+  assert.deepEqual(markCounts(plan), { env: 1, input: 1, writes: 0, "calls out": 1, model: 2 });
+  assert.deepEqual(markCounts(pipeline(plan, "read")).model, 1);
 });

@@ -1,6 +1,7 @@
 // The boxes whose own code proves one of the chosen work marks, and the arrows between those boxes.
 // A folder or a file with no mark of its own stays when it holds a box that does, so the box is still inside it.
 // Anything else is left out. No chosen mark means the plan itself, not a copy.
+import { pipeline } from "./pipeline.js";
 
 const KINDS = ["env", "input", "writes", "calls out", "model"];
 
@@ -46,4 +47,47 @@ export function byMarks(plan, kinds) {
   const parent = index(plan);
   for (const id of match) for (let at = parent.get(id); at; at = parent.get(at)) keep.add(at);
   return copy(plan, keep, match);
+}
+
+const names = (kinds) => KINDS.filter((kind) => (kinds ?? []).includes(kind));
+
+// What the page lays out. Null means the plan itself: no pipeline and no mark. A copy is never
+// returned for that case, so All stays byte-identical to the chart with nothing chosen.
+export function shown(plan, focus, kinds) {
+  if (!plan) return null;
+  const base = focus ? pipeline(plan, focus) : plan;
+  const filtered = byMarks(base, names(kinds));
+  return filtered === plan ? null : filtered;
+}
+
+// How many boxes in this view prove each mark. The count is the view before a mark is chosen,
+// so a button can read "model 0" before anyone clicks it.
+export function markCounts(plan) {
+  const tally = Object.fromEntries(KINDS.map((kind) => [kind, 0]));
+  const walk = (box) => {
+    for (const badge of badgesOf(box)) if (badge in tally) tally[badge] += 1;
+    for (const child of childrenOf(box)) walk(child);
+  };
+  if (plan) walk(plan);
+  return tally;
+}
+
+const what = (kinds) => {
+  const list = names(kinds);
+  return list.length > 1 ? `any of: ${list.join(", ")}` : list[0];
+};
+
+// A view with no matching box. `reached` is the label of the pipeline's start, when one is on.
+export function carries(kinds, reached) {
+  const where = reached ? `in what ${reached} reaches` : "here";
+  return `No box ${where} carries ${what(kinds)}.`;
+}
+
+const bit = (count, one, many) => (count ? `${count} ${count === 1 ? one : many}` : "");
+
+// Several marks mean any of them. The rest of the line is how many boxes and arrows that hides.
+export function showing(kinds, boxes, arrows) {
+  const hidden = [bit(boxes, "box", "boxes"), bit(arrows, "arrow", "arrows")].filter(Boolean);
+  const rest = hidden.length ? `Hiding ${hidden.join(" and ")}.` : "Hiding nothing.";
+  return `Showing boxes with ${what(kinds)}. ${rest}`;
 }
