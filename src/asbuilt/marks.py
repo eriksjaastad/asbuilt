@@ -1,33 +1,69 @@
 """The marks a box can prove from its own code. Not from a box it calls.
 
-A kind is one row: the plain name, then which dotted calls count. Nested defs count,
-because they are not their own boxes. Add a kind by appending a row.
+A name is the module its import binds, here or at the top of the file, by the same
+rule as an arrow (_scope). A parameter, a local, or a nested def hides that import.
+A kind is one check below. Nested defs count, because they are not their own boxes.
+Add a kind by appending a check. A later change in behavior cannot be proven, so it
+is not a kind.
 """
 
-# (name, when a dotted call matches). Display order is this order.
-_KINDS = (
-    ("env", lambda name, _call: name == "os.environ" or name.startswith(("os.environ.", "environ.")) or name in ("os.getenv", "getenv")),
-    ("input", lambda name, _call: name == "input"),
-    ("writes", lambda name, call: name.endswith((".write_text", ".write_bytes")) or (name == "open" and _open_writes(call))),
-    ("calls out", lambda name, _call: _head(name) in ("requests", "httpx", "urllib", "socket", "subprocess", "openai", "anthropic") or name.startswith("http.client.") or name == "http.client"),
-)
+_ORDER = ("env", "input", "writes", "calls out", "model")
+_MODEL = {("openai",), ("anthropic",)}
+_OUT = {("requests",), ("httpx",)}
+_RUN = ("run", "Popen", "call", "check_call", "check_output")
+_SOCKET = ("socket", "create_connection", "create_server")
 
 
-def _dotted(node):
-    """identifier, or object.attr, as text. Anything else, a call or a subscript, is None."""
+def _chain(node):
+    """The node under a chain of attributes, and those attribute names, outer last."""
+    attrs = []
+    while node is not None and node.type == "attribute":
+        attr = node.child_by_field_name("attribute")
+        if attr is None:
+            return None, ()
+        attrs.append(attr.text.decode())
+        node = node.child_by_field_name("object")
+    attrs.reverse()
+    return node, tuple(attrs)
+
+
+def _resolve(name, scope):
+    """The module path an imported name is, 'shadow' when this box rebinds it, or None."""
+    spec = scope.get(name, False)
+    if spec is False:
+        return None
+    if spec is None or spec[0] not in ("mod", "from"):
+        return "shadow"
+    return spec[1] if spec[0] == "mod" else spec[1] + (spec[2],)
+
+
+def _path(node, scope):
+    """The module path of a name or attribute chain, or ('builtin', name) for open and input."""
     if node is None:
         return None
-    if node.type == "identifier":
-        return node.text.decode()
-    if node.type == "attribute":
-        left, right = _dotted(node.child_by_field_name("object")), node.child_by_field_name("attribute")
-        if left is not None and right is not None:
-            return f"{left}.{right.text.decode()}"
-    return None
+    root, attrs = _chain(node)
+    if root is None or root.type != "identifier":
+        return None
+    found = _resolve(root.text.decode(), scope)
+    if found == "shadow":
+        return None
+    if found is None:
+        return ("builtin", root.text.decode()) if not attrs and root.text.decode() in ("input", "open") else None
+    return found + attrs
 
 
-def _head(name):
-    return name.split(".", 1)[0]
+def _path(node, scope):
+    """The module path of a name or attribute chain, or ('builtin', name) when it is open or input."""
+    root, attrs = _chain(node)
+    if root is None or root.type != "identifier":
+        return None
+    name = root.text.decode()
+    found = _resolve(name, scope)
+    if found == "shadow":
+        return None
+    if found is None:
+        return ("builtin", name) if not attrs and name in ("input", "open") else None
+    return found + attrs
 
 
 def _write_mode(text):
@@ -38,7 +74,8 @@ def _write_mode(text):
     return bool(body) and (body[0] in "wax" or "+" in body)
 
 
-def _open_writes(call):
+def _open_writes(call, first=False):
+    """True when an open-like call's mode string writes. A method takes the mode first."""
     args = call.child_by_field_name("arguments")
     if args is None:
         return False
@@ -50,28 +87,109 @@ def _open_writes(call):
                 return _write_mode(val.text.decode())
         else:
             positional.append(child)
-    return len(positional) >= 2 and positional[1].type == "string" and _write_mode(positional[1].text.decode())
+    slot = 0 if first else 1
+    return len(positional) > slot and positional[slot].type == "string" and _write_mode(positional[slot].text.decode())
 
 
-def _seen(node):
-    """(dotted name, call node) for each call, and dotted names that are subscripted."""
-    calls, subs, todo = [], [], [node]
-    while todo:
-        cur = todo.pop()
-        if cur.type == "call":
-            name = _dotted(next(iter(cur.named_children), None))
-            if name is not None:
-                calls.append((name, cur))
-        elif cur.type == "subscript":
-            name = _dotted(cur.child_by_field_name("value"))
-            if name is not None:
-                subs.append(name)
-        todo.extend(cur.children)
-    return calls, subs
+def _layer(fn, scope):
+    """scope plus this function's parameters and the imports and defs in its body."""
+    from asbuilt.built import _one_name, _scope
+
+    inner, params = dict(scope), set()
+    head = fn.child_by_field_name("parameters")
+    for child in head.named_children if head is not None else ():
+        name = _one_name(child)
+        if name is not None:
+            params.add(name)
+            inner[name] = None
+    body = fn.child_by_field_name("body")
+    if body is not None:
+        for name, spec in _scope(list(body.named_children), None, False).items():
+            if name not in params:
+                inner[name] = spec
+    return inner
 
 
-def of(node):
+def _env(path):
+    return path[:2] == ("os", "environ") or path[:2] == ("os", "getenv")
+
+
+def _calls_out(path):
+    return (
+        path[:1] in _OUT
+        or path[:2] in {("urllib", "request"), ("http", "client"), ("os", "system")}
+        or path[:1] == ("subprocess",) and len(path) > 1 and path[1] in _RUN
+        or path[:1] == ("socket",) and len(path) > 1 and path[1] in _SOCKET
+    )
+
+
+def _on_call(node, scope, add):
+    fun = next(iter(node.named_children), None)
+    root, attrs = _chain(fun)
+    if attrs and attrs[-1] in ("write_text", "write_bytes"):
+        add("writes")
+    if attrs and attrs[-1] == "open" and _open_writes(node, first=True):
+        add("writes")
+    path = _path(fun, scope)
+    if path is None:
+        return
+    if path[0] == "builtin":
+        if path[1] == "input":
+            add("input")
+        elif path[1] == "open" and _open_writes(node):
+            add("writes")
+        return
+    if _env(path):
+        add("env")
+    if path[:1] in _MODEL:
+        add("model")
+    elif _calls_out(path):
+        add("calls out")
+    if path[:2] == ("os", "fdopen") and _open_writes(node):
+        add("writes")
+
+
+def _on_name(node, scope, add):
+    path = _path(node, scope)
+    if path is not None and path[0] != "builtin" and _env(path):
+        add("env")
+
+
+def of(node, module):
     """The mark names this box's own tree proves, in display order. [] when it proves none."""
-    calls, subs = _seen(node)
-    hits = calls + [(name, None) for name in subs]
-    return [name for name, kind in _KINDS if any(kind(dotted, call) for dotted, call in hits)]
+    found = []
+
+    def add(kind):
+        if kind not in found:
+            found.append(kind)
+
+    def visit(cur, scope):
+        if cur.type in ("import_statement", "import_from_statement"):
+            return
+        if cur.type == "function_definition":
+            inner = _layer(cur, scope)
+            body = cur.child_by_field_name("body")
+            for child in body.children if body is not None else ():
+                visit(child, inner)
+            return
+        if cur.type == "class_definition":
+            body = cur.child_by_field_name("body")
+            inner = dict(scope)
+            if body is not None:
+                from asbuilt.built import _scope
+
+                inner.update(_scope(list(body.named_children), None, False))
+            for child in body.children if body is not None else ():
+                visit(child, inner)
+            return
+        if cur.type == "call":
+            _on_call(cur, scope, add)
+        elif cur.type == "subscript":
+            _on_name(cur.child_by_field_name("value"), scope, add)
+        elif cur.type in ("identifier", "attribute"):
+            _on_name(cur, scope, add)
+        for child in cur.children:
+            visit(child, scope)
+
+    visit(node, dict(module or {}))
+    return [kind for kind in _ORDER if kind in found]

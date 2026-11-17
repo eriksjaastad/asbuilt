@@ -39,8 +39,8 @@ export function draw(laid, gen) {
   const text = (b, dy, size, s, fill = INK, x = b.x + b.w / 2, anchor = "middle") =>
     `<text x="${x}" y="${b.y + dy}" text-anchor="${anchor}" font-family="ui-monospace, Menlo, monospace" font-size="${size}" fill="${fill}" stroke="${PAPER}" stroke-width="4" stroke-linejoin="round" paint-order="stroke">${esc(s)}</text>`;
   const badges = (b) => (b.badges ?? []).map((name, i) => {
-    const x = b.x + 8 + (b.badges ?? []).slice(0, i).reduce((n, prev) => n + prev.length * 5.4 + 8, 0);
-    return `<text data-badge="${esc(name)}" x="${x}" y="${b.y + b.h - 6}" text-anchor="start" font-family="ui-monospace, Menlo, monospace" font-size="9" fill="#6B5E4E" stroke="${PAPER}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(name)}</text>`;
+    const x = b.x + 8 + (b.badges ?? []).slice(0, i).reduce((n, prev) => n + prev.length * 6.6 + 10, 0);
+    return `<text data-badge="${esc(name)}" x="${x}" y="${b.y + b.h - 8}" text-anchor="start" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="#6B5E4E" stroke="${PAPER}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(name)}</text>`;
   }).join("");
   const labels = laid.boxes.map((b) => text(b, 22, 13, b.label) + (b.note ? text(b, 40, 11, b.note) : "") + badges(b));
   for (const { label } of laid.arrows) if (label) labels.push(text(label, 12, 11, label.text));

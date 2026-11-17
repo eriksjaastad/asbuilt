@@ -261,7 +261,7 @@ def python_file(name, source):
     parameter of that name is not the call. A default value is not a parameter, and global
     keeps the call. A name defined twice points at the last one, which is the one Python runs."""
     note = _note(source)
-    definitions, decoded = [], None
+    definitions, decoded, scope = [], None, {}
     if not note:
         text, note = _text(source)
         if not note:
@@ -270,6 +270,7 @@ def python_file(name, source):
                 note = "tree-sitter could not read it all, though Python accepts it"
             else:
                 decoded, definitions = text.decode(), _definitions(root)
+                scope = _scope(list(root.named_children), None, False)
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
         children, at = [], {}
@@ -277,7 +278,7 @@ def python_file(name, source):
             info = _source(decoded, start, end)
             if _passes(node):
                 info["proven"] = PASSES
-            badges = _marks(node)
+            badges = _marks(node, scope)
             if badges:
                 info["badges"] = badges
             child = f"{name}:{ident}:{start}"
