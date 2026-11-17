@@ -2,24 +2,22 @@
 level, is not written here. The sentences are these ones: a model does not rephrase them.
 
 A timeout is mentioned only when this call shows one, or when its absence is proved.
-A network call is a request. It sends data only when a body or data argument is there,
-and it is outside only when that host is not local. Argument values other than an
+A network call is a request. It sends data only when a body, files, or data argument is there,
+and it is outside only when a literal host is public. Argument values other than an
 environment name, a prompt, or a URL host are not shown.
 """
 
 import ast
+import ipaddress
 from urllib.parse import urlparse
 
+from asbuilt.built import COND, imported, one_name, pattern
 from asbuilt.marks import layer, reaches_out, reads_env, resolve
 
 _HTTP = ("request", "get", "post", "put", "patch", "delete", "head", "options", "send")
 _ENV_OP = ("get", "pop", "setdefault", "getenv", "update", "items", "values", "keys", "copy", "environ")
 _RUN_TIMEOUT = ("run", "call", "check_call", "check_output")  # Popen has no timeout argument
-_LOCAL = {"localhost", "127.0.0.1", "::1"}
-_COND = {
-    "if_statement", "elif_clause", "else_clause", "try_statement", "except_clause",
-    "finally_clause", "while_statement", "with_statement", "for_statement", "match_statement", "case_clause",
-}
+_DATA = ("post", "put", "patch")  # the second positional argument is the body
 
 
 def _literal(node):
@@ -30,41 +28,6 @@ def _literal(node):
     except (SyntaxError, ValueError):
         return None
     return value if isinstance(value, str) and value else None
-
-
-def _ident(node):
-    if node is None:
-        return None
-    if node.type == "identifier":
-        return node.text.decode()
-    return next((c.text.decode() for c in node.named_children if c.type == "identifier"), None)
-
-
-def _targets(node):
-    if node is None:
-        return []
-    if node.type == "identifier":
-        return [node.text.decode()]
-    if node.type in ("pattern_list", "tuple_pattern", "list_pattern", "tuple"):
-        return [name for child in node.named_children for name in _targets(child)]
-    return []
-
-
-def _import_names(stmt):
-    names = []
-    items = stmt.named_children[1:] if stmt.type == "import_from_statement" else stmt.named_children
-    for item in items:
-        if item.type == "aliased_import":
-            alias = next((c for c in item.named_children if c.type == "identifier"), None)
-            if alias is not None:
-                names.append(alias.text.decode())
-        elif item.type == "dotted_name":
-            ids = [c.text.decode() for c in item.children if c.type == "identifier"]
-            if ids:
-                names.append(ids[0] if stmt.type == "import_statement" else ids[-1])
-        elif item.type == "identifier":
-            names.append(item.text.decode())
-    return names
 
 
 def constants(nodes):
@@ -88,10 +51,10 @@ def constants(nodes):
                 walk(inner, conditional)
             return
         if kind in ("import_statement", "import_from_statement"):
-            ban(_import_names(node))
+            ban(imported(node))
             return
         if kind == "assignment":
-            names = _targets(next(iter(node.named_children), None))
+            names = pattern(next(iter(node.named_children), None))
             value = node.named_children[-1] if len(node.named_children) > 1 else None
             lit = _literal(value) if not conditional and len(names) == 1 else None
             if lit is None or names[0] in found:
@@ -99,9 +62,15 @@ def constants(nodes):
             else:
                 found[names[0]] = lit
             return
-        if kind in ("augmented_assignment", "named_expression", "for_statement"):
-            ban(_targets(next(iter(node.named_children), None)))
-        nested = conditional or kind in _COND
+        if kind == "for_statement":
+            ban(pattern(next(iter(node.named_children), None)))
+            body = node.child_by_field_name("body")
+            for child in body.named_children if body is not None else ():
+                walk(child, True)
+            return
+        if kind in ("augmented_assignment", "named_expression"):
+            ban(pattern(next(iter(node.named_children), None)))
+        nested = conditional or kind in COND
         for child in node.named_children:
             walk(child, nested)
 
@@ -115,7 +84,7 @@ def _fn_constants(fn, outer):
     direct, banned = {}, set()
     head = fn.child_by_field_name("parameters")
     for child in head.named_children if head is not None else ():
-        name = _ident(child)
+        name = one_name(child)
         if name:
             banned.add(name)
     body = fn.child_by_field_name("body")
@@ -135,11 +104,11 @@ def _fn_constants(fn, outer):
             banned.update(c.text.decode() for c in node.named_children if c.type == "identifier")
             return
         if node.type in ("import_statement", "import_from_statement"):
-            banned.update(_import_names(node))
+            banned.update(imported(node))
             return
         target = next(iter(node.named_children), node) if node.type == "expression_statement" and top else node
         if target.type == "assignment":
-            names = _targets(next(iter(target.named_children), None))
+            names = pattern(next(iter(target.named_children), None))
             value = target.named_children[-1] if len(target.named_children) > 1 else None
             lit = _literal(value) if top and len(names) == 1 else None
             name = names[0] if len(names) == 1 else None
@@ -151,7 +120,7 @@ def _fn_constants(fn, outer):
                     direct.pop(item, None)
             return
         if target.type in ("augmented_assignment", "named_expression", "for_statement"):
-            banned.update(_targets(next(iter(target.named_children), None)))
+            banned.update(pattern(next(iter(target.named_children), None)))
         for child in node.named_children:
             walk(child, False)
 
@@ -219,7 +188,16 @@ def _label(fun):
 
 def _shown(fun, bits):
     name = _label(fun) or "call"
-    return f"{name}({', '.join(bits)})" if bits else f"{name}()"
+    return f"{name}({', '.join(bits)})" if bits else f"{name}(...)"
+
+
+def _bound_name(node, local):
+    """A string literal, or one assignment of one. None when the node is not a name."""
+    if node is None:
+        return None
+    if node.type == "string":
+        return _literal(node)
+    return local.get(one_name(node) or "")
 
 
 def _name_bit(node, found):
@@ -234,6 +212,7 @@ def _name_bit(node, found):
 
 
 def _host(node):
+    """The host of a literal http(s) URL, port removed. None when the URL is not written here."""
     text = _literal(node)
     if not text:
         return None
@@ -241,6 +220,19 @@ def _host(node):
     if parsed.scheme in ("http", "https") and parsed.hostname:
         return parsed.hostname
     return None
+
+
+def _local(host):
+    """True for localhost, a loopback address, 0.0.0.0, or a private address."""
+    if not host:
+        return False
+    if host.lower().rstrip(".") == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_unspecified or addr.is_private
 
 
 def _module_call(fun, scope):
@@ -309,12 +301,16 @@ def _timeout(call, fun, path, scope):
 
 
 def _sends(call, path):
+    """True when this call passes a body. A post's second positional is that body; files= is too."""
     positional, named, _splat = _args(call)
-    for key in ("data", "json", "body", "content"):
+    for key in ("data", "json", "body", "content", "files", "payload"):
         node = named.get(key)
         if node is not None and node.type != "none":
             return True
-    return path[-1] == "urlopen" and len(positional) > 1 and positional[1].type != "none"
+    last = path[-1]
+    if last in _DATA or last in ("urlopen", "Request"):
+        return len(positional) > 1 and positional[1].type != "none"
+    return False
 
 
 def _way(path):
@@ -329,7 +325,7 @@ def _way(path):
         return "send"
     if path[:1] in {("requests",), ("httpx",)} and last in _HTTP:
         return "send"
-    if path[:2] == ("urllib", "request") and last in ("urlopen", "urlretrieve", "open"):
+    if path[:2] == ("urllib", "request") and last in ("urlopen", "urlretrieve", "open", "Request"):
         return "send"
     return None
 
@@ -345,21 +341,11 @@ def _env_how(path):
     return "read"
 
 
-def _caught(node):
+def _within(node, *kinds):
+    """True when `node` sits in the body of one of `kinds`, not in its header or handler."""
     cur = node.parent
     while cur is not None:
-        if cur.type == "try_statement":
-            body = cur.child_by_field_name("body")
-            if body is not None and body.start_byte <= node.start_byte and node.end_byte <= body.end_byte:
-                return True
-        cur = cur.parent
-    return False
-
-
-def _repeats(node):
-    cur = node.parent
-    while cur is not None:
-        if cur.type in ("for_statement", "while_statement"):
+        if cur.type in kinds:
             body = cur.child_by_field_name("body")
             if body is not None and body.start_byte <= node.start_byte and node.end_byte <= body.end_byte:
                 return True
@@ -406,7 +392,8 @@ def facts(node, module, consts=None):
             if reads_env(path) and path[-1] in _ENV_OP:
                 chosen = (current, fun, path, "env")
                 break
-            if reaches_out(path) and _way(path):
+            way = _way(path)
+            if reaches_out(path) and way and not (path[-1] == "Request" and not _sends(current, path)):
                 chosen = (current, fun, path, "calls out")
                 break
         if chosen is None:
@@ -427,15 +414,15 @@ def facts(node, module, consts=None):
         if kind == "env":
             positional, named, _splat = _args(current)
             node = positional[0] if positional else named.get("key")
-            found_name = _literal(node) if node is not None and node.type == "string" else local.get(_ident(node) or "")
+            found_name = _bound_name(node, local)
             fields = {"how": _env_how(path)}
             if found_name:
                 fields["name"] = found_name
             bit = _name_bit(node, found_name)
             add("env", callee, _shown(fun, [bit] if bit else []), fields)
             return
-        fields = {"way": _way(path), "caught": _caught(cur)}
-        if _repeats(cur):
+        fields = {"way": _way(path), "caught": _within(cur, "try_statement")}
+        if _within(cur, "for_statement", "while_statement"):
             fields["repeats"] = True
         timeout = _timeout(current, fun, path, scope)
         if timeout:
@@ -450,7 +437,7 @@ def facts(node, module, consts=None):
                 break
         if host:
             fields["host"] = host
-            if host in _LOCAL:
+            if _local(host):
                 fields["local"] = True
         add("calls out", callee, _shown(fun, [host] if host else []), fields)
 
@@ -462,7 +449,7 @@ def facts(node, module, consts=None):
         if not reads_env(path):
             return
         index = cur.child_by_field_name("subscript")
-        found_name = _literal(index) if index is not None and index.type == "string" else local.get(_ident(index) or "")
+        found_name = _bound_name(index, local)
         fields = {"how": how}
         if found_name:
             fields["name"] = found_name
@@ -504,14 +491,11 @@ def facts(node, module, consts=None):
             if op and len(kids) == 2 and reads_env(resolve(kids[1], scope)):
                 path = resolve(kids[1], scope)
                 if path is not None and path[-1] == "environ" and len(path) == 2:
-                    found_name = _literal(kids[0]) if kids[0].type == "string" else local.get(_ident(kids[0]) or "")
+                    found_name = _bound_name(kids[0], local)
                     fields = {"how": "check"}
                     if found_name:
                         fields["name"] = found_name
-                    shown = " ".join(cur.text.decode().split())
-                    if found_name and kids[0].type == "string":
-                        shown = shown  # the literal name is the whole check; no second value is in it
-                    add("env", cur, shown, fields)
+                    add("env", cur, " ".join(cur.text.decode().split()), fields)
         elif cur.type in ("identifier", "attribute") and not inside(cur):
             path = resolve(cur, scope)
             if reads_env(path) and path[-1] in _ENV_OP:

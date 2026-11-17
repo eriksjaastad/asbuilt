@@ -104,7 +104,7 @@ def _calls(node):
     return count
 
 
-def _one_name(child):
+def one_name(child):
     """A parameter's own name. The default (`fn=load`) and the type are not names it binds."""
     if child.type == "identifier":
         return child.text.decode()
@@ -112,7 +112,7 @@ def _one_name(child):
     return None if ident is None else ident.text.decode()
 
 
-def _imported(stmt):
+def imported(stmt):
     """Names an import binds. `import pkg as load` and `from pkg import load` bind load, not pkg."""
     items = stmt.named_children[1:] if stmt.type == "import_from_statement" else stmt.named_children
     names = []
@@ -128,13 +128,13 @@ def _imported(stmt):
     return names
 
 
-def _bound(node, imports=True):
+def bound(node, imports=True):
     """Names this box assigns. A call of one of them is not the top-level function of that name.
     `global load` puts the name back: the call is the top-level one."""
     names, glob = set(), set()
     params = node.child_by_field_name("parameters")
     for child in params.named_children if params is not None else ():
-        name = _one_name(child)
+        name = one_name(child)
         if name is not None:
             names.add(name)
     body = node.child_by_field_name("body")
@@ -157,26 +157,26 @@ def _bound(node, imports=True):
             continue
         if cur.type in ("import_statement", "import_from_statement"):
             if imports:
-                names.update(_imported(cur))
+                names.update(imported(cur))
             continue
         if cur.type == "as_pattern":
             target = next((c for c in cur.named_children if c.type == "as_pattern_target"), None)
             if target is not None:
-                names.update(_pattern(next(iter(target.named_children), None)))
+                names.update(pattern(next(iter(target.named_children), None)))
         if cur.type in ("assignment", "augmented_assignment", "for_statement", "named_expression"):
-            names.update(_pattern(next(iter(cur.named_children), None)))
+            names.update(pattern(next(iter(cur.named_children), None)))
         todo.extend(reversed(cur.children))
     return names - glob
 
 
-def _pattern(node):
+def pattern(node):
     """Identifiers bound by an assignment target, not the value or a type."""
     if node is None:
         return ()
     if node.type == "identifier":
         return (node.text.decode(),)
     if node.type in ("pattern_list", "tuple_pattern", "list_pattern"):
-        return tuple(name for c in node.named_children for name in _pattern(c))
+        return tuple(name for c in node.named_children for name in pattern(c))
     return ()
 
 
@@ -186,13 +186,13 @@ def _scoped(node, extra):
     if node.type == "lambda":
         params = next((c for c in node.named_children if c.type == "lambda_parameters"), None)
         for child in params.named_children if params is not None else ():
-            name = _one_name(child)
+            name = one_name(child)
             if name is not None:
                 names.add(name)
     else:
         for clause in node.named_children:
             if clause.type == "for_in_clause":
-                names.update(_pattern(next(iter(clause.named_children), None)))
+                names.update(pattern(next(iter(clause.named_children), None)))
     return names
 
 
@@ -299,7 +299,7 @@ def python_file(name, source):
             )
         edges, seen = [], set()
         for ident, _, start, _, node in definitions:
-            for callee in _direct_calls(node, _bound(node)):
+            for callee in _direct_calls(node, bound(node)):
                 pair = (f"{ident}:{start}", callee)
                 if callee not in at or pair in seen:
                     continue  # a local, not a top-level box, or already drawn
@@ -425,7 +425,7 @@ def _typing(node):
     return cond is not None and cond.type == "identifier" and cond.text.decode() == "TYPE_CHECKING"
 
 
-_COND = {
+COND = {
     "if_statement", "elif_clause", "else_clause", "try_statement", "except_clause",
     "finally_clause", "while_statement", "with_statement", "match_statement", "case_clause",
 }
@@ -433,13 +433,13 @@ _COND = {
 
 def _client_spec(node, decided):
     """("mod", module) when this assignment is one call of a marked constructor, else None."""
-    from asbuilt.marks import _path, client_module
+    from asbuilt.marks import client_module, resolve
 
     kids = list(node.named_children)
     if len(kids) < 2 or kids[-1].type != "call":
         return None
     fun = next(iter(kids[-1].named_children), None)
-    path = _path(fun, decided)
+    path = resolve(fun, decided)
     module = None if path is None else client_module(path)
     return None if module is None else ("mod", module)
 
@@ -483,17 +483,17 @@ def _scope(nodes, own, init):
         if kind == "assignment":
             # One assignment of OpenAI(), Anthropic(), or requests.Session() is that module.
             # A second binding, of any kind, is not. The same rule as an import.
-            names = list(_pattern(next(iter(node.named_children), None)))
+            names = list(pattern(next(iter(node.named_children), None)))
             spec = _client_spec(node, decided) if not conditional and len(names) == 1 else None
             for name in names:
                 bind(name, spec)
             return
         if kind in ("augmented_assignment", "named_expression"):
-            for name in _pattern(next(iter(node.named_children), None)):
+            for name in pattern(next(iter(node.named_children), None)):
                 bind(name, None)
             return
         if kind == "for_statement":
-            for name in _pattern(next(iter(node.named_children), None)):
+            for name in pattern(next(iter(node.named_children), None)):
                 bind(name, None)
             body = node.child_by_field_name("body")
             for child in body.named_children if body is not None else ():
@@ -501,20 +501,20 @@ def _scope(nodes, own, init):
             return
         if kind == "delete_statement":
             for child in node.named_children:
-                for name in _pattern(child):
+                for name in pattern(child):
                     bind(name, None)
             return
         if kind == "as_pattern":
             target = next((c for c in node.named_children if c.type == "as_pattern_target"), None)
             if target is not None:
-                for name in _pattern(next(iter(target.named_children), None)):
+                for name in pattern(next(iter(target.named_children), None)):
                     bind(name, None)
             return
         if kind == "if_statement" and not conditional and _typing(node):
             for child in node.named_children:
                 walk(child, child.type in ("elif_clause", "else_clause"))
             return
-        nested = conditional or kind in _COND
+        nested = conditional or kind in COND
         for child in node.named_children:
             walk(child, nested)
 
@@ -634,7 +634,7 @@ def _cross(rel, source, index, own, scopes, modules):
         stmts = list(body.named_children) if body is not None else []
         fn_scope = _scope(stmts, own, init)
         attrs = []
-        for callee in _direct_calls(node, _bound(node, imports=False), attrs):
+        for callee in _direct_calls(node, bound(node, imports=False), attrs):
             spec = use(fn_scope, callee)
             target = None if not spec or spec[0] != "from" else _live(index, scopes, spec[1], spec[2])
             if target and (src, target) not in seen:

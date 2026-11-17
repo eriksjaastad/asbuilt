@@ -37,7 +37,7 @@ def _resolve(name, scope):
     return spec[1] if spec[0] == "mod" else spec[1] + (spec[2],)
 
 
-def _path(node, scope):
+def resolve(node, scope):
     """The module path of a name or attribute chain, or ('builtin', name) for open and input."""
     if node is None:
         return None
@@ -86,14 +86,14 @@ def _open_writes(call, first=False):
     return len(positional) > slot and positional[slot].type == "string" and _write_mode(positional[slot].text.decode())
 
 
-def _layer(fn, scope):
+def layer(fn, scope):
     """scope plus this function's parameters and the imports and defs in its body."""
-    from asbuilt.built import _one_name, _scope
+    from asbuilt.built import _scope, one_name
 
     inner, params = dict(scope), set()
     head = fn.child_by_field_name("parameters")
     for child in head.named_children if head is not None else ():
-        name = _one_name(child)
+        name = one_name(child)
         if name is not None:
             params.add(name)
             inner[name] = None
@@ -134,7 +134,7 @@ def _on_call(node, scope, add):
     # Path.open("w") takes the mode first. gzip.open(path, "wt") takes it second.
     if attrs and attrs[-1] == "open" and _open_writes(node, first=not _imported(fun, scope)):
         add("writes")
-    path = _path(fun, scope)
+    path = resolve(fun, scope)
     if path is None:
         return
     if path[0] == "builtin":
@@ -154,19 +154,9 @@ def _on_call(node, scope, add):
 
 
 def _on_name(node, scope, add):
-    path = _path(node, scope)
+    path = resolve(node, scope)
     if path is not None and path[0] != "builtin" and _env(path):
         add("env")
-
-
-def resolve(node, scope):
-    """The module path of a name or attribute, or ('builtin', name) for open and input."""
-    return _path(node, scope)
-
-
-def layer(fn, scope):
-    """scope plus this function's parameters and the imports and defs in its body."""
-    return _layer(fn, scope)
 
 
 def reads_env(path):
@@ -193,7 +183,7 @@ def of(node, module):
         if cur.type in ("import_statement", "import_from_statement"):
             return
         if cur.type == "function_definition":
-            inner = _layer(cur, scope)
+            inner = layer(cur, scope)
             body = cur.child_by_field_name("body")
             for child in body.children if body is not None else ():
                 visit(child, inner)

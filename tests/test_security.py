@@ -57,7 +57,7 @@ class SecurityTest(unittest.TestCase):
 
         whole = _notes("import os\ndef read():\n    return os.environ.items()\n", "read()")[0]
         self.assertNotIn("name", whole["fact"])
-        self.assertIn("os.environ.items()", whole["expert"])
+        self.assertIn("os.environ.items(...)", whole["expert"])
         self.assertIn("not a literal", whole["expert"])
         self.assertNotIn("HOME", whole["plain"] + whole["expert"])
 
@@ -147,12 +147,12 @@ class SecurityTest(unittest.TestCase):
         mapping = next(note for note in claude if note["fact"]["kind"] == "env")
         command = next(note for note in claude if note["fact"]["kind"] == "calls out")
         self.assertNotIn("name", mapping["fact"])
-        self.assertIn("os.environ.items()", mapping["expert"])
+        self.assertIn("os.environ.items(...)", mapping["expert"])
         self.assertNotIn("HOME", mapping["plain"] + mapping["expert"])
         self.assertEqual(command["fact"]["way"], "command")
         self.assertEqual(command["fact"]["timeout"], "passed")
         self.assertTrue(command["fact"]["caught"])
-        self.assertIn("subprocess.run", command["plain"])
+        self.assertIn("subprocess.run(...)", command["plain"])
         self.assertIn("inside try", command["expert"])
         for note in claude:
             self.assertIn(note["fact"]["at"], note["plain"])
@@ -191,6 +191,21 @@ class SecurityTest(unittest.TestCase):
         home = _notes("import requests\ndef go(body):\n    requests.post('http://127.0.0.1/x', data=body)\n", "go()")[0]
         self.assertNotIn("outside", home["plain"])
         self.assertIn("sends data", home["plain"])
+        for url in ("http://0.0.0.0:8000/x", "http://127.0.0.2/x", "http://10.1.2.3/x", "http://192.168.0.8/x", "http://[::1]/x"):
+            note = _notes(f"import requests\ndef go(body):\n    requests.post({url!r}, json=body)\n", "go()")[0]
+            self.assertNotIn("outside", note["plain"], url)
+            self.assertIn("sends data", note["plain"], url)
+        public = _notes("import requests\ndef go(body):\n    requests.post('https://example.com/x', json=body)\n", "go()")[0]
+        self.assertIn("sends your data to an outside service", public["plain"])
+
+        built = _notes("from urllib.request import Request\ndef go(body):\n    Request('https://example.com/x', data=body)\n", "go()")[0]
+        self.assertIn("sends your data to an outside service", built["plain"])
+        payload = _notes("import requests\ndef go(url, payload):\n    requests.post(url, payload)\n", "go()")[0]
+        self.assertIn("sends data", payload["plain"])
+        self.assertNotIn("outside", payload["plain"])
+        files = _notes("import requests\ndef go(url, fh):\n    requests.post(url, files=fh)\n", "go()")[0]
+        self.assertIn("sends data", files["plain"])
+        self.assertNotIn("outside", files["plain"])
 
     def test_env_verbs_keep_the_name_and_leave_other_argument_values_out(self):
         removed = _notes("import os\ndef go():\n    del os.environ['X']\n", "go()")[0]
