@@ -4,62 +4,23 @@ A docstring is not copied. These sentences do not replace a security sentence:
 the page shows the security lines after them, expert included. No model is called.
 """
 
-import ast
-import ipaddress
-from urllib.parse import urlparse
+import json
 
-from asbuilt.built import one_name, pattern
+from asbuilt.built import one_name
 from asbuilt.marks import layer, reaches_out, reads_env, resolve
-from asbuilt.security import facts as security_facts
-
-_FAIL = (
-    ("missing", "the key is missing"),
-    ("refused", "the call is refused"),
-    ("unreachable", "the site can't be reached"),
-    ("unreadable", "the reply has no readable text"),
-    ("start", "the command cannot start"),
-    ("finish", "it does not finish"),
-    ("failed", "the command fails"),
-    ("signed", "it is not signed in"),
-    ("empty", "it returns no output"),
+from asbuilt.security import (
+    assigned,
+    call_arguments,
+    call_way,
+    facts as security_facts,
+    host_name,
+    local_host,
+    sent_body,
+    string_literal,
 )
-_SEND = ("data", "json", "body", "content", "files", "payload")
 
-
-def _host_of(text):
-    parsed = urlparse(text) if isinstance(text, str) else None
-    if parsed is not None and parsed.scheme in ("http", "https") and parsed.hostname:
-        return parsed.hostname
-    return None
-
-
-def _public(host):
-    if not host or host.lower().rstrip(".") == "localhost":
-        return False
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return True
-    return not (addr.is_loopback or addr.is_unspecified or addr.is_private)
-
-
-def _literal(node):
-    if node is None or node.type != "string":
-        return None
-    try:
-        value = ast.literal_eval(node.text.decode())
-    except (SyntaxError, ValueError):
-        return None
-    return value if isinstance(value, str) and value else None
-
-
-def _string_bits(node):
-    lit = _literal(node)
-    if lit:
-        return lit
-    if node is not None and node.type == "string":
-        return "".join(c.text.decode() for c in node.children if c.type == "string_content")
-    return ""
+_NESTED = ("function_definition", "class_definition", "lambda")
+_LISTS = ("list", "tuple", "list_pattern", "pattern_list", "expression_list")
 
 
 def _module(node):
@@ -67,68 +28,6 @@ def _module(node):
     while root.parent is not None:
         root = root.parent
     return root
-
-
-def _assign(node):
-    cur = node
-    if cur.type == "expression_statement":
-        cur = next(iter(cur.named_children), cur)
-    if cur.type != "assignment" or len(cur.named_children) < 2:
-        return None
-    return cur.named_children[0], cur.named_children[-1]
-
-
-def _ints(node):
-    found = {}
-    for child in _module(node).named_children:
-        pair = _assign(child)
-        if pair is None:
-            continue
-        names, value = pattern(pair[0]), pair[1]
-        if len(names) == 1 and value.type == "integer" and names[0] not in found:
-            found[names[0]] = int(value.text.decode())
-        elif names:
-            found[names[0]] = None
-    return {name: number for name, number in found.items() if isinstance(number, int)}
-
-
-def _groups(node):
-    """Names assigned once to a tuple or list of strings. A second binding drops the name."""
-    found = {}
-    for child in _module(node).named_children:
-        pair = _assign(child)
-        if pair is None:
-            continue
-        names, value = pattern(pair[0]), pair[1]
-        texts = [_literal(c) for c in value.named_children] if value.type in ("tuple", "list") else []
-        if len(names) == 1 and texts and all(texts) and names[0] not in found:
-            found[names[0]] = True
-        elif names:
-            found[names[0]] = None
-    return {name for name, ok in found.items() if ok}
-
-
-def _default(node, words, numbers):
-    if node.type not in ("default_parameter", "typed_default_parameter"):
-        return None
-    value = node.named_children[-1]
-    if value.type == "integer":
-        return int(value.text.decode())
-    if value.type == "identifier":
-        name = value.text.decode()
-        return numbers.get(name, words.get(name))
-    bits = []
-
-    def walk(cur):
-        lit = _literal(cur)
-        if lit:
-            bits.append(lit)
-            return
-        for child in cur.named_children:
-            walk(child)
-
-    walk(value)
-    return bits[0] if len(bits) == 1 else None
 
 
 def _methods(node):
@@ -147,12 +46,11 @@ def _doc(stmt):
     return child is not None and child.type == "string"
 
 
-def _self_attr(node):
-    if node is None or node.type != "attribute":
-        return None
-    obj, attr = node.child_by_field_name("object"), node.child_by_field_name("attribute")
-    if obj is not None and obj.type == "identifier" and obj.text.decode() == "self" and attr is not None:
-        return attr.text.decode()
+def _block(node):
+    for field in ("consequence", "body"):
+        found = node.child_by_field_name(field)
+        if found is not None:
+            return found
     return None
 
 
@@ -169,22 +67,57 @@ def _callee(node):
     return None
 
 
-def _is_exc(name):
-    return bool(name) and (name == "Exception" or name.endswith(("Error", "Exception", "Failed")))
+def _self_attr(node):
+    """The attribute on self, including a starred `*self.name` in a list."""
+    if node is None:
+        return None
+    if node.type == "list_splat":
+        return _self_attr(next(iter(node.named_children), None))
+    if node.type != "attribute":
+        return None
+    obj, attr = node.child_by_field_name("object"), node.child_by_field_name("attribute")
+    if attr is None:
+        return None
+    if obj is not None and obj.type == "list_splat":
+        obj = next(iter(obj.named_children), None)
+    if obj is not None and obj.type == "identifier" and obj.text.decode() == "self":
+        return attr.text.decode()
+    return None
 
 
 def _items(node):
-    if node is not None and node.type in ("pattern_list", "expression_list", "tuple", "list"):
+    if node is not None and node.type in _LISTS:
         return list(node.named_children)
     return [node]
 
 
-def _block(node):
-    for field in ("consequence", "body"):
-        found = node.child_by_field_name(field)
-        if found is not None:
-            return found
-    return None
+def _jsonish(text):
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(value, (dict, list))
+
+
+def _exc(name):
+    return bool(name) and (name == "Exception" or name.endswith(("Error", "Exception", "Failed")))
+
+
+def _or(items):
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} or {items[1]}"
+    return ", ".join(items[:-1]) + ", or " + items[-1]
+
+
+def _walk(node, visit):
+    """Visit this statement and what it contains, not a nested function or class."""
+    if node.type in _NESTED:
+        return
+    visit(node)
+    for child in node.named_children:
+        _walk(child, visit)
 
 
 def _names(node, assigns, depth=0):
@@ -201,185 +134,270 @@ def _names(node, assigns, depth=0):
     return found
 
 
-def _bound_string(node, words):
-    if node is None:
+def _env_name(node, scope, words):
+    """The one environment name this expression reads, or None."""
+    found = []
+
+    def walk(cur):
+        if cur.type == "call" and reads_env(resolve(next(iter(cur.named_children), None), scope)):
+            positional, named, _splat = call_arguments(cur)
+            arg = positional[0] if positional else named.get("key")
+            name = string_literal(arg) if arg is not None else None
+            if name is None and arg is not None and arg.type == "identifier":
+                value = words.get(arg.text.decode())
+                name = value if isinstance(value, str) else None
+            if name:
+                found.append(name)
+        for child in cur.named_children:
+            walk(child)
+
+    if node is not None:
+        walk(node)
+    return found[0] if len(set(found)) == 1 else None
+
+
+def _raises(node):
+    found = False
+
+    def visit(cur):
+        nonlocal found
+        if cur.type == "raise_statement":
+            found = True
+
+    if node is not None:
+        _walk(node, visit)
+    return found
+
+
+def _param_default(node, bound):
+    if node.type not in ("default_parameter", "typed_default_parameter"):
         return None
-    if node.type == "string":
-        return _literal(node)
-    if node.type == "identifier":
-        value = words.get(node.text.decode())
-        return value if isinstance(value, str) else None
+    value = node.named_children[-1]
+    if value.type == "integer":
+        return int(value.text.decode())
+    if value.type == "identifier":
+        return bound.get(value.text.decode())
+    if value.type == "string":
+        return string_literal(value)
+    if value.type in _LISTS and value.named_children:
+        return string_literal(value.named_children[0])
     return None
 
 
-def _env_name(node, words):
-    """The environment name this expression reads, when it is a string or one string constant."""
-    if node is None:
-        return None
-    if node.type == "call":
-        args = node.child_by_field_name("arguments")
-        kids = list(args.named_children) if args is not None else []
-        if kids:
-            return _bound_string(kids[0], words)
-    if node.type == "subscript" and "environ" in node.text.decode():
-        kids = list(node.named_children)
-        if len(kids) >= 2:
-            return _bound_string(kids[-1], words)
-    for child in node.named_children:
-        found = _env_name(child, words)
-        if found:
-            return found
-    return None
-
-
-def _from_env(node):
-    return node is not None and ("environ" in node.text.decode() or "getenv" in node.text.decode())
-
-
-def _from_default(value, defaults):
+def _from_param(value, defaults):
     if value is None:
         return None
     if value.type == "identifier" and value.text.decode() in defaults:
         return defaults[value.text.decode()]
     if value.type == "call" and _callee(value) in ("list", "tuple"):
-        args = value.child_by_field_name("arguments")
-        kids = [c for c in (args.named_children if args is not None else ()) if c.type == "identifier"]
-        if len(kids) == 1 and kids[0].text.decode() in defaults:
-            return defaults[kids[0].text.decode()]
+        positional, _named, _splat = call_arguments(value)
+        if len(positional) == 1 and positional[0].type == "identifier":
+            return defaults.get(positional[0].text.decode())
     return None
 
 
-def _content_key(node):
-    if node is None or node.type != "subscript":
+def _keeps(node, scope, groups):
+    """True when this dict reads the environment and keeps only a fixed set of names."""
+    if node is None or node.type != "dictionary_comprehension":
         return False
-    kids = list(node.named_children)
-    return len(kids) >= 2 and _string_bits(kids[-1]) == "content"
-
-
-def _fixed_filter(node, groups):
-    if node is None or "environ.items" not in node.text.decode():
-        return False
+    reads = fixed = False
 
     def walk(cur):
-        if cur.type == "comparison_operator" and " in " in f" {cur.text.decode()} ":
+        nonlocal reads, fixed
+        if cur.type == "call" and reads_env(resolve(next(iter(cur.named_children), None), scope)):
+            reads = True
+        if cur.type == "comparison_operator":
             for child in cur.named_children:
-                if child.type == "identifier" and child.text.decode() in groups:
-                    return True
-                if child.type in ("tuple", "list") and all(_literal(c) for c in child.named_children):
-                    return True
-        return any(walk(c) for c in cur.named_children)
+                if child.type == "identifier" and isinstance(groups.get(child.text.decode()), tuple):
+                    fixed = True
+                if child.type in ("tuple", "list") and child.named_children and all(string_literal(c) for c in child.named_children):
+                    fixed = True
+        for child in cur.named_children:
+            walk(child)
 
-    return walk(node)
-
-
-def _is_command(path):
-    return bool(path) and (path[0] == "subprocess" or path[:2] == ("os", "system"))
+    walk(node)
+    return reads and fixed
 
 
-def _contains_network(expr, scope):
+def _exec(node, assigns, defaults, attrs, depth=0):
+    """A literal command name this argument holds, or None."""
+    if node is None or depth > 4:
+        return None
+    if node.type == "string":
+        return string_literal(node)
+    if node.type == "list_splat":
+        return _exec(next(iter(node.named_children), None), assigns, defaults, attrs, depth + 1)
+    if node.type in _LISTS and node.named_children:
+        return _exec(node.named_children[0], assigns, defaults, attrs, depth + 1)
+    if node.type == "identifier":
+        name = node.text.decode()
+        if name in assigns:
+            return _exec(assigns[name], assigns, defaults, attrs, depth + 1)
+        value = defaults.get(name)
+        return value if isinstance(value, str) else None
+    attr = _self_attr(node)
+    if attr and isinstance(attrs.get(attr), str):
+        return attrs[attr]
+    if node.type == "call" and _callee(node) in ("list", "tuple"):
+        positional, _named, _splat = call_arguments(node)
+        if positional:
+            return _exec(positional[0], assigns, defaults, attrs, depth + 1)
+    if node.type == "parenthesized_expression" and node.named_children:
+        return _exec(node.named_children[0], assigns, defaults, attrs, depth + 1)
+    return None
+
+
+def _network(expr, scope):
+    found = False
+
+    def walk(cur):
+        nonlocal found
+        if cur.type == "call":
+            path = resolve(next(iter(cur.named_children), None), scope)
+            if reaches_out(path) and call_way(path) in ("send", "connect"):
+                found = True
+        for child in cur.named_children:
+            walk(child)
+
+    walk(expr)
+    return found
+
+
+def _kind(expr, scope):
+    """What one return expression is, or other when this note should not name it."""
+    if expr is None or expr.type == "none":
+        return ("none", None)
+    if expr.type == "string":
+        text = string_literal(expr)
+        if not text:
+            return ("other", None)
+        return ("json", None) if _jsonish(text) else ("text", text)
+    if expr.type == "call" and _exc(_callee(expr)):
+        return ("error", None)
+    if expr.type == "call" and _network(expr, scope):
+        return ("network", None)
+    return ("other", None)
+
+
+def _inside(expr, facts):
+    """True when a send or connect fact sits inside this return expression."""
     if expr is None:
         return False
+    for fact in facts:
+        if fact.get("kind") == "calls out" and fact.get("way") in ("send", "connect"):
+            if expr.start_byte <= fact.get("start", -1) < expr.end_byte:
+                return True
+    return False
+
+
+def _return_claim(fn, scope, facts):
+    """The return every path in this function shares. None when they disagree or it yields."""
+    body = _block(fn)
+    exprs, yielded = [], False
+
+    def visit(cur):
+        nonlocal yielded
+        if cur.type == "yield":
+            yielded = True
+        if cur.type == "return_statement":
+            exprs.append(next(iter(cur.named_children), None))
+
+    for stmt in body.named_children if body is not None else ():
+        if _doc(stmt):
+            continue
+        _walk(stmt, visit)
+    if yielded:
+        return ("yield", None)
+    if not exprs:
+        return None
+    kinds = []
+    for expr in exprs:
+        kind = _kind(expr, scope)
+        if kind[0] == "other" and expr is not None and expr.type == "call" and _inside(expr, facts):
+            kind = ("network", None)
+        kinds.append(kind)
+    if len(set(kinds)) != 1 or kinds[0][0] == "other":
+        return ("other", None)
+    return kinds[0]
+
+
+def _message(expr, words, local_strings):
+    """A plain string this raise carries, or None when the message is built up."""
+    if expr is None:
+        return None
+    if expr.type == "string":
+        return string_literal(expr)
+    if expr.type == "identifier":
+        name = expr.text.decode()
+        if isinstance(local_strings.get(name), str):
+            return local_strings[name]
+        value = words.get(name)
+        return value if isinstance(value, str) else None
     if expr.type == "call":
-        fun = next(iter(expr.named_children), None)
-        path = resolve(fun, scope) if fun is not None else None
-        if reaches_out(path) and not _is_command(path):
-            return True
-    return any(_contains_network(child, scope) for child in expr.named_children)
+        positional, _named, _splat = call_arguments(expr)
+        if positional:
+            return _message(positional[0], words, local_strings)
+    return None
 
 
-def _args(node):
-    named, positional = {}, []
-    args = node.child_by_field_name("arguments")
-    for child in args.named_children if args is not None else ():
-        if child.type == "keyword_argument":
-            key, val = child.child_by_field_name("name"), child.child_by_field_name("value")
-            if key is not None and val is not None:
-                named[key.text.decode()] = val
-        elif child.type not in ("list_splat", "dictionary_splat"):
-            positional.append(child)
-    return named, positional
+def _bearer(node, assigns, scope, words):
+    found = []
+    if node.type == "string" and "Bearer" in node.text.decode():
+        for child in node.named_children:
+            if child.type != "interpolation":
+                continue
+            ident = next((c for c in child.named_children if c.type == "identifier"), None)
+            source = assigns.get(ident.text.decode()) if ident is not None else child
+            name = _env_name(source if source is not None else child, scope, words)
+            if name:
+                found.append(name)
+    for child in node.named_children:
+        found.extend(_bearer(child, assigns, scope, words))
+    return found
 
 
 class _Story:
     def __init__(self, name):
         self.name = name
         self.exception = False
-        self.bearer = None
         self.sends = False
-        self.sends_prompt = False
         self.sends_input = False
         self.host = None
-        self.network = False
-        self.runs = False
         self.command = None
         self.keeps_env = False
         self.timeout = None
         self.timeout_default = False
-        self.failures = []
-        self.choices = []
-        self.otherwise = None
         self.given = False
         self.given_at = None
         self.skipped_env = None
-        self.returns_reply = False
-        self.returns_output = False
-        self.returns_network = False
-        self.returns_none = False
-        self.literal = None
-        self.error_from = None
-
-    def mark(self, tag):
-        if tag not in self.failures:
-            self.failures.append(tag)
-
-
-def _tag(story, text):
-    if "nothing it could read" in text:
-        story.mark("unreadable")
-    elif "replied with nothing" in text:
-        story.mark("empty")
-    if "refused" in text:
-        story.mark("refused")
-    if "could not be reached" in text or "cannot be reached" in text:
-        story.mark("unreachable")
-    if "not signed in" in text:
-        story.mark("signed")
-    if "was not found" in text or "cannot be started" in text:
-        story.mark("start")
-    if "gave no reply" in text:
-        story.mark("finish")
+        self.choices = []
+        self.otherwise = None
+        self.raises = False
+        self.messages = []
+        self.missing = []
+        self.keys = set()
+        self.bearer = None
+        self.timeout_attrs = set()
+        self.returns = None
 
 
-def _chunks(node, words):
-    found = []
-    if node.type == "identifier" and isinstance(words.get(node.text.decode()), str):
-        found.append(words[node.text.decode()])
-    bit = _string_bits(node)
-    if bit:
-        found.append(bit)
-    for child in node.named_children:
-        found.extend(_chunks(child, words))
-    return found
-
-
-def _or(items):
-    if len(items) == 1:
-        return items[0]
-    if len(items) == 2:
-        return f"{items[0]} or {items[1]}"
-    return ", ".join(items[:-1]) + ", or " + items[-1]
-
-
-def _fail(story):
-    bits = [phrase for tag, phrase in _FAIL if tag in story.failures]
-    if not bits:
+def _return_line(story):
+    claim = story.returns
+    if not claim:
         return None
-    line = f"If {_or(bits)}, it stops with an error"
-    if story.returns_reply and not story.runs:
-        return line + "; otherwise it returns the text from the reply."
-    if story.returns_output and not story.runs and not story.command:
-        return line + "; otherwise it returns the command's output."
-    return line + "."
+    kind, detail = claim
+    name = story.name
+    if kind == "none":
+        return f"{name} returns nothing."
+    if kind == "text":
+        return f"{name} returns the text {detail}."
+    if kind == "json":
+        return f"{name} returns a fixed text."
+    if kind == "error":
+        return f"{name} returns an error."
+    if kind == "network":
+        return f"{name} returns whatever the network request returns."
+    return None
 
 
 def _choice_line(story):
@@ -388,11 +406,8 @@ def _choice_line(story):
     same = len({item[2] for item in story.choices}) == 1 if story.choices else False
     bits = []
     for index, (lit, callee, env) in enumerate(story.choices):
-        if index == 0 or not same:
-            bits.append(f"{callee} when {env} is {lit}")
-        else:
-            bits.append(f"{callee} when it is {lit}")
-    head = "Otherwise it calls" if story.given else "It calls"
+        bits.append(f"{callee} when {env} is {lit}" if index == 0 or not same else f"{callee} when it is {lit}")
+    head = "Otherwise it calls" if story.given else f"{story.name} calls"
     if bits and story.otherwise:
         return f"{head} {', '.join(bits)}, and {story.otherwise} otherwise."
     if bits:
@@ -402,66 +417,61 @@ def _choice_line(story):
     return None
 
 
+def _failure(story):
+    if not story.raises:
+        return None
+    guards = []
+    for name in story.missing:
+        guards.append("the key is missing" if name in story.keys else f"the environment value {name} is missing")
+    quoted = [f'"{text}"' for text in story.messages]
+    name = story.name
+    if guards and quoted:
+        return f"If {_or(guards)}, {name} stops with an error, and it stops with an error that says {_or(quoted)}."
+    if guards:
+        return f"If {_or(guards)}, {name} stops with an error."
+    if quoted:
+        return f"{name} stops with an error that says {_or(quoted)}."
+    return f"{name} stops with an error."
+
+
 def _sentences(story):
-    out = []
-
-    def add(text):
-        if text and len(out) < 3:
-            out.append(text)
-
-    if story.given or story.choices or story.otherwise:
-        if story.given:
-            skip = f" and does not read {story.skipped_env}" if story.skipped_env else ""
-            add(f"If {story.name} is given something to call, it returns whatever that returns{skip}.")
-        add(_choice_line(story))
-        return out
-    if story.exception and not (story.network or story.runs or story.failures or story.literal or story.returns_reply):
-        return [f"{story.name} is an exception."]
-    if isinstance(story.literal, str) and not (story.network or story.runs or story.failures or story.returns_reply):
-        return [f"{story.name} returns the text {story.literal}."]
-    if story.returns_none and not (
-        story.network or story.runs or story.failures or story.returns_reply or story.returns_output or story.literal
-    ):
-        return [f"{story.name} returns nothing."]
-    if story.sends and story.host and _public(story.host):
-        what = "a prompt" if story.sends_prompt else "what it was given" if story.sends_input else "data"
-        key = f", using a key read from {story.bearer}" if story.bearer else ""
-        add(f"{story.name} sends {what} to {story.host} over the internet{key}.")
-    elif story.sends and story.host and not _public(story.host):
-        what = "a prompt" if story.sends_prompt else "what it was given" if story.sends_input else "data"
-        add(f"{story.name} sends {what} to {story.host}.")
-    elif story.runs:
-        shown = story.command or "a command"
-        line = f"{story.name} runs the command {shown}" if story.command else f"{story.name} runs a command"
-        if story.keeps_env and story.returns_output:
-            line += ", keeps only a fixed set of environment names, and returns the command's output"
-        elif story.keeps_env:
-            line += " and keeps only a fixed set of environment names"
-        elif story.returns_output:
-            line += " and returns the command's output"
-        add(line + ".")
-    elif story.returns_network:
-        add(f"{story.name} returns whatever the network request returns.")
-    elif story.error_from:
-        add(f"{story.name} returns an error made from {story.error_from}.")
+    pending = []
+    if story.given:
+        skip = f" and does not read {story.skipped_env}" if story.skipped_env else ""
+        pending.append(f"If {story.name} is given something to call, it returns whatever that returns{skip}.")
+    choice = _choice_line(story)
+    if choice:
+        pending.append(choice)
+    if not story.given and not story.choices and not story.otherwise:
+        if story.sends and story.host:
+            what = "what it was given" if story.sends_input else "data"
+            net = "" if local_host(story.host) else " over the internet"
+            key = f", using a key read from {story.bearer}" if story.bearer else ""
+            pending.append(f"{story.name} sends {what} to {story.host}{net}{key}.")
+        elif isinstance(story.command, str):
+            line = f"{story.name} runs the command {story.command}"
+            if story.keeps_env:
+                line += " and keeps only a fixed set of environment names"
+            pending.append(line + ".")
+        elif story.exception and not story.returns:
+            pending.append(f"{story.name} is an exception.")
     if isinstance(story.timeout, int):
-        add(
-            f"By default it waits up to {story.timeout} seconds."
-            if story.timeout_default
-            else f"It waits up to {story.timeout} seconds."
-        )
-    add(_fail(story))
-    return out
+        if story.timeout_default:
+            pending.append(f"By default {story.name} waits up to {story.timeout} seconds.")
+        else:
+            pending.append(f"{story.name} waits up to {story.timeout} seconds.")
+    failed = _failure(story)
+    if failed:
+        pending.append(failed)
+    if story.returns and not story.given and not story.choices and not story.otherwise:
+        pending.append(_return_line(story))
+    return [line for line in pending if line][:3]
 
 
 def _apply_facts(story, node, scope, words):
     for fact in security_facts(node, scope, words):
         if fact["kind"] != "calls out":
             continue
-        if fact.get("way") == "command":
-            story.runs = True
-        if fact.get("way") in ("send", "connect"):
-            story.network = True
         if fact.get("sends"):
             story.sends = True
         host = fact.get("host")
@@ -476,29 +486,25 @@ def _returned_call(block):
         expr = next(iter(stmt.named_children), None)
         if expr is not None and expr.type == "call":
             fun = next(iter(expr.named_children), None)
-            if fun is not None and fun.type == "call":
-                return _callee(fun)
-            return _callee(expr)
+            return _callee(fun if fun is not None and fun.type == "call" else expr)
     return None
 
 
-def _read_if(node, story, params, assigns, words):
+def _read_if(node, story, params, assigns, scope, words):
     cond = node.child_by_field_name("condition")
     body = _block(node)
     if cond is None:
         return
     text = cond.text.decode()
-    if cond.type == "not_operator":
+    if cond.type == "not_operator" and body is not None and _raises(body):
         ident = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
-        if ident and _from_env(assigns.get(ident)):
-            story.mark("missing")
-    if "returncode" in text and body is not None and "raise" in body.text.decode():
-        story.mark("failed")
-    if "stdout" in text and body is not None and "raise" in body.text.decode():
-        story.mark("empty")
+        source = assigns.get(ident) if ident else next(iter(cond.named_children), None)
+        name = _env_name(source, scope, words)
+        if name and name not in story.missing:
+            story.missing.append(name)
     if cond.type == "comparison_operator" and "is not" in text and "None" in text:
-        name = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
-        if name in params and _returned_call(body) == name:
+        ident = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
+        if ident in params and _returned_call(body) == ident:
             story.given = True
             story.given_at = (body.start_byte, body.end_byte) if body is not None else None
     if cond.type != "comparison_operator" or "is not" in text:
@@ -506,159 +512,64 @@ def _read_if(node, story, params, assigns, words):
     kids = list(cond.named_children)
     if len(kids) < 2 or kids[0].type != "identifier" or kids[-1].type != "string":
         return
-    lit = _literal(kids[-1])
-    env = _env_name(assigns.get(kids[0].text.decode()), words)
+    lit = string_literal(kids[-1])
+    env = _env_name(assigns.get(kids[0].text.decode()), scope, words)
     call = _returned_call(body)
-    if lit and env and call and call not in params and not _is_exc(call):
+    if lit and env and call and call not in params and not _exc(call):
         story.choices.append((lit, call, env))
 
 
-def _last_output_line(expr, assigns):
-    """True when this call takes the last line of stdout or stderr."""
-
-    def walk(cur):
-        if cur.type == "attribute":
-            attr = cur.child_by_field_name("attribute")
-            obj = cur.child_by_field_name("object")
-            if attr is not None and attr.text.decode() == "splitlines" and obj is not None:
-                source = obj.text.decode() if obj.type != "identifier" else None
-                if obj.type == "identifier":
-                    earlier = assigns.get(obj.text.decode())
-                    source = earlier.text.decode() if earlier is not None else ""
-                if source and ("stdout" in source or "stderr" in source):
-                    return True
-        return any(walk(child) for child in cur.named_children)
-
-    return walk(expr)
-
-
-def _read_return(node, story, assigns, params, scope, in_if):
-    expr = next(iter(node.named_children), None)
-    if expr is None or expr.type == "none":
-        story.returns_none = True
-        return
-    if expr.type == "string":
-        lit = _literal(expr)
-        story.literal = lit if story.literal in (None, lit) else False
-        return
-    if expr.type == "attribute" and _self_attr(expr) is None:
-        attr = expr.child_by_field_name("attribute")
-        if attr is not None and attr.text.decode() == "stdout":
-            story.returns_output = True
-        return
-    if expr.type == "identifier" and _content_key(assigns.get(expr.text.decode())):
-        story.returns_reply = True
-        return
-    if _content_key(expr):
-        story.returns_reply = True
-        return
-    if expr.type != "call":
-        return
-    fun = next(iter(expr.named_children), None)
-    name = _callee(fun if fun is not None and fun.type == "call" else expr)
-    if _is_exc(name):
-        raw = expr.text.decode()
-        bits = []
-        if "returncode" in raw:
-            bits.append("the command's exit code")
-        if _last_output_line(expr, assigns):
-            bits.append("the last line of its output")
-        if bits:
-            story.error_from = " and ".join(bits)
-        return
-    if name in params:
-        return
-    if story.choices and name and not in_if:
-        story.otherwise = name
-        return
-    if _contains_network(expr, scope):
-        story.returns_network = True
-        story.network = True
-
-
-def _read_call(node, story, params, assigns, words, groups, fixed_env, attrs, number_of, scope):
-    fun = next(iter(node.named_children), None)
-    path = resolve(fun, scope)
-    named, positional = _args(node)
-    if reads_env(path):
-        span = story.given_at
-        outside = span is None or not (span[0] <= node.start_byte and node.end_byte <= span[1])
-        if story.given and outside:
-            story.skipped_env = _env_name(node, words) or story.skipped_env
-    sent = None
-    for key in _SEND:
-        if key in named:
-            sent = named[key]
-            story.sends = True
-    if path and path[-1] in ("post", "put", "patch", "Request") and len(positional) > 1 and sent is None:
-        sent = positional[1]
-        story.sends = True
-    if sent is not None:
-        names = _names(sent, assigns)
-        if "prompt" in names and "prompt" in params:
-            story.sends_prompt = True
-        elif names & params:
-            story.sends_input = True
-    url = named.get("url") or (positional[0] if positional else None)
-    host = None
-    if url is not None and url.type == "string":
-        host = _host_of(_literal(url))
-    elif url is not None and url.type == "identifier":
-        host = _host_of(words.get(url.text.decode()))
-    if host:
-        story.host = host
-    if reaches_out(path) or (path and path[-1] in ("Request", "urlopen", "open")):
-        story.network = True
-    if _is_command(path):
-        story.runs = True
-        if "command" in _names(node, assigns) and isinstance(attrs.get("command"), str):
-            story.command = attrs["command"]
-        env = named.get("env")
-        if env is not None and (
-            (env.type == "identifier" and env.text.decode() in fixed_env) or _fixed_filter(env, groups)
-        ):
-            story.keeps_env = True
-    if "timeout" in named:
-        number_of(named["timeout"])
-    for value in positional:
-        if _self_attr(value) == "timeout" or (value.type == "identifier" and value.text.decode() == "timeout"):
-            number_of(value)
-
-
-def _function(fn, scope, words, numbers, groups, story, attrs):
+def _function(fn, scope, words, bound, story, attrs):
     head = fn.child_by_field_name("parameters")
     defaults, params = {}, set()
     for child in head.named_children if head is not None else ():
         name = one_name(child)
         if name and name != "self":
             params.add(name)
-            defaults[name] = _default(child, words, numbers)
-    assigns, local, fixed_env = {}, {}, set()
+            defaults[name] = _param_default(child, bound)
+    assigns, local_strings, fixed_env = {}, {}, set()
+    timeout_locals = {}
+    groups = {name: value for name, value in bound.items() if isinstance(value, tuple)}
 
-    def number_of(expr):
+    def timeout_of(expr):
         if expr is None:
-            return
-        found, defaulted = None, False
+            return None
         if expr.type == "integer":
-            found = int(expr.text.decode())
-        elif expr.type == "identifier":
+            try:
+                return int(expr.text.decode(), 0), False
+            except ValueError:
+                return None
+        if expr.type == "identifier":
             name = expr.text.decode()
             if isinstance(defaults.get(name), int):
-                found, defaulted = defaults[name], True
-            elif name in local:
-                found, defaulted = local[name]
-            elif isinstance(numbers.get(name), int):
-                found = numbers[name]
-        else:
-            attr = _self_attr(expr)
-            if attr and isinstance(attrs.get(attr), int):
-                found, defaulted = attrs[attr], True
-        if isinstance(found, int):
-            story.timeout = found
-            story.timeout_default = defaulted
+                return defaults[name], True
+            if name in timeout_locals and isinstance(attrs.get(timeout_locals[name]), int):
+                return attrs[timeout_locals[name]], True
+            if isinstance(bound.get(name), int):
+                return bound[name], False
+        attr = _self_attr(expr)
+        if attr and isinstance(attrs.get(attr), int):
+            return attrs[attr], True
+        return None
+
+    def from_timeout(expr):
+        if expr is None:
+            return False
+        if expr.type == "identifier" and expr.text.decode() == "timeout" and isinstance(defaults.get("timeout"), int):
+            return True
+        if expr.type == "identifier" and expr.text.decode() in timeout_locals:
+            return True
+        attr = _self_attr(expr)
+        return bool(attr and attr in story.timeout_attrs)
+
+    def use_timeout(expr, keyword):
+        if keyword or from_timeout(expr):
+            found = timeout_of(expr)
+            if found:
+                story.timeout, story.timeout_default = found
 
     def visit(cur, in_if=False):
-        if cur.type in ("function_definition", "class_definition", "lambda"):
+        if cur.type in _NESTED:
             return
         if cur.type == "assignment":
             kids = list(cur.named_children)
@@ -667,33 +578,80 @@ def _function(fn, scope, words, numbers, groups, story, attrs):
                     if target is None or value is None:
                         continue
                     if target.type == "identifier":
-                        assigns[target.text.decode()] = value
+                        name = target.text.decode()
+                        assigns[name] = value
+                        text = string_literal(value)
+                        if text:
+                            local_strings[name] = text
+                        else:
+                            local_strings.pop(name, None)
+                        if _keeps(value, scope, groups):
+                            fixed_env.add(name)
                         attr = _self_attr(value)
-                        if attr and isinstance(attrs.get(attr), int):
-                            local[target.text.decode()] = (attrs[attr], True)
-                        if _fixed_filter(value, groups):
-                            fixed_env.add(target.text.decode())
-                    got = _from_default(value, defaults)
+                        if attr and attr in story.timeout_attrs:
+                            timeout_locals[name] = attr
+                    got = _from_param(value, defaults)
                     attr = _self_attr(target)
                     if attr and got is not None:
                         attrs[attr] = got
+                        if value.type == "identifier" and value.text.decode() == "timeout" and isinstance(got, int):
+                            story.timeout_attrs.add(attr)
         if cur.type == "if_statement":
-            _read_if(cur, story, params, assigns, words)
-        if cur.type in ("raise_statement", "except_clause"):
-            for chunk in _chunks(cur, words):
-                _tag(story, chunk)
-        if cur.type == "return_statement":
-            _read_return(cur, story, assigns, params, scope, in_if)
+            _read_if(cur, story, params, assigns, scope, words)
+        if cur.type == "raise_statement":
+            story.raises = True
+            text = _message(next(iter(cur.named_children), None), words, local_strings)
+            if text and text not in story.messages:
+                story.messages.append(text)
+        if cur.type == "return_statement" and story.choices and not in_if:
+            expr = next(iter(cur.named_children), None)
+            if expr is not None and expr.type == "call":
+                fun = next(iter(expr.named_children), None)
+                name = _callee(fun if fun is not None and fun.type == "call" else expr)
+                if name and name not in params and not _exc(name):
+                    story.otherwise = name
         if cur.type == "call":
-            _read_call(cur, story, params, assigns, words, groups, fixed_env, attrs, number_of, scope)
-        if cur.type == "string" and "Bearer" in cur.text.decode():
-            for child in cur.named_children:
-                if child.type != "interpolation":
-                    continue
-                ident = next((c for c in child.named_children if c.type == "identifier"), None)
-                source = assigns.get(ident.text.decode()) if ident is not None else None
-                if _from_env(source):
-                    story.bearer = _env_name(source, words) or story.bearer
+            fun = next(iter(cur.named_children), None)
+            path = resolve(fun, scope)
+            positional, named, _splat = call_arguments(cur)
+            if reads_env(path) and story.given and story.given_at is not None:
+                start, end = story.given_at
+                if not (start <= cur.start_byte and cur.end_byte <= end):
+                    story.skipped_env = _env_name(cur, scope, words) or story.skipped_env
+            body = sent_body(cur, path)
+            if body is not None:
+                story.sends = True
+                if _names(body, assigns) & params:
+                    story.sends_input = True
+            url = named.get("url") or (positional[0] if positional else None)
+            host = None
+            if url is not None and url.type == "string":
+                host = host_name(string_literal(url))
+            elif url is not None and url.type == "identifier":
+                value = bound.get(url.text.decode())
+                host = host_name(value) if isinstance(value, str) else None
+            if host:
+                story.host = host
+            if call_way(path) == "command" and positional:
+                command = _exec(positional[0], assigns, defaults, attrs)
+                if isinstance(command, str):
+                    story.command = command if story.command in (None, command) else False
+                env = named.get("env")
+                if env is not None and (
+                    (env.type == "identifier" and env.text.decode() in fixed_env) or _keeps(env, scope, groups)
+                ):
+                    story.keeps_env = True
+            if "timeout" in named:
+                use_timeout(named["timeout"], True)
+            for value in positional:
+                use_timeout(value, False)
+            for name in _bearer(cur, assigns, scope, words):
+                story.keys.add(name)
+                story.bearer = name
+        if cur.type == "string":
+            for name in _bearer(cur, assigns, scope, words):
+                story.keys.add(name)
+                story.bearer = name
         nested = in_if or cur.type == "if_statement"
         for child in cur.named_children:
             visit(child, nested)
@@ -703,6 +661,13 @@ def _function(fn, scope, words, numbers, groups, story, attrs):
         if _doc(stmt):
             continue
         visit(stmt)
+    claim = _return_claim(fn, scope, security_facts(fn, scope, words))
+    if claim is None:
+        return
+    if claim[0] in ("yield", "other") or (story.returns not in (None, False) and story.returns != claim):
+        story.returns = False
+    elif story.returns is not False:
+        story.returns = claim
 
 
 def for_box(node, scope, words):
@@ -715,8 +680,12 @@ def for_box(node, scope, words):
     if bases is not None and any(part.type == "identifier" and part.text.decode() == "Exception" for part in bases.children):
         story.exception = True
     words = words or {}
-    numbers, groups, attrs = _ints(node), _groups(node), {}
+    bound = assigned(list(_module(node).named_children))
+    bound.update(words)
+    attrs = {}
     _apply_facts(story, node, scope, words)
     for fn in _methods(node):
-        _function(fn, layer(fn, scope), words, numbers, groups, story, attrs)
+        _function(fn, layer(fn, scope), words, bound, story, attrs)
+    if story.returns is False:
+        story.returns = None
     return _sentences(story)

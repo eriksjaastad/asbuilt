@@ -496,10 +496,8 @@ test("opening a box shows the everyday note and both security sentences", { time
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto(await address);
     await page.getByText("read()", { exact: true }).click();
-    await page.locator("#code").waitFor();
-    assert.equal(await page.locator("#level-plain").count(), 0);
-    assert.equal(await page.locator("#level-working").count(), 0);
-    assert.equal(await page.locator("#level-expert").count(), 0);
+    await page.locator("#code .plain").waitFor();
+    assert.equal(await page.locator("#code .plain").innerText(), note);
     const panel = await page.locator("#code").innerText();
     assert.ok(panel.indexOf(note) < panel.indexOf("Plain"));
     assert.ok(panel.includes(plain));

@@ -30,8 +30,34 @@ def _literal(node):
     return value if isinstance(value, str) and value else None
 
 
-def constants(nodes):
-    """name -> string for one top-level assignment of a string. A second binding drops it."""
+def string_literal(node):
+    """The string this node writes, or None when it is not one plain string."""
+    return _literal(node)
+
+
+def _assigned_value(node):
+    """One string, one int, or a tuple of strings. None for anything mixed or repeated."""
+    lit = _literal(node)
+    if lit:
+        return lit
+    if node is not None and node.type == "integer":
+        try:
+            return int(node.text.decode())
+        except ValueError:
+            return None
+    if node is None or node.type not in ("tuple", "list"):
+        return None
+    texts = []
+    for child in node.named_children:
+        text = _literal(child)
+        if not text:
+            return None
+        texts.append(text)
+    return tuple(texts) if texts else None
+
+
+def assigned(nodes):
+    """name -> one top-level string, int, or tuple of strings. A second binding drops it."""
     found = {}
 
     def ban(names):
@@ -56,7 +82,7 @@ def constants(nodes):
         if kind == "assignment":
             names = pattern(next(iter(node.named_children), None))
             value = node.named_children[-1] if len(node.named_children) > 1 else None
-            lit = _literal(value) if not conditional and len(names) == 1 else None
+            lit = _assigned_value(value) if not conditional and len(names) == 1 else None
             if lit is None or names[0] in found:
                 ban(names)
             else:
@@ -76,7 +102,12 @@ def constants(nodes):
 
     for node in nodes:
         walk(node, False)
-    return {name: text for name, text in found.items() if isinstance(text, str)}
+    return {name: value for name, value in found.items() if value is not None}
+
+
+def constants(nodes):
+    """name -> string for one top-level assignment of a string. A second binding drops it."""
+    return {name: value for name, value in assigned(nodes).items() if isinstance(value, str)}
 
 
 def _fn_constants(fn, outer):
@@ -211,10 +242,9 @@ def _name_bit(node, found):
     return None
 
 
-def _host(node):
-    """The host of a literal http(s) URL, port removed. None when the URL is not written here."""
-    text = _literal(node)
-    if not text:
+def host_name(text):
+    """The host of an http(s) URL string, port removed. None when it is not one."""
+    if not isinstance(text, str) or not text:
         return None
     parsed = urlparse(text)
     if parsed.scheme in ("http", "https") and parsed.hostname:
@@ -222,7 +252,12 @@ def _host(node):
     return None
 
 
-def _local(host):
+def _host(node):
+    """The host of a literal http(s) URL, port removed. None when the URL is not written here."""
+    return host_name(_literal(node))
+
+
+def local_host(host):
     """True for localhost, a loopback address, 0.0.0.0, or a private address."""
     if not host:
         return False
@@ -233,6 +268,10 @@ def _local(host):
     except ValueError:
         return False
     return addr.is_loopback or addr.is_unspecified or addr.is_private
+
+
+def _local(host):
+    return local_host(host)
 
 
 def _module_call(fun, scope):
@@ -300,17 +339,35 @@ def _timeout(call, fun, path, scope):
     return "absent"
 
 
-def _sends(call, path):
-    """True when this call passes a body. A post's second positional is that body; files= is too."""
+def call_arguments(call):
+    """Positional nodes, keyword name -> node, and whether the call splats."""
+    return _args(call)
+
+
+def call_way(path):
+    """send, connect, command, or None. The same answer a calls-out fact stores."""
+    return None if not path else _way(path)
+
+
+def sent_body(call, path):
+    """The node passed as this call's body, or None when the call does not send one."""
+    if not path:
+        return None
     positional, named, _splat = _args(call)
     for key in ("data", "json", "body", "content", "files", "payload"):
         node = named.get(key)
         if node is not None and node.type != "none":
-            return True
+            return node
     last = path[-1]
     if last in _DATA or last in ("urlopen", "Request"):
-        return len(positional) > 1 and positional[1].type != "none"
-    return False
+        if len(positional) > 1 and positional[1].type != "none":
+            return positional[1]
+    return None
+
+
+def _sends(call, path):
+    """True when this call passes a body. A post's second positional is that body; files= is too."""
+    return sent_body(call, path) is not None
 
 
 def _way(path):
