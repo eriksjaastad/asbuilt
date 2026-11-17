@@ -424,10 +424,24 @@ _COND = {
 }
 
 
+def _client_spec(node, decided):
+    """("mod", module) when this assignment is one call of a marked constructor, else None."""
+    from asbuilt.marks import _path, client_module
+
+    kids = list(node.named_children)
+    if len(kids) < 2 or kids[-1].type != "call":
+        return None
+    fun = next(iter(kids[-1].named_children), None)
+    path = _path(fun, decided)
+    module = None if path is None else client_module(path)
+    return None if module is None else ("mod", module)
+
+
 def _scope(nodes, own, init):
     """name -> ("from", module, original) or ("mod", module), or None when it is not one import.
 
     None means the name is bound some other way too, or only inside if/try, so it gets no arrow.
+    One assignment of a marked constructor is that module; a second binding is not.
     Defs and classes count as bindings and are not entered."""
     decided = {}
 
@@ -459,7 +473,15 @@ def _scope(nodes, own, init):
             for name, mod in mods.items():
                 bind(name, None if conditional else ("mod", mod))
             return
-        if kind in ("assignment", "augmented_assignment", "named_expression"):
+        if kind == "assignment":
+            # One assignment of OpenAI(), Anthropic(), or requests.Session() is that module.
+            # A second binding, of any kind, is not. The same rule as an import.
+            names = list(_pattern(next(iter(node.named_children), None)))
+            spec = _client_spec(node, decided) if not conditional and len(names) == 1 else None
+            for name in names:
+                bind(name, spec)
+            return
+        if kind in ("augmented_assignment", "named_expression"):
             for name in _pattern(next(iter(node.named_children), None)):
                 bind(name, None)
             return

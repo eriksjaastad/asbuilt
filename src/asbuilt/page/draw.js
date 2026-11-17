@@ -38,10 +38,22 @@ export function draw(laid, gen) {
   });
   const text = (b, dy, size, s, fill = INK, x = b.x + b.w / 2, anchor = "middle") =>
     `<text x="${x}" y="${b.y + dy}" text-anchor="${anchor}" font-family="ui-monospace, Menlo, monospace" font-size="${size}" fill="${fill}" stroke="${PAPER}" stroke-width="4" stroke-linejoin="round" paint-order="stroke">${esc(s)}</text>`;
-  const badges = (b) => (b.badges ?? []).map((name, i) => {
-    const x = b.x + 8 + (b.badges ?? []).slice(0, i).reduce((n, prev) => n + prev.length * 6.6 + 10, 0);
-    return `<text data-badge="${esc(name)}" x="${x}" y="${b.y + b.h - 8}" text-anchor="start" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="#6B5E4E" stroke="${PAPER}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(name)}</text>`;
-  }).join("");
+  const badges = (b) => {
+    const list = b.badges ?? [];
+    if (!list.length) return "";
+    const [size, char, gap, left, right] = [11, 6.6, 10, b.x + 8, b.x + b.w - 8];
+    const rows = [];
+    let [row, x] = [[], left];
+    for (const name of list) {
+      const w = name.length * char;
+      if (row.length && x + w > right) (rows.push(row), (row = []), (x = left));
+      row.push([name, x]);
+      x += w + gap;
+    }
+    if (row.length) rows.push(row);
+    return rows.map((line, i) => line.map(([name, bx]) =>
+      `<text data-badge="${esc(name)}" x="${bx}" y="${b.y + b.h - 8 - (rows.length - 1 - i) * (size + 3)}" text-anchor="start" font-family="ui-monospace, Menlo, monospace" font-size="${size}" fill="#6B5E4E" stroke="${PAPER}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(name)}</text>`).join("")).join("");
+  };
   const labels = laid.boxes.map((b) => text(b, 22, 13, b.label) + (b.note ? text(b, 40, 11, b.note) : "") + badges(b));
   for (const { label } of laid.arrows) if (label) labels.push(text(label, 12, 11, label.text));
   const tag = (cue, x, y, anchor) => cue && labels.push(text({ x, y }, 0, 10, cue.tag, cue.hue, x, anchor));

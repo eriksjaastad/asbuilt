@@ -74,7 +74,7 @@ box inside it, because the arrows leave those boxes, not the folder.
 A box can carry a small badge for work its own code proves, never for a box it calls.
 The name is followed back to its import, and a parameter or a local of that name does not count.
 `calls out` is a request, urllib.request, a socket, subprocess, or os.system.
-`model` is the openai or anthropic SDK. `env` is an environment read, `input` is input(),
+`model` is the openai or anthropic SDK, including a client built once at the top (`client = OpenAI()`). `env` is an environment read, `input` is input(),
 and `writes` is a file opened or written. A change in later behavior cannot be read from the
 code, so it is not a badge. The badge sits on the box. It does not change the box's id or its arrows.
 

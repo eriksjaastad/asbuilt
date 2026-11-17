@@ -52,26 +52,21 @@ def _path(node, scope):
     return found + attrs
 
 
-def _path(node, scope):
-    """The module path of a name or attribute chain, or ('builtin', name) when it is open or input."""
-    root, attrs = _chain(node)
-    if root is None or root.type != "identifier":
-        return None
-    name = root.text.decode()
-    found = _resolve(name, scope)
-    if found == "shadow":
-        return None
-    if found is None:
-        return ("builtin", name) if not attrs and name in ("input", "open") else None
-    return found + attrs
+def client_module(path):
+    """The module a marked constructor stands for: OpenAI(), Anthropic(), requests.Session()."""
+    if path in {("openai", "OpenAI"), ("anthropic", "Anthropic"), ("requests", "Session")}:
+        return (path[0],)
+    return None
 
 
 def _write_mode(text):
-    """True when a string literal is a mode that writes. The quotes stay in the node's text."""
+    """True when a string literal is a mode that writes, not a file name. The quotes stay."""
     if len(text) < 2 or text[0] not in "\"'" or text[-1] != text[0]:
         return False
     body = text[1:-1]
-    return bool(body) and (body[0] in "wax" or "+" in body)
+    if not body or any(c not in "rwaxbt+" for c in body):
+        return False
+    return any(c in "wax+" for c in body)
 
 
 def _open_writes(call, first=False):
@@ -123,12 +118,21 @@ def _calls_out(path):
     )
 
 
+def _imported(node, scope):
+    """True when this attribute chain starts at a name the file imported."""
+    root, _attrs = _chain(node)
+    if root is None or root.type != "identifier":
+        return False
+    return isinstance(_resolve(root.text.decode(), scope), tuple)
+
+
 def _on_call(node, scope, add):
     fun = next(iter(node.named_children), None)
-    root, attrs = _chain(fun)
+    _root, attrs = _chain(fun)
     if attrs and attrs[-1] in ("write_text", "write_bytes"):
         add("writes")
-    if attrs and attrs[-1] == "open" and _open_writes(node, first=True):
+    # Path.open("w") takes the mode first. gzip.open(path, "wt") takes it second.
+    if attrs and attrs[-1] == "open" and _open_writes(node, first=not _imported(fun, scope)):
         add("writes")
     path = _path(fun, scope)
     if path is None:
@@ -173,6 +177,8 @@ def of(node, module):
                 visit(child, inner)
             return
         if cur.type == "class_definition":
+            # A class body binds names for the class, not for the methods. Python does not
+            # see `def open` or `def run` inside a sibling method.
             body = cur.child_by_field_name("body")
             inner = dict(scope)
             if body is not None:
@@ -180,12 +186,14 @@ def of(node, module):
 
                 inner.update(_scope(list(body.named_children), None, False))
             for child in body.children if body is not None else ():
-                visit(child, inner)
+                method = child.type == "function_definition" or (
+                    child.type == "decorated_definition"
+                    and (child.child_by_field_name("definition") or child).type == "function_definition"
+                )
+                visit(child, scope if method else inner)
             return
         if cur.type == "call":
             _on_call(cur, scope, add)
-        elif cur.type == "subscript":
-            _on_name(cur.child_by_field_name("value"), scope, add)
         elif cur.type in ("identifier", "attribute"):
             _on_name(cur, scope, add)
         for child in cur.children:

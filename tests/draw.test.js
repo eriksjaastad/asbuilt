@@ -113,3 +113,12 @@ test("a badge is drawn on the box and the box keeps its id", async () => {
   assert.match(svg, /data-badge="env"/);
   assert.match(svg, /data-badge="calls out"/);
 });
+
+test("several badges wrap inside the box instead of running past its edge", () => {
+  const badges = ["env", "input", "writes", "calls out", "model"];
+  const svg = draw({ width: 190, height: 70, boxes: [{ id: "f", x: 0, y: 0, w: 190, h: 70, level: 1, label: "f()", badges }], arrows: [] }, rough.generator());
+  const drawn = [...svg.matchAll(/data-badge="([^"]+)" x="([^"]+)" y="([^"]+)"/g)];
+  assert.deepEqual(drawn.map((m) => m[1]), badges);
+  assert.ok(new Set(drawn.map((m) => m[3])).size > 1, "wrapped onto another line");
+  for (const [, name, x] of drawn) assert.ok(Number(x) >= 8 && Number(x) + name.length * 6.6 <= 182, name);
+});

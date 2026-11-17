@@ -47,6 +47,24 @@ class MarkTest(unittest.TestCase):
     def test_a_plus_mode_is_writes(self):
         self.assertEqual(_badges("def save(path):\n    open(path, 'r+')\n", "save()"), ["writes"])
 
+    def test_append_mode_is_writes(self):
+        self.assertEqual(_badges("def save(path):\n    open(path, 'a')\n", "save()"), ["writes"])
+
+    def test_exclusive_mode_is_writes(self):
+        self.assertEqual(_badges("def save(path):\n    open(path, 'x')\n", "save()"), ["writes"])
+
+    def test_an_imported_module_open_takes_the_mode_second(self):
+        self.assertEqual(_badges("import gzip\ndef save(p):\n    gzip.open(p, 'wt')\n", "save()"), ["writes"])
+        self.assertEqual(_badges("import gzip\ndef read():\n    gzip.open('app.log.gz')\n", "read()"), [])
+
+    def test_a_file_name_passed_to_open_is_not_a_write_mode(self):
+        source = (
+            "import tarfile, webbrowser\nfrom PIL import Image\n"
+            "def read(zf):\n    Image.open('logo.png')\n    tarfile.open('a.tar.gz')\n"
+            "    webbrowser.open('https://example.test')\n    zf.open('a.txt')\n"
+        )
+        self.assertEqual(_badges(source, "read()"), [])
+
     def test_write_text_on_a_call_result_is_writes(self):
         self.assertEqual(_badges("def save(p):\n    Path(p).write_text('hi')\n", "save()"), ["writes"])
 
@@ -97,6 +115,39 @@ class MarkTest(unittest.TestCase):
 
     def test_os_system_is_calls_out(self):
         self.assertEqual(_badges("import os\ndef go():\n    os.system('echo')\n", "go()"), ["calls out"])
+
+    def test_http_client_is_calls_out(self):
+        self.assertEqual(_badges("import http.client\ndef fetch():\n    http.client.HTTPSConnection('example.test')\n", "fetch()"), ["calls out"])
+
+    def test_subprocess_getoutput_is_not_calls_out(self):
+        self.assertEqual(_badges("import subprocess\ndef go():\n    subprocess.getoutput('echo')\n", "go()"), [])
+
+    def test_an_import_inside_the_box_counts(self):
+        self.assertEqual(_badges("def fetch():\n    import requests\n    requests.get('https://example.test')\n", "fetch()"), ["calls out"])
+
+    def test_a_class_body_name_does_not_hide_the_same_name_in_a_method(self):
+        source = (
+            "class Saver:\n    def open(self):\n        return 1\n    def save(self, path):\n        open(path, 'w')\n"
+            "from subprocess import run\nclass Runner:\n    def run(self):\n        return 1\n    def go(self):\n        run(['echo'])\n"
+        )
+        self.assertIn("writes", _badges(source, "Saver"))
+        self.assertIn("calls out", _badges(source, "Runner"))
+
+    def test_a_client_built_once_at_the_top_is_that_module(self):
+        source = (
+            "from openai import OpenAI\nimport anthropic\nimport requests\n"
+            "client = OpenAI()\nclaude = anthropic.Anthropic()\nsession = requests.Session()\n"
+            "def ask():\n    client.chat.completions.create()\n"
+            "def speak():\n    claude.messages.create()\n"
+            "def fetch():\n    session.get('https://example.test')\n"
+        )
+        self.assertEqual(_badges(source, "ask()"), ["model"])
+        self.assertEqual(_badges(source, "speak()"), ["model"])
+        self.assertEqual(_badges(source, "fetch()"), ["calls out"])
+
+    def test_a_client_assigned_again_is_not_that_module(self):
+        source = "from openai import OpenAI\nclient = OpenAI()\nclient = None\ndef ask():\n    client.chat.completions.create()\n"
+        self.assertEqual(_badges(source, "ask()"), [])
 
     def test_socket_socket_is_calls_out_and_gethostname_is_not(self):
         self.assertEqual(_badges("import socket\ndef go():\n    socket.socket()\n", "go()"), ["calls out"])
