@@ -83,7 +83,7 @@ export function lanes(prepared, turned = false) {
     };
     const runs = inKnot.map(cutFrom).filter(Boolean).sort((a, b) => a.length - b.length)[0];
     if (!runs) return; // a ring: ELK's layout stands
-    const wrapper = { id: `${LANES}${first.id}`, children: [], layoutOptions: { "elk.padding": EDGE, "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+    const wrapper = { id: `${LANES}${first.id}`, children: [], layoutOptions: { "elk.padding": EDGE, "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX", "elk.layered.layering.strategy": "NETWORK_SIMPLEX",
       "elk.layered.crossingMinimization.semiInteractive": "true" } };
     hidden.add(wrapper.id);
     const rows = Math.max(...runs.map((r) => r.row));

@@ -68,13 +68,17 @@ const spread = (box) => {
 const PLACEMENT = "elk.layered.nodePlacement.strategy";
 const STRAIGHT = { [PLACEMENT]: "NETWORK_SIMPLEX", "elk.layered.thoroughness": "60" };
 const CENTRED = { [PLACEMENT]: "SIMPLE" };
-// ELK can bound the number of boxes in each layer itself. One per layer avoids spending dozens of full layouts
-// folding a whole program into a laptop. This is only a candidate: the existing search still decides if it fails.
-const STACKED = { ...CENTRED, "elk.layered.layering.strategy": "COFFMAN_GRAHAM", "elk.layered.layering.coffmanGraham.layerBound": "1" };
-const setOn = (box, options) => {
+// Start very wide charts with bounded layers instead of an overflowing row. MinWidth weighs boxes and the
+// arrows passing them; three average boxes leave routing room, and each of a knot's lanes gets a smaller share.
+const COMPACT = { ...CENTRED, "elk.layered.layering.strategy": "MIN_WIDTH", "elk.layered.layering.minWidth.upperBoundOnWidth": "3" };
+// A bounded layer is a poor starting point for dense, large programs: their long arrow bundles make it taller
+// and slower. Keep their existing search, without paying for a speculative layout first.
+const COMPACT_ITEMS = 512;
+const boxCount = (box) => 1 + (box.children ?? []).reduce((n, child) => n + boxCount(child), 0);
+const setOn = (box, options, inLane = false) => {
   box.layoutOptions = { ...box.layoutOptions, ...options, ...(box.id.startsWith(LANES) ? box.layoutOptions : {}) }; // lanes keep their rails straight
-  if (options === STACKED && box.id.startsWith(LANES)) box.layoutOptions["elk.layered.layering.strategy"] = "NETWORK_SIMPLEX";
-  (box.children ?? []).filter((c) => c.children?.length).forEach((c) => setOn(c, options));
+  if (options === COMPACT && inLane) box.layoutOptions["elk.layered.layering.minWidth.upperBoundOnWidth"] = "1";
+  (box.children ?? []).filter((c) => c.children?.length).forEach((c) => setOn(c, options, inLane || box.id.startsWith(LANES)));
 };
 
 const laidOut = (prepared, elk, hidden, options) => {
@@ -85,26 +89,27 @@ const laidOut = (prepared, elk, hidden, options) => {
 
 async function narrow(prepared, elk, hidden, options) {
   let [out, room, best, stall] = [null, MAX_WIDTH, Infinity, 0];
-  for (let n = 0; n < (options === STACKED ? 3 : MAX_LAYOUTS); n++) {
+  for (let n = 0; n < MAX_LAYOUTS; n++) {
     out = await laidOut(prepared, elk, hidden, options);
     if (out.width <= MAX_WIDTH) break;
     // Still more than twice a laptop after a straight try: more of those will not fit it. The centred pass will.
     if (options === STRAIGHT && out.width > MAX_WIDTH * 2) break;
-    // A row that did not make the chart narrower: fold several rows, and every wide box, on the next try.
-    const limit = 1 + stall * 2;
+    // Bounded layers can fold every wide holder at once. The original search broadens only after a stall.
+    const limit = options === COMPACT ? Infinity : 1 + stall * 2;
     const stalled = !(out.width < best - 1);
     if (stalled) stall = Math.min(stall + 1, 4);
     else best = out.width, stall = 0;
     // Arrows running past the boxes take room of their own, so a chart can be too wide with every row inside `room`.
-    let more = folds(out, room, hidden, limit, stalled);
-    while (!more.length && room > MIN_ROOM) more = folds(out, (room -= ROOM_STEP), hidden, limit, stalled);
+    let more = folds(out, room, hidden, limit, stalled || options === COMPACT);
+    while (!more.length && room > MIN_ROOM) more = folds(out, (room -= ROOM_STEP), hidden, limit, stalled || options === COMPACT);
     if (!more.length) break;
     for (const e of more) hidden.set(e.id, e);
   }
   return out;
 }
 
-async function fitted(prepared, elk, hidden, firstWidth) {
+async function fitted(prepared, elk, hidden, firstWidth, compact) {
+  if (compact) return narrow(prepared, elk, hidden, COMPACT);
   // A first layout already far past a laptop never came back inside one with the straight search,
   // and that search was almost all of the time. Go straight to the centred pass.
   if (!(firstWidth > MAX_WIDTH * 3)) {
@@ -117,14 +122,13 @@ async function fitted(prepared, elk, hidden, firstWidth) {
 
 // One chart from a plan ready for ELK: `hide` holds the ids of what ELK lays out and the page does not draw, and
 // `parts` says which group each part of a lane belongs to. Boxes and arrows come back in absolute coordinates.
-async function chart(prepared, elk, hide, parts, stacked = false) {
+async function chart(prepared, elk, hide, parts, compact) {
   const hidden = new Map();
   // A file of many leaves on one row is already far past a laptop. The opening layout and the straight search
   // were thrown away, and that search was almost all of the time.
   const wide = spread(prepared);
-  let out = stacked ? await narrow(prepared, elk, hidden, STACKED)
-    : wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
-  if (!stacked && (!out || out.width > MAX_WIDTH)) out = await fitted(prepared, elk, hidden, out?.width ?? wide);
+  let out = wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
+  if (!out || out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden, out?.width ?? wide, compact);
   const [boxes, cut, held, spot, shown] = [[], new Map(), new Map(), new Map(), new Map()];
   const origin = { [out.id]: [0, 0] };
   const walk = (box, level, holders) => {
@@ -180,22 +184,13 @@ async function chart(prepared, elk, hide, parts, stacked = false) {
 
 export async function layout(plan, elk) {
   const prepared = prepare(plan);
-  // Try a bounded, narrow starting layout for lanes in the very wide plans that already skip the straight search.
-  // Keep it only when it fits, its lanes are sound, and every arrow points down. A failed candidate never cuts short
-  // either orientation of the original lane search below.
-  if (spread(prepared) > MAX_WIDTH * 3) {
-    const candidate = lanes(prepared);
-    if (candidate) {
-      const made = await chart(candidate.graph, elk, candidate.hidden, candidate.parts, true);
-      if (made.sound && made.laid.arrows.every((a) => a.points.at(-1)[1] >= a.points[0][1])) return made.laid;
-    }
-  }
+  const compact = spread(prepared) > MAX_WIDTH * 3 && boxCount(prepared) + prepared.edges.length <= COMPACT_ITEMS;
   // A knot's two lanes can stand either way round: the plan's way is tried first, then the other.
   for (const turned of [false, true]) {
     const laned = lanes(prepared, turned);
     if (!laned) break;
-    const made = await chart(laned.graph, elk, laned.hidden, laned.parts);
+    const made = await chart(laned.graph, elk, laned.hidden, laned.parts, compact);
     if (made.sound) return made.laid;
   }
-  return (await chart(prepared, elk, new Set(), new Map())).laid;
+  return (await chart(prepared, elk, new Set(), new Map(), compact)).laid;
 }

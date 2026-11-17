@@ -67,11 +67,13 @@ test("the repo-root chart draws all parsed boxes and arrows in a few layouts", {
       boxes: [...document.querySelectorAll("[data-box]")].map((b) => b.dataset.box).sort(),
       arrows: [...document.querySelectorAll("[data-arrow]")].map((a) => a.dataset.arrow).sort(),
       calls: window.layoutCalls,
+      height: document.querySelector("#chart > svg").viewBox.baseVal.height,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     }));
     assert.deepEqual(drawn.boxes, boxes.sort());
     assert.deepEqual(drawn.arrows, arrows.sort());
-    assert.ok(drawn.calls <= 3, `${drawn.calls} layouts`);
+    assert.ok(drawn.calls <= 8, `${drawn.calls} layouts`);
+    assert.ok(drawn.height < boxes.length * 140, "the chart has not become a single long column");
     assert.equal(drawn.overflow, 0);
   } finally {
     server?.kill();
