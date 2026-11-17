@@ -68,3 +68,31 @@ def send_email():
 
     for _ in range(3):
         requests.post("https://example.com/send", data=b"hi", timeout=15)
+
+
+class APIError(Exception):
+    pass
+
+
+def reject():
+    raise APIError("validation", "the real message", 2)
+
+
+def _built(action, exc):
+    return RuntimeError(f"Failed to {action}: {exc}")
+
+
+def remove(exc):
+    raise _built("remove reminder", exc)
+
+
+def retry():
+    import requests
+
+    for _ in range(3):
+        try:
+            requests.get("https://example.com/x", timeout=15)
+            return "ok"
+        except OSError:
+            continue
+    return None

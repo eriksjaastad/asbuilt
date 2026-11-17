@@ -113,13 +113,14 @@ class PlainTest(unittest.TestCase):
             got["OpenRouter"],
             [
                 "OpenRouter sends data, using a key read from OPENROUTER_API_KEY.",
-                'If the key is missing, OpenRouter can stop with an error that says "OPENROUTER_API_KEY is not set.", among others.',
+                "By default OpenRouter waits up to 60 seconds.",
+                "If the key is missing, OpenRouter can stop with an error, among others.",
             ],
         )
         self.assertEqual(
             got["ClaudeCLI"],
             [
-                "ClaudeCLI runs the command claude and keeps only a fixed set of environment names.",
+                "ClaudeCLI runs the command claude, keeps only a fixed set of environment names, and returns the command's output.",
                 "By default ClaudeCLI waits up to 300 seconds.",
                 'ClaudeCLI can stop with an error that says "claude is not signed in to claude.ai: run claude auth login." or "claude replied with nothing.", among others.',
             ],
@@ -158,9 +159,14 @@ class PlainTest(unittest.TestCase):
             got["send_email()"],
             [
                 "send_email sends data to example.com over the internet.",
-                "Each try, send_email waits up to 15 seconds.",
+                "send_email waits up to 15 seconds.",
             ],
         )
+        self.assertEqual(got["reject()"], ["reject stops with an error."])
+        self.assertNotIn("validation", " ".join(got["reject()"]))
+        self.assertEqual(got["remove()"], ["remove stops with an error."])
+        self.assertNotIn("remove reminder", " ".join(got["remove()"]))
+        self.assertEqual(got["retry()"], ["Each try, retry waits up to 15 seconds."])
 
     def test_a_return_claim_needs_every_return_to_agree(self):
         lines = _lines(
@@ -228,15 +234,53 @@ class PlainTest(unittest.TestCase):
             _lines(source, "send_email()"), ["send_email waits up to 30 seconds."]
         )
 
-    def test_a_timeout_passed_to_a_helper_is_not_claimed(self):
-        source = (
+    def test_a_timeout_passed_to_a_helper_is_claimed_only_when_the_helper_shows_it(
+        self,
+    ):
+        forwarded = (
             "def _gh_json(url, timeout):\n"
             "    import requests\n"
             "    requests.get(url, timeout=timeout)\n"
             "def fetch():\n"
             '    _gh_json("https://example.com", timeout=30)\n'
         )
-        self.assertEqual(_lines(source, "fetch()"), [])
+        self.assertEqual(
+            _lines(forwarded, "fetch()"), ["fetch waits up to 30 seconds."]
+        )
+        hidden = (
+            "def _search_week(url, timeout):\n"
+            "    return url\n"
+            "def fetch():\n"
+            "    _search_week('https://example.com', timeout=30)\n"
+        )
+        self.assertEqual(_lines(hidden, "fetch()"), [])
+
+    def test_httpx_client_get_timeout_is_seconds(self):
+        source = (
+            "import httpx\ndef fetch(url):\n    httpx.Client().get(url, timeout=30)\n"
+        )
+        self.assertEqual(_lines(source, "fetch()"), ["fetch waits up to 30 seconds."])
+
+    def test_a_category_argument_is_not_quoted_as_the_message(self):
+        source = (
+            "class APIError(Exception):\n    pass\n"
+            "def reject():\n"
+            '    raise APIError("validation", "the real message", 2)\n'
+        )
+        text = " ".join(_lines(source, "reject()"))
+        self.assertNotIn("validation", text)
+        self.assertNotIn("says", text)
+
+    def test_a_helper_argument_is_not_quoted_as_the_message(self):
+        source = (
+            "def _built(action, exc):\n"
+            '    return RuntimeError(f"Failed to {action}: {exc}")\n'
+            "def remove(exc):\n"
+            '    raise _built("remove reminder", exc)\n'
+        )
+        text = " ".join(_lines(source, "remove()"))
+        self.assertNotIn("remove reminder", text)
+        self.assertNotIn("says", text)
 
     def test_a_message_that_says_refused_is_not_an_error_unless_it_raises(self):
         source = 'def revert(path):\n    try:\n        path.unlink()\n    except OSError as exc:\n        print(f"refused: {exc}")\n    return []\n'
