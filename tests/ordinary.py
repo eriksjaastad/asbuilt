@@ -59,15 +59,11 @@ def collect():
     subprocess.run(["rclone", "sync"], env=env)
 
 
-def wait(page):
-    page.wait_for_selector("#ok", timeout=30000)
-
-
 def send_email():
     import requests
 
     for _ in range(3):
-        requests.post("https://example.com/send", data=b"hi", timeout=15)
+        requests.post("https://example.com/send", data=b"hi")
 
 
 class APIError(Exception):
@@ -99,15 +95,3 @@ def always_fails_branches(force):
     if not key:
         raise RuntimeError("missing")
     return force
-
-
-def retry():
-    import requests
-
-    for _ in range(3):
-        try:
-            requests.get("https://example.com/x", timeout=15)
-            return "ok"
-        except OSError:
-            continue
-    return None

@@ -152,19 +152,14 @@ class PlainTest(unittest.TestCase):
             ['lookup stops with an error that says "config was not found".'],
         )
         self.assertEqual(got["collect()"], ["collect runs the command rclone."])
-        self.assertEqual(got["wait()"], [])
         self.assertEqual(
             got["send_email()"],
-            [
-                "send_email sends data to example.com over the internet.",
-                "send_email waits up to 15 seconds.",
-            ],
+            ["send_email sends data to example.com over the internet."],
         )
         self.assertEqual(got["reject()"], ["reject stops with an error."])
         self.assertNotIn("validation", " ".join(got["reject()"]))
         self.assertEqual(got["remove()"], ["remove stops with an error."])
         self.assertNotIn("remove reminder", " ".join(got["remove()"]))
-        self.assertEqual(got["retry()"], ["Each try, retry waits up to 15 seconds."])
         self.assertEqual(
             got["flag_guard()"], ['flag_guard can stop with an error that says "nope".']
         )
@@ -237,35 +232,6 @@ class PlainTest(unittest.TestCase):
         )
         text = " ".join(_lines(source, "post()"))
         self.assertNotIn("github.com", text)
-
-    def test_an_smtp_timeout_is_seconds(self):
-        source = 'import smtplib\ndef send_email():\n    smtplib.SMTP("smtp.example.com", timeout=30)\n'
-        self.assertEqual(
-            _lines(source, "send_email()"), ["send_email waits up to 30 seconds."]
-        )
-
-    def test_a_timeout_passed_to_a_helper_is_not_claimed(self):
-        forwarded = (
-            "def _gh_json(url, timeout):\n"
-            "    import requests\n"
-            "    requests.get(url, timeout=timeout)\n"
-            "def fetch():\n"
-            '    _gh_json("https://example.com", timeout=30)\n'
-        )
-        self.assertEqual(_lines(forwarded, "fetch()"), [])
-        hidden = (
-            "def _search_week(url, timeout):\n"
-            "    return url\n"
-            "def fetch():\n"
-            "    _search_week('https://example.com', timeout=30)\n"
-        )
-        self.assertEqual(_lines(hidden, "fetch()"), [])
-
-    def test_httpx_client_get_timeout_is_seconds(self):
-        source = (
-            "import httpx\ndef fetch(url):\n    httpx.Client().get(url, timeout=30)\n"
-        )
-        self.assertEqual(_lines(source, "fetch()"), ["fetch waits up to 30 seconds."])
 
     def test_an_env_branch_that_sometimes_returns_can_stop(self):
         source = (
@@ -673,61 +639,6 @@ class PlainTest(unittest.TestCase):
         source = 'import requests\ndef post(payload):\n    requests.post("http://0.0.0.0:8000/x", json=payload)\n'
         self.assertEqual(_lines(source, "post()"), ["post sends data to 0.0.0.0."])
 
-    def test_a_timeout_parameter_default_is_by_default(self):
-        source = 'import requests\ndef fetch(timeout=15):\n    requests.get("https://example.com/x", timeout=timeout)\n'
-        self.assertEqual(
-            _lines(source, "fetch()"), ["By default fetch waits up to 15 seconds."]
-        )
-
-    def test_a_timeout_is_stated_only_when_every_call_shows_the_same_literal(self):
-        expression = (
-            "import subprocess\n"
-            "def _run_in_sandbox():\n"
-            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
-            '    subprocess.run(["python", "run_week.py"], timeout=4 * 3600)\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(expression, "_run_in_sandbox()")))
-        constant = (
-            "import subprocess\n"
-            "LIMIT = 60\n"
-            "def _run_in_sandbox():\n"
-            '    subprocess.run(["git", "ls-files"], timeout=LIMIT)\n'
-        )
-        self.assertEqual(
-            _lines(constant, "_run_in_sandbox()"),
-            [
-                "_run_in_sandbox runs the command git.",
-                "_run_in_sandbox waits up to 60 seconds.",
-            ],
-        )
-        missing = (
-            "import subprocess\n"
-            "def _run_in_sandbox():\n"
-            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
-            '    subprocess.run(["python", "run_week.py"])\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(missing, "_run_in_sandbox()")))
-        different = (
-            "import subprocess\n"
-            "def _run_in_sandbox():\n"
-            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
-            '    subprocess.run(["python", "run_week.py"], timeout=600)\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(different, "_run_in_sandbox()")))
-        same = (
-            "import subprocess\n"
-            "def _run_in_sandbox():\n"
-            '    subprocess.run(["git", "ls-files"], timeout=60)\n'
-            '    subprocess.run(["git", "status"], timeout=60)\n'
-        )
-        self.assertEqual(
-            _lines(same, "_run_in_sandbox()"),
-            [
-                "_run_in_sandbox runs the command git.",
-                "_run_in_sandbox waits up to 60 seconds.",
-            ],
-        )
-
     def test_a_debug_fstring_is_not_quoted(self):
         source = (
             'NAME = "OPENROUTER_API_KEY"\n'
@@ -738,172 +649,23 @@ class PlainTest(unittest.TestCase):
         self.assertNotIn("says", text)
         self.assertNotIn("OPENROUTER_API_KEY", text)
 
-    def test_a_once_assigned_constant_is_a_readable_timeout(self):
-        source = (
-            "import subprocess\n"
-            "TIMEOUT = 120\n"
-            "def launchctl_list():\n"
-            '    subprocess.run(["launchctl", "list"], timeout=TIMEOUT)\n'
-        )
-        self.assertEqual(
-            _lines(source, "launchctl_list()"),
-            [
-                "launchctl_list runs the command launchctl.",
-                "launchctl_list waits up to 120 seconds.",
-            ],
-        )
-        rebound = (
-            "import subprocess\n"
-            "TIMEOUT = 120\n"
-            "TIMEOUT = 5\n"
-            "def launchctl_list():\n"
-            '    subprocess.run(["launchctl", "list"], timeout=TIMEOUT)\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(rebound, "launchctl_list()")))
-        typed = (
-            "import requests\n"
-            "LIMIT = 15\n"
-            "def fetch(timeout: int = LIMIT):\n"
-            '    requests.get("https://example.com/x", timeout=timeout)\n'
-        )
-        self.assertEqual(
-            _lines(typed, "fetch()"), ["By default fetch waits up to 15 seconds."]
-        )
-        floated = (
-            "import requests\n"
-            "def fetch():\n"
-            '    requests.get("https://example.com/x", timeout=10.0)\n'
-        )
-        self.assertEqual(_lines(floated, "fetch()"), ["fetch waits up to 10 seconds."])
-        fraction = (
-            "import requests\n"
-            "def fetch():\n"
-            '    requests.get("https://example.com/x", timeout=10.5)\n'
-        )
-        self.assertEqual(
-            _lines(fraction, "fetch()"), ["fetch waits up to 10.5 seconds."]
-        )
-        grown = (
-            "import subprocess\n"
-            "AUG = 120\n"
-            "AUG += 50\n"
-            "def launchctl_list():\n"
-            '    subprocess.run(["launchctl", "list"], timeout=AUG)\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(grown, "launchctl_list()")))
-        paired = (
-            "import subprocess\n"
-            "AUG = 120\n"
-            "AUG, other = 1, 2\n"
-            "def launchctl_list():\n"
-            '    subprocess.run(["launchctl", "list"], timeout=AUG)\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(paired, "launchctl_list()")))
-        shared = (
-            "import subprocess\n"
-            "TIMEOUT = 120\n"
-            "def other():\n"
-            "    global TIMEOUT\n"
-            "    TIMEOUT = 5\n"
-            "def launchctl_list():\n"
-            '    subprocess.run(["launchctl", "list"], timeout=TIMEOUT)\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(shared, "launchctl_list()")))
-
-    def test_a_bad_wait_clears_an_earlier_literal(self):
-        source = (
-            "import requests\n"
-            "def _CloudBackend():\n"
-            '    requests.get("https://example.com/a", timeout=30)\n'
-            '    requests.get("https://example.com/b")\n'
-        )
-        self.assertNotIn("30", " ".join(_lines(source, "_CloudBackend()")))
-        self.assertNotIn("second", " ".join(_lines(source, "_CloudBackend()")))
-
-    def test_an_untimed_call_drops_the_other_limit(self):
-        url = (
-            "import requests\nimport urllib.request\n"
-            "def fetch(url):\n"
-            '    requests.get("https://example.com", timeout=30)\n'
-            "    urllib.request.urlopen(url)\n"
-        )
-        self.assertNotIn("second", " ".join(_lines(url, "fetch()")))
-        popen = (
-            "import subprocess\n"
-            "def fetch():\n"
-            '    subprocess.run(["git"], timeout=30)\n'
-            '    subprocess.Popen(["git"]).communicate()\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(popen, "fetch()")))
-        popen_wait = (
-            "import subprocess\n"
-            "def popen_wait(cmd):\n"
-            "    subprocess.run(cmd, timeout=60)\n"
-            "    subprocess.Popen(cmd).communicate()\n"
-        )
-        self.assertNotIn("second", " ".join(_lines(popen_wait, "popen_wait()")))
-        runner = (
-            "import subprocess\n"
-            "class Runner:\n"
-            "    def start(self):\n"
-            '        subprocess.run(["git"], timeout=30)\n'
-            "    def follow(self):\n"
-            '        subprocess.Popen(["git"]).communicate()\n'
-        )
-        self.assertNotIn("second", " ".join(_lines(runner, "Runner")))
-        kept = (
-            "import urllib.request\n"
-            "def fetch(url):\n"
-            "    urllib.request.Request(url)\n"
-            "    urllib.request.urlopen(url, timeout=30)\n"
-        )
-        self.assertEqual(_lines(kept, "fetch()"), ["fetch waits up to 30 seconds."])
-
-    def test_a_loop_that_raises_is_not_each_try(self):
-        source = (
-            "import requests\n"
-            "def _local_model_preflight(models):\n"
-            "    for model in models:\n"
-            "        try:\n"
-            '            requests.get("https://example.com", timeout=10.0)\n'
-            "        except OSError:\n"
-            '            raise RuntimeError("no")\n'
-        )
-        lines = _lines(source, "_local_model_preflight()")
-        self.assertIn("_local_model_preflight waits up to 10 seconds.", lines)
-        self.assertNotIn("Each try", " ".join(lines))
-        self.assertNotIn("10.0", " ".join(lines))
-
-    def test_a_retry_loop_says_each_try(self):
-        source = (
-            "import requests\n"
-            "def fetch():\n"
-            "    for _ in range(3):\n"
-            "        try:\n"
-            '            requests.get("https://example.com", timeout=15)\n'
-            "        except OSError:\n"
-            "            pass\n"
-        )
-        self.assertEqual(
-            _lines(source, "fetch()"), ["Each try, fetch waits up to 15 seconds."]
-        )
-
-    def test_a_literal_timeout_names_the_box(self):
-        source = 'import requests\ndef send():\n    requests.get("https://example.com/x", timeout=15)\n'
-        self.assertEqual(_lines(source, "send()"), ["send waits up to 15 seconds."])
-
     def test_a_note_stays_within_three_sentences(self):
         source = (
             "import os\nimport requests\n"
-            "def fetch(payload, timeout=15):\n"
+            "def fetch(payload):\n"
             '    if not os.environ.get("TOKEN"):\n'
             '        raise RuntimeError("missing token")\n'
-            '    requests.post("https://example.com/v1", json=payload, timeout=timeout)\n'
+            '    requests.post("https://example.com/v1", json=payload)\n'
             '    return "DONE"\n'
         )
-        lines = _lines(source, "fetch()")
-        self.assertEqual(len(lines), 3)
-        self.assertNotIn("DONE", " ".join(lines))
+        self.assertEqual(
+            _lines(source, "fetch()"),
+            [
+                "fetch sends data to example.com over the internet.",
+                'If the environment value TOKEN is missing, fetch stops with an error that says "missing token".',
+                "fetch returns the text DONE.",
+            ],
+        )
 
     def test_a_raised_message_is_quoted_and_its_class_is_not_named(self):
         source = (
