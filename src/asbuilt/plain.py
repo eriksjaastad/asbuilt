@@ -138,28 +138,18 @@ def _walk(node, visit):
         _walk(child, visit)
 
 
-def _env_name(node, scope, words):
-    """The one environment name this expression reads, or None."""
-    found = []
-
-    def walk(cur):
-        if cur.type == "call" and reads_env(
-            resolve(next(iter(cur.named_children), None), scope)
-        ):
-            positional, named, _splat = call_arguments(cur)
-            arg = positional[0] if positional else named.get("key")
-            name = string_literal(arg) if arg is not None else None
-            if name is None and arg is not None and arg.type == "identifier":
-                value = words.get(arg.text.decode())
-                name = value if isinstance(value, str) else None
-            if name:
-                found.append(name)
-        for child in cur.named_children:
-            walk(child)
-
-    if node is not None:
-        walk(node)
-    return found[0] if len(set(found)) == 1 else None
+def _fact_name(node, facts):
+    """The one environment name security.facts recorded inside this expression."""
+    if node is None:
+        return None
+    names = [
+        fact["name"]
+        for fact in facts
+        if fact.get("kind") == "env"
+        and fact.get("name")
+        and node.start_byte <= fact.get("start", -1) < node.end_byte
+    ]
+    return names[0] if len(set(names)) == 1 else None
 
 
 def _contains(outer, inner):
@@ -283,7 +273,7 @@ def _keeps(node, scope, groups):
             resolve(next(iter(cur.named_children), None), scope)
         ):
             reads = True
-        if cur.type == "comparison_operator" and "not in" not in cur.text.decode():
+        if cur.type == "comparison_operator":
             keeps = any(child.text.decode() == "in" for child in cur.children)
             if keeps:
                 for child in cur.named_children:
@@ -564,7 +554,7 @@ def _return_claim(fn, scope, facts):
     return kinds[0]
 
 
-def _bearer(node, assigns, scope, words):
+def _bearer(node, assigns, facts):
     found = []
     if node.type == "string" and "Bearer" in node.text.decode():
         for child in node.named_children:
@@ -574,11 +564,11 @@ def _bearer(node, assigns, scope, words):
                 (c for c in child.named_children if c.type == "identifier"), None
             )
             source = assigns.get(ident.text.decode()) if ident is not None else child
-            name = _env_name(source if source is not None else child, scope, words)
+            name = _fact_name(source if source is not None else child, facts)
             if name:
                 found.append(name)
     for child in node.named_children:
-        found.extend(_bearer(child, assigns, scope, words))
+        found.extend(_bearer(child, assigns, facts))
     return found
 
 
@@ -652,18 +642,15 @@ def _choice_line(story):
 
 
 def _phrase(cond, keys):
-    if not cond:
+    """A missing environment value. A parameter is not a plain condition."""
+    if not cond or cond[0] != "env":
         return None
-    kind, name = cond
-    if kind == "env":
-        return (
-            "the key is missing"
-            if name in keys
-            else f"the environment value {name} is missing"
-        )
-    if kind == "empty":
-        return f"{name} is empty"
-    return None
+    name = cond[1]
+    return (
+        "the key is missing"
+        if name in keys
+        else f"the environment value {name} is missing"
+    )
 
 
 def _finish(text):
@@ -672,47 +659,53 @@ def _finish(text):
     return text + "."
 
 
+def _verb(story, branch):
+    """stops when this branch, or every path, raises. Otherwise the call can succeed."""
+    return "stops" if story.always or branch else "can stop"
+
+
 def _failure(story):
-    """One sentence. "stops" only when every path raises; a quote stays with its own condition."""
+    """One sentence. A quote stays with its condition. "among others" only beside a quote."""
     if not story.raises:
         return []
-    verb = "stops" if story.always else "can stop"
     name = story.name
     tied = None
     bare = None
     loose = []
-    for cond, msg in story.events:
+    messages = 0
+    for cond, msg, has, branch in story.events:
+        if has:
+            messages += 1
         phrase = _phrase(cond, story.keys)
         if phrase and msg and tied is None:
-            tied = (phrase, msg)
+            tied = (phrase, msg, branch)
         elif phrase and bare is None:
-            bare = phrase
+            bare = (phrase, branch)
         elif msg and len(loose) < 2:
             loose.append(msg)
-    described = 0
+    quoted = 0
     if tied:
-        phrase, msg = tied
-        line = f'If {phrase}, {name} {verb} with an error that says "{msg}"'
-        described = 1
+        phrase, msg, branch = tied
+        line = f'If {phrase}, {name} {_verb(story, branch)} with an error that says "{msg}"'
+        quoted = 1
     elif bare:
-        line = f"If {bare}, {name} {verb} with an error"
-        described = 1
+        phrase, branch = bare
+        line = f"If {phrase}, {name} {_verb(story, branch)} with an error"
     elif loose:
-        described = min(2, len(loose))
-        shown = _or([f'"{text}"' for text in loose[:2]])
-        line = f"{name} {verb} with an error that says {shown}"
+        quoted = len(loose)
+        shown = _or([f'"{text}"' for text in loose])
+        line = f"{name} {_verb(story, False)} with an error that says {shown}"
     else:
-        line = f"{name} {verb} with an error"
-        described = 1
+        line = f"{name} {_verb(story, False)} with an error"
+    lead = tied[0] if tied else (bare[0] if bare else None)
     extras = []
-    lead = tied[0] if tied else bare
     for cond in story.guards:
         phrase = _phrase(cond, story.keys)
         if phrase and phrase != lead and phrase not in extras:
             extras.append(phrase)
     if extras:
         line += f", and if {_or(extras)}"
-    if len(story.events) > described:
+    if quoted and messages > quoted and ", among others" not in line:
         line += ", among others"
     return [_finish(line)]
 
@@ -777,21 +770,21 @@ def _apply_facts(story, node, scope, words):
             story.send_local = bool(fact.get("local"))
 
 
-def _condition(cond, assigns, scope, words, params):
-    """('env', name) or ('empty', parameter) for a `not` check, else None."""
+def _condition(cond, assigns, facts, params):
+    """('env', name) when a `not` check reads one environment value. A parameter is not named."""
     if cond is None or cond.type != "not_operator":
         return None
     ident = next(
         (c.text.decode() for c in cond.named_children if c.type == "identifier"), None
     )
     if ident in params:
-        return ("empty", ident)
+        return None
     source = assigns.get(ident) if ident else next(iter(cond.named_children), None)
-    name = _env_name(source, scope, words)
+    name = _fact_name(source, facts)
     return ("env", name) if name else None
 
 
-def _guard(node, fn, assigns, scope, words, params):
+def _guard(node, fn, assigns, facts, params):
     cur = node.parent
     while (
         cur is not None
@@ -802,58 +795,54 @@ def _guard(node, fn, assigns, scope, words, params):
             body = _block(cur)
             if _contains(body, node):
                 return _condition(
-                    cur.child_by_field_name("condition"), assigns, scope, words, params
+                    cur.child_by_field_name("condition"), assigns, facts, params
                 )
         cur = cur.parent
     return None
 
 
-_BUILTIN_ERRORS = {
-    "Exception",
-    "BaseException",
-    "ArithmeticError",
-    "AssertionError",
-    "AttributeError",
-    "BufferError",
-    "EOFError",
-    "ImportError",
-    "LookupError",
-    "MemoryError",
-    "NameError",
-    "OSError",
-    "ReferenceError",
-    "RuntimeError",
-    "StopAsyncIteration",
-    "StopIteration",
-    "SyntaxError",
-    "SystemError",
-    "SystemExit",
-    "TypeError",
-    "ValueError",
-    "FloatingPointError",
-    "OverflowError",
-    "ZeroDivisionError",
-    "ModuleNotFoundError",
-    "IndexError",
-    "KeyError",
-    "UnboundLocalError",
-    "BlockingIOError",
-    "ChildProcessError",
-    "ConnectionError",
-    "FileExistsError",
-    "FileNotFoundError",
-    "InterruptedError",
-    "IsADirectoryError",
-    "NotADirectoryError",
-    "PermissionError",
-    "ProcessLookupError",
-    "TimeoutError",
-    "NotImplementedError",
-    "RecursionError",
-    "IndentationError",
-    "TabError",
-    "UnicodeError",
-}
+def _if_stops(node, fn):
+    """True when the if that holds this raise always raises in that branch."""
+    cur = node.parent
+    while (
+        cur is not None
+        and cur != fn
+        and cur.type not in ("function_definition", "class_definition")
+    ):
+        if cur.type == "if_statement":
+            body = _block(cur)
+            if body is not None and _contains(body, node):
+                return _seq(body.named_children, fn) == "raise"
+        cur = cur.parent
+    return False
+
+
+def _message_arg(expr, words, local_strings):
+    """True when this raise carries a message, quoted or not."""
+    if expr is None or expr.type != "call":
+        return False
+    positional, _named, _splat = call_arguments(expr)
+    for arg in positional:
+        if arg.type == "string":
+            return True
+        if arg.type == "identifier":
+            value = local_strings.get(arg.text.decode(), words.get(arg.text.decode()))
+            if isinstance(value, str):
+                return True
+    return False
+
+
+_BUILTIN_ERRORS = set(
+    "Exception BaseException ArithmeticError AssertionError AttributeError BufferError "
+    "EOFError ImportError LookupError MemoryError NameError OSError ReferenceError "
+    "RuntimeError StopAsyncIteration StopIteration SyntaxError SystemError SystemExit "
+    "TypeError ValueError FloatingPointError OverflowError ZeroDivisionError "
+    "ModuleNotFoundError IndexError KeyError UnboundLocalError BlockingIOError "
+    "ChildProcessError ConnectionError FileExistsError FileNotFoundError "
+    "InterruptedError IsADirectoryError NotADirectoryError PermissionError "
+    "ProcessLookupError TimeoutError NotImplementedError RecursionError "
+    "IndentationError TabError UnicodeError".split()
+)
 
 
 def _plain_exception(name, module):
@@ -962,14 +951,14 @@ def _returned_call(block):
     return None
 
 
-def _read_if(node, story, params, assigns, scope, words, fn):
+def _read_if(node, story, params, assigns, facts, fn):
     cond = node.child_by_field_name("condition")
     body = _block(node)
     if cond is None:
         return
     text = cond.text.decode()
     if cond.type == "not_operator" and body is not None and _escaping_raise(body, fn):
-        found = _condition(cond, assigns, scope, words, params)
+        found = _condition(cond, assigns, facts, params)
         if found and found not in story.guards:
             story.guards.append(found)
     if cond.type == "comparison_operator" and "is not" in text and "None" in text:
@@ -988,7 +977,7 @@ def _read_if(node, story, params, assigns, scope, words, fn):
     if len(kids) < 2 or kids[0].type != "identifier" or kids[-1].type != "string":
         return
     lit = string_literal(kids[-1])
-    env = _env_name(assigns.get(kids[0].text.decode()), scope, words)
+    env = _fact_name(assigns.get(kids[0].text.decode()), facts)
     call = _returned_call(body)
     if lit and env and call and call not in params and not _exc(call):
         story.choices.append((lit, call, env))
@@ -1098,14 +1087,16 @@ def _function(fn, scope, words, bound, story, attrs):
                         ):
                             story.timeout_attrs.add(attr)
         if cur.type == "if_statement":
-            _read_if(cur, story, params, assigns, scope, words, fn)
+            _read_if(cur, story, params, assigns, facts, fn)
         if cur.type == "raise_statement" and _escapes(cur, fn):
             story.raises = True
-            cond = _guard(cur, fn, assigns, scope, words, params)
-            text = _quoted_message(
-                next(iter(cur.named_children), None), words, local_strings, _module(fn)
+            expr = next(iter(cur.named_children), None)
+            cond = _guard(cur, fn, assigns, facts, params)
+            text = _quoted_message(expr, words, local_strings, _module(fn))
+            has = bool(text) or _message_arg(expr, words, local_strings)
+            story.events.append(
+                (cond, text, has, _if_stops(cur, fn) if cond else False)
             )
-            story.events.append((cond, text))
         if cur.type == "return_statement":
             expr = next(iter(cur.named_children), None)
             if _command_stdout(expr, assigns, scope, fn):
@@ -1124,9 +1115,7 @@ def _function(fn, scope, words, bound, story, attrs):
             if reads_env(path) and story.given and story.given_at is not None:
                 start, end = story.given_at
                 if not (start <= cur.start_byte and cur.end_byte <= end):
-                    story.skipped_env = (
-                        _env_name(cur, scope, words) or story.skipped_env
-                    )
+                    story.skipped_env = _fact_name(cur, facts) or story.skipped_env
             if call_way(path) == "command" and positional:
                 command = _exec(positional[0], assigns, defaults, attrs)
                 if isinstance(command, str):
@@ -1143,11 +1132,7 @@ def _function(fn, scope, words, bound, story, attrs):
                 use_timeout(named["timeout"], True, cur, path, fun)
             for value in positional:
                 use_timeout(value, False, cur, path, fun)
-            for name in _bearer(cur, assigns, scope, words):
-                story.keys.add(name)
-                story.bearer = name
-        if cur.type == "string":
-            for name in _bearer(cur, assigns, scope, words):
+            for name in _bearer(cur, assigns, facts):
                 story.keys.add(name)
                 story.bearer = name
         nested = in_if or cur.type == "if_statement"

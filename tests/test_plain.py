@@ -114,7 +114,7 @@ class PlainTest(unittest.TestCase):
             [
                 "OpenRouter sends data, using a key read from OPENROUTER_API_KEY.",
                 "By default OpenRouter waits up to 60 seconds.",
-                "If the key is missing, OpenRouter can stop with an error, among others.",
+                "If the key is missing, OpenRouter stops with an error.",
             ],
         )
         self.assertEqual(
@@ -188,16 +188,16 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(
             _lines(source, "load()"),
             [
-                'If the environment value AGENT_NAME is missing, load can stop with an error that says "no name".'
+                'If the environment value AGENT_NAME is missing, load stops with an error that says "no name".'
             ],
         )
 
     def test_a_raise_on_one_path_can_stop(self):
         source = 'def check(name):\n    if not name:\n        raise ValueError("empty")\n    return name\n'
-        self.assertEqual(
-            _lines(source, "check()"),
-            ['If name is empty, check can stop with an error that says "empty".'],
-        )
+        lines = _lines(source, "check()")
+        self.assertEqual(lines, ['check can stop with an error that says "empty".'])
+        self.assertNotIn("name", lines[0])
+        self.assertNotIn("is empty", lines[0])
 
     def test_an_env_guard_that_does_not_raise_is_not_why_it_stops(self):
         source = (
@@ -212,7 +212,9 @@ class PlainTest(unittest.TestCase):
         )
         text = " ".join(_lines(source, "load()"))
         self.assertNotIn("AGENT_NAME", text)
+        self.assertNotIn("ready", text)
         self.assertIn("can stop", text)
+        self.assertNotIn("stops", text)
 
     def test_a_url_on_another_call_is_not_where_data_is_sent(self):
         source = 'import pandas as pd\ndef load(rows):\n    pd.DataFrame(data=rows)\n    pd.read_csv("https://example.com/data.csv")\n'
@@ -260,6 +262,64 @@ class PlainTest(unittest.TestCase):
             "import httpx\ndef fetch(url):\n    httpx.Client().get(url, timeout=30)\n"
         )
         self.assertEqual(_lines(source, "fetch()"), ["fetch waits up to 30 seconds."])
+
+    def test_an_env_branch_that_sometimes_returns_can_stop(self):
+        source = (
+            "import os\n"
+            "def load(extra):\n"
+            '    name = os.environ.get("AGENT_NAME")\n'
+            "    if not name:\n"
+            "        if extra:\n"
+            '            raise RuntimeError("no name")\n'
+            "        return None\n"
+            "    return name\n"
+        )
+        text = " ".join(_lines(source, "load()"))
+        self.assertIn("can stop", text)
+        self.assertNotIn("stops", text)
+
+    def test_the_host_comes_from_the_first_fact_that_sends(self):
+        first = (
+            "import requests\n"
+            "def post():\n"
+            '    requests.post("https://one.example/a", data=b"1")\n'
+            '    requests.post("https://two.example/b", data=b"2")\n'
+        )
+        text = " ".join(_lines(first, "post()"))
+        self.assertIn("one.example", text)
+        self.assertNotIn("two.example", text)
+        later = (
+            "import requests\n"
+            "def post(url, body):\n"
+            "    requests.post(url, data=body)\n"
+            '    requests.post("https://example.com/v1", data=b"x")\n'
+        )
+        self.assertEqual(
+            _lines(later, "post()"),
+            ["post sends data to example.com over the internet."],
+        )
+
+    def test_at_most_two_messages_are_quoted(self):
+        source = (
+            "def fail():\n"
+            '    raise ValueError("one")\n'
+            '    raise ValueError("two")\n'
+            '    raise ValueError("three")\n'
+        )
+        lines = _lines(source, "fail()")
+        self.assertEqual(
+            lines,
+            ['fail stops with an error that says "one" or "two", among others.'],
+        )
+        self.assertEqual(" ".join(lines).count(", among others"), 1)
+        self.assertNotIn("three", lines[0])
+
+    def test_a_quoted_message_keeps_its_final_period(self):
+        source = 'def fail():\n    raise RuntimeError("no name.")\n'
+        self.assertEqual(
+            _lines(source, "fail()"),
+            ['fail stops with an error that says "no name."'],
+        )
 
     def test_a_category_argument_is_not_quoted_as_the_message(self):
         source = (
@@ -393,7 +453,7 @@ class PlainTest(unittest.TestCase):
                         "returns whatever the network",
                     ):
                         self.assertNotIn(phrase, text, label)
-                    if "stop with an error" in text:
+                    if "with an error" in text:
                         methods = [
                             item
                             for item in defined[name].body
@@ -402,6 +462,9 @@ class PlainTest(unittest.TestCase):
                         self.assertTrue(
                             any(_escaping_raise(method) for method in methods), label
                         )
+                    self.assertLessEqual(
+                        " ".join(lines).count(", among others"), 1, label
+                    )
                     continue
                 if "returns nothing" in text:
                     self.assertTrue(
@@ -441,5 +504,6 @@ class PlainTest(unittest.TestCase):
                         and not state["yield"],
                         label,
                     )
-                if "stop with an error" in text:
+                if "with an error" in text:
                     self.assertTrue(_escaping_raise(defined[name]), label)
+                self.assertLessEqual(" ".join(lines).count(", among others"), 1, label)
