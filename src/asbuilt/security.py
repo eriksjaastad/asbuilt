@@ -1,21 +1,526 @@
-"""Security sentences for facts the parser proved. Plain and Expert are two of the three
-levels (Plain, Working, Expert). Working is not written here.
+"""Plain and Expert sentences for facts the parser proved on a box. Working, the middle
+level, is not written here. The sentences are these ones: a model does not rephrase them.
 
-A sentence may only say what its fact says. The chart's sentences are filled in here, so
-building a chart never calls a model. A model may rephrase them later, and only a sentence
-that still contains the fact is kept.
+A timeout is mentioned only when this call shows one, or when its absence is proved.
+A network call is a request. It sends data only when a body or data argument is there,
+and it is outside only when that host is not local. Argument values other than an
+environment name, a prompt, or a URL host are not shown.
 """
 
-import json
-import re
+import ast
+from urllib.parse import urlparse
 
-from asbuilt.marks import facts
-from asbuilt.plan import _object
-from asbuilt.state import PlanError
+from asbuilt.marks import layer, reaches_out, reads_env, resolve
 
-_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
-# A model sentence that says one of these, and the fact does not, is inventing a risk.
-_ALARM = ("injection", "malware", "exploit", "hack", "vulnerable", "unsanitized", "password", "leak", "stolen", "attack")
+_HTTP = ("request", "get", "post", "put", "patch", "delete", "head", "options", "send")
+_ENV_OP = ("get", "pop", "setdefault", "getenv", "update", "items", "values", "keys", "copy", "environ")
+_RUN_TIMEOUT = ("run", "call", "check_call", "check_output")  # Popen has no timeout argument
+_LOCAL = {"localhost", "127.0.0.1", "::1"}
+_COND = {
+    "if_statement", "elif_clause", "else_clause", "try_statement", "except_clause",
+    "finally_clause", "while_statement", "with_statement", "for_statement", "match_statement", "case_clause",
+}
+
+
+def _literal(node):
+    if node is None or node.type != "string":
+        return None
+    try:
+        value = ast.literal_eval(node.text.decode())
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _ident(node):
+    if node is None:
+        return None
+    if node.type == "identifier":
+        return node.text.decode()
+    return next((c.text.decode() for c in node.named_children if c.type == "identifier"), None)
+
+
+def _targets(node):
+    if node is None:
+        return []
+    if node.type == "identifier":
+        return [node.text.decode()]
+    if node.type in ("pattern_list", "tuple_pattern", "list_pattern", "tuple"):
+        return [name for child in node.named_children for name in _targets(child)]
+    return []
+
+
+def _import_names(stmt):
+    names = []
+    items = stmt.named_children[1:] if stmt.type == "import_from_statement" else stmt.named_children
+    for item in items:
+        if item.type == "aliased_import":
+            alias = next((c for c in item.named_children if c.type == "identifier"), None)
+            if alias is not None:
+                names.append(alias.text.decode())
+        elif item.type == "dotted_name":
+            ids = [c.text.decode() for c in item.children if c.type == "identifier"]
+            if ids:
+                names.append(ids[0] if stmt.type == "import_statement" else ids[-1])
+        elif item.type == "identifier":
+            names.append(item.text.decode())
+    return names
+
+
+def constants(nodes):
+    """name -> string for one top-level assignment of a string. A second binding drops it."""
+    found = {}
+
+    def ban(names):
+        for name in names:
+            found[name] = None
+
+    def walk(node, conditional):
+        kind = node.type
+        if kind in ("function_definition", "class_definition"):
+            name = node.child_by_field_name("name")
+            if name is not None:
+                ban([name.text.decode()])
+            return
+        if kind == "decorated_definition":
+            inner = node.child_by_field_name("definition")
+            if inner is not None:
+                walk(inner, conditional)
+            return
+        if kind in ("import_statement", "import_from_statement"):
+            ban(_import_names(node))
+            return
+        if kind == "assignment":
+            names = _targets(next(iter(node.named_children), None))
+            value = node.named_children[-1] if len(node.named_children) > 1 else None
+            lit = _literal(value) if not conditional and len(names) == 1 else None
+            if lit is None or names[0] in found:
+                ban(names)
+            else:
+                found[names[0]] = lit
+            return
+        if kind in ("augmented_assignment", "named_expression", "for_statement"):
+            ban(_targets(next(iter(node.named_children), None)))
+        nested = conditional or kind in _COND
+        for child in node.named_children:
+            walk(child, nested)
+
+    for node in nodes:
+        walk(node, False)
+    return {name: text for name, text in found.items() if isinstance(text, str)}
+
+
+def _fn_constants(fn, outer):
+    """outer, minus every name this function binds, plus one direct assignment of a string."""
+    direct, banned = {}, set()
+    head = fn.child_by_field_name("parameters")
+    for child in head.named_children if head is not None else ():
+        name = _ident(child)
+        if name:
+            banned.add(name)
+    body = fn.child_by_field_name("body")
+
+    def walk(node, top):
+        if node.type in ("function_definition", "class_definition"):
+            name = node.child_by_field_name("name")
+            if name is not None:
+                banned.add(name.text.decode())
+            return
+        if node.type == "decorated_definition":
+            inner = node.child_by_field_name("definition")
+            if inner is not None:
+                walk(inner, False)
+            return
+        if node.type == "global_statement":
+            banned.update(c.text.decode() for c in node.named_children if c.type == "identifier")
+            return
+        if node.type in ("import_statement", "import_from_statement"):
+            banned.update(_import_names(node))
+            return
+        target = next(iter(node.named_children), node) if node.type == "expression_statement" and top else node
+        if target.type == "assignment":
+            names = _targets(next(iter(target.named_children), None))
+            value = target.named_children[-1] if len(target.named_children) > 1 else None
+            lit = _literal(value) if top and len(names) == 1 else None
+            name = names[0] if len(names) == 1 else None
+            if lit and name and name not in direct:
+                direct[name] = lit
+            else:
+                for item in names:
+                    banned.add(item)
+                    direct.pop(item, None)
+            return
+        if target.type in ("augmented_assignment", "named_expression", "for_statement"):
+            banned.update(_targets(next(iter(target.named_children), None)))
+        for child in node.named_children:
+            walk(child, False)
+
+    for stmt in body.named_children if body is not None else ():
+        walk(stmt, True)
+    kept = {name: text for name, text in outer.items() if name not in banned and name not in direct}
+    kept.update({name: text for name, text in direct.items() if name not in banned})
+    return kept
+
+
+def _args(call):
+    args = call.child_by_field_name("arguments")
+    positional, named, splat = [], {}, False
+    for child in args.named_children if args is not None else ():
+        if child.type == "keyword_argument":
+            key, val = child.child_by_field_name("name"), child.child_by_field_name("value")
+            if key is not None and val is not None:
+                named[key.text.decode()] = val
+        elif child.type in ("dictionary_splat", "list_splat"):
+            splat = True
+        else:
+            positional.append(child)
+    return positional, named, splat
+
+
+def _extended(fun, scope):
+    """resolve, and also obj().attr when obj() itself resolves. build_opener().open is that open."""
+    path = resolve(fun, scope)
+    if path is not None or fun is None or fun.type != "attribute":
+        return path
+    obj, attr = fun.child_by_field_name("object"), fun.child_by_field_name("attribute")
+    if obj is None or obj.type != "call" or attr is None:
+        return None
+    base = _extended(next(iter(obj.named_children), None), scope)
+    return None if base is None else base + (attr.text.decode(),)
+
+
+def _chain(call, scope):
+    """This call, then the call it is a method of. os.getenv("X").strip() yields strip, then getenv."""
+    current = call
+    while current is not None:
+        fun = next(iter(current.named_children), None)
+        yield current, fun, _extended(fun, scope)
+        if fun is None or fun.type != "attribute":
+            return
+        obj = fun.child_by_field_name("object")
+        current = obj if obj is not None and obj.type == "call" else None
+
+
+def _label(fun):
+    """The callee's names, without its argument values. urllib.request.urlopen, not the URL."""
+    if fun is None:
+        return ""
+    if fun.type == "identifier":
+        return fun.text.decode()
+    if fun.type == "attribute":
+        obj, attr = fun.child_by_field_name("object"), fun.child_by_field_name("attribute")
+        attr_name = attr.text.decode() if attr is not None else ""
+        if obj is not None and obj.type == "call":
+            return f"{_label(next(iter(obj.named_children), None))}.{attr_name}"
+        if obj is not None and obj.type in ("attribute", "identifier"):
+            return f"{_label(obj)}.{attr_name}"
+    return ""
+
+
+def _shown(fun, bits):
+    name = _label(fun) or "call"
+    return f"{name}({', '.join(bits)})" if bits else f"{name}()"
+
+
+def _name_bit(node, found):
+    """An environment name or the identifier that holds it. Not a later argument's value."""
+    if node is None:
+        return None
+    if node.type == "string":
+        return repr(found) if found else None
+    if node.type == "identifier":
+        return node.text.decode()
+    return None
+
+
+def _host(node):
+    text = _literal(node)
+    if not text:
+        return None
+    parsed = urlparse(text)
+    if parsed.scheme in ("http", "https") and parsed.hostname:
+        return parsed.hostname
+    return None
+
+
+def _module_call(fun, scope):
+    """True when the callee is the module or a function imported from it, not a method on a client."""
+    if fun is None:
+        return False
+    if fun.type == "identifier":
+        return True
+    obj = fun
+    while obj is not None and obj.type == "attribute":
+        obj = obj.child_by_field_name("object")
+    if obj is None or obj.type != "identifier":
+        return False
+    spec = scope.get(obj.text.decode(), False)
+    return isinstance(spec, tuple) and spec[0] in ("mod", "from")
+
+
+def _timeout_index(path):
+    last = path[-1]
+    if path[:1] == ("socket",) and last == "create_connection":
+        return 1
+    if path[:2] == ("urllib", "request") and last in ("urlopen", "open"):
+        return 2
+    if path[:2] == ("http", "client") and last in ("HTTPConnection", "HTTPSConnection"):
+        return 2
+    return None
+
+
+def _has_timeout(path):
+    """True when this function takes a timeout. Popen and urlretrieve do not."""
+    last = path[-1]
+    if path[:1] == ("subprocess",) and last in _RUN_TIMEOUT:
+        return True
+    if path[:1] in {("requests",), ("httpx",)} and last in _HTTP:
+        return True
+    if path[:2] == ("urllib", "request") and last in ("urlopen", "open"):
+        return True
+    if path[:1] == ("socket",) and last == "create_connection":
+        return True
+    if path[:2] == ("http", "client") and last in ("HTTPConnection", "HTTPSConnection"):
+        return True
+    return False
+
+
+def _absence_proves_none(path):
+    """True when omitting timeout means there is none. urlopen's default is a timeout, so it is not."""
+    last = path[-1]
+    if path[:1] == ("requests",) and last in _HTTP:
+        return True
+    return path[:1] == ("subprocess",) and last in _RUN_TIMEOUT
+
+
+def _timeout(call, fun, path, scope):
+    """passed, none, absent, or None when this call does not prove it."""
+    if not _has_timeout(path):
+        return None
+    positional, named, splat = _args(call)
+    if "timeout" in named:
+        return "none" if named["timeout"].type == "none" else "passed"
+    index = _timeout_index(path)
+    if index is not None and not splat and len(positional) > index:
+        return "none" if positional[index].type == "none" else "passed"
+    if splat or not _module_call(fun, scope) or not _absence_proves_none(path):
+        return None
+    return "absent"
+
+
+def _sends(call, path):
+    positional, named, _splat = _args(call)
+    for key in ("data", "json", "body", "content"):
+        node = named.get(key)
+        if node is not None and node.type != "none":
+            return True
+    return path[-1] == "urlopen" and len(positional) > 1 and positional[1].type != "none"
+
+
+def _way(path):
+    last = path[-1]
+    if path[:1] == ("subprocess",) or path[:2] == ("os", "system"):
+        return "command"
+    if path[:1] == ("socket",) and last != "socket":
+        return "connect"
+    if path[:2] == ("http", "client") and last in ("HTTPConnection", "HTTPSConnection"):
+        return "connect"
+    if path[:2] == ("http", "client") and last == "request":
+        return "send"
+    if path[:1] in {("requests",), ("httpx",)} and last in _HTTP:
+        return "send"
+    if path[:2] == ("urllib", "request") and last in ("urlopen", "urlretrieve", "open"):
+        return "send"
+    return None
+
+
+def _env_how(path):
+    last = path[-1]
+    if last == "pop":
+        return "remove"
+    if last == "setdefault":
+        return "default"
+    if last == "update":
+        return "write"
+    return "read"
+
+
+def _caught(node):
+    cur = node.parent
+    while cur is not None:
+        if cur.type == "try_statement":
+            body = cur.child_by_field_name("body")
+            if body is not None and body.start_byte <= node.start_byte and node.end_byte <= body.end_byte:
+                return True
+        cur = cur.parent
+    return False
+
+
+def _repeats(node):
+    cur = node.parent
+    while cur is not None:
+        if cur.type in ("for_statement", "while_statement"):
+            body = cur.child_by_field_name("body")
+            if body is not None and body.start_byte <= node.start_byte and node.end_byte <= body.end_byte:
+                return True
+        cur = cur.parent
+    return False
+
+
+def _is_target(node):
+    parent = node.parent
+    if parent is None:
+        return False
+    kids = list(parent.named_children)
+    if parent.type == "augmented_assignment":
+        return bool(kids) and node == kids[0]
+    return parent.type == "assignment" and len(kids) >= 2 and node in kids[:-1]
+
+
+def facts(node, module, consts=None):
+    """What this box itself proves about env, input, and calls out. [] when nothing here does."""
+    outer = dict(consts or {})
+    found, claimed = [], []
+
+    def inside(cur):
+        return any(start <= cur.start_byte and cur.end_byte <= end for start, end in claimed)
+
+    def add(kind, span, shown, fields):
+        if inside(span):
+            return
+        claimed.append((span.start_byte, span.end_byte))
+        fact = {"kind": kind, "at": shown, "start": span.start_byte}
+        fact.update(fields)
+        found.append(fact)
+
+    def on_call(cur, scope, local):
+        if inside(cur):
+            return
+        chosen = None
+        for current, fun, path in reversed(list(_chain(cur, scope))):
+            if path is None:
+                continue
+            if path[0] == "builtin" and path[-1] == "input":
+                chosen = (current, fun, path, "input")
+                break
+            if reads_env(path) and path[-1] in _ENV_OP:
+                chosen = (current, fun, path, "env")
+                break
+            if reaches_out(path) and _way(path):
+                chosen = (current, fun, path, "calls out")
+                break
+        if chosen is None:
+            return
+        current, fun, path, kind = chosen
+        # Claim the whole chain so the inner call is not recorded again. Arguments stay outside
+        # the callee, so os.environ["K"] passed into another call is still its own fact.
+        callee = next(iter(cur.named_children), cur)
+        if kind == "input":
+            positional, _named, _splat = _args(current)
+            prompt = _literal(positional[0]) if positional else None
+            fields = {}
+            if prompt:
+                fields["prompt"] = prompt
+            bit = repr(prompt) if prompt else None
+            add("input", callee, _shown(fun, [bit] if bit else []), fields)
+            return
+        if kind == "env":
+            positional, named, _splat = _args(current)
+            node = positional[0] if positional else named.get("key")
+            found_name = _literal(node) if node is not None and node.type == "string" else local.get(_ident(node) or "")
+            fields = {"how": _env_how(path)}
+            if found_name:
+                fields["name"] = found_name
+            bit = _name_bit(node, found_name)
+            add("env", callee, _shown(fun, [bit] if bit else []), fields)
+            return
+        fields = {"way": _way(path), "caught": _caught(cur)}
+        if _repeats(cur):
+            fields["repeats"] = True
+        timeout = _timeout(current, fun, path, scope)
+        if timeout:
+            fields["timeout"] = timeout
+        if _sends(current, path):
+            fields["sends"] = True
+        host = None
+        positional, named, _splat = _args(current)
+        for candidate in (named.get("url"), positional[0] if positional else None):
+            host = _host(candidate)
+            if host:
+                break
+        if host:
+            fields["host"] = host
+            if host in _LOCAL:
+                fields["local"] = True
+        add("calls out", callee, _shown(fun, [host] if host else []), fields)
+
+    def on_subscript(cur, scope, local, how):
+        if inside(cur):
+            return
+        value = cur.child_by_field_name("value")
+        path = resolve(value, scope)
+        if not reads_env(path):
+            return
+        index = cur.child_by_field_name("subscript")
+        found_name = _literal(index) if index is not None and index.type == "string" else local.get(_ident(index) or "")
+        fields = {"how": how}
+        if found_name:
+            fields["name"] = found_name
+        base = " ".join(value.text.decode().split()) if value is not None else "os.environ"
+        if index is not None and index.type == "identifier":
+            shown = f"{base}[{index.text.decode()}]"
+        elif found_name:
+            shown = f"{base}[{found_name!r}]"
+        else:
+            shown = base
+        add("env", cur, shown, fields)
+
+    def visit(cur, scope, local):
+        if cur.type in ("import_statement", "import_from_statement"):
+            return
+        if cur.type == "function_definition":
+            inner = layer(cur, scope)
+            body = cur.child_by_field_name("body")
+            for child in body.children if body is not None else ():
+                visit(child, inner, _fn_constants(cur, local))
+            return
+        if cur.type == "class_definition":
+            body = cur.child_by_field_name("body")
+            for child in body.children if body is not None else ():
+                visit(child, scope, local)
+            return
+        if cur.type == "delete_statement":
+            for target in cur.named_children:
+                if target.type == "subscript":
+                    on_subscript(target, scope, local, "remove")
+            return
+        if cur.type == "call":
+            on_call(cur, scope, local)
+        elif cur.type == "subscript" and not inside(cur):
+            on_subscript(cur, scope, local, "set" if _is_target(cur) else "read")
+        elif cur.type == "comparison_operator" and not inside(cur):
+            kids = list(cur.named_children)
+            op = next((c.text.decode() for c in cur.children if c.text.decode() in ("in", "not in")), None)
+            if op and len(kids) == 2 and reads_env(resolve(kids[1], scope)):
+                path = resolve(kids[1], scope)
+                if path is not None and path[-1] == "environ" and len(path) == 2:
+                    found_name = _literal(kids[0]) if kids[0].type == "string" else local.get(_ident(kids[0]) or "")
+                    fields = {"how": "check"}
+                    if found_name:
+                        fields["name"] = found_name
+                    shown = " ".join(cur.text.decode().split())
+                    if found_name and kids[0].type == "string":
+                        shown = shown  # the literal name is the whole check; no second value is in it
+                    add("env", cur, shown, fields)
+        elif cur.type in ("identifier", "attribute") and not inside(cur):
+            path = resolve(cur, scope)
+            if reads_env(path) and path[-1] in _ENV_OP:
+                add("env", cur, _label(cur) or cur.text.decode(), {"how": _env_how(path)})
+        for child in cur.children:
+            visit(child, scope, local)
+
+    visit(node, dict(module or {}), outer)
+    return found
 
 
 def _plain(fact):
@@ -27,6 +532,10 @@ def _plain(fact):
         if how == "check":
             which = f"whether {name} is set" if name else "the environment"
             return f"This checks {which}, and does not read the value: {at}."
+        if how == "remove":
+            return f"This removes {name} from the environment: {at}." if name else f"This removes a value from the environment: {at}."
+        if how == "default":
+            return f"This sets a default for {name} in the environment: {at}." if name else f"This sets a default in the environment: {at}."
         if how == "set":
             return f"This sets {name} in the environment: {at}." if name else f"This sets an environment value: {at}."
         if how == "write":
@@ -38,10 +547,14 @@ def _plain(fact):
         return f"This runs a command outside this program: {at}."
     if fact.get("way") == "connect":
         return f"This opens a network connection: {at}."
-    return f"This sends your data to an outside service: {at}."
+    if fact.get("sends") and fact.get("host") and not fact.get("local"):
+        return f"This sends your data to an outside service: {at}."
+    if fact.get("sends"):
+        return f"This sends data in a network request: {at}."
+    return f"This makes a network request: {at}."
 
 
-def _timeout(fact):
+def _timeout_line(fact):
     state = fact.get("timeout")
     if state == "passed":
         return "A timeout is passed."
@@ -55,25 +568,25 @@ def _timeout(fact):
 def _expert(fact):
     at = fact["at"]
     if fact["kind"] == "input":
-        line = f"{at} reads what a person types."
-        if fact.get("prompt"):
-            line += f" The prompt is {fact['prompt']!r}."
-        return line
+        return f"{at} reads what a person types."
     if fact["kind"] == "env":
         how, name = fact.get("how"), fact.get("name")
         if how == "check":
             which = f"{name} is set" if name else "a name is set"
             return f"{at} checks whether {which}. It does not read the value."
+        if how == "remove":
+            return f"{at} removes {name} from the environment." if name else f"{at} removes a value from the environment."
+        if how == "default":
+            return f"{at} sets a default for {name} in the environment." if name else f"{at} sets a default in the environment."
         if how == "set":
-            which = name if name else "a value"
-            return f"{at} sets {which} in the environment."
+            return f"{at} sets {name} in the environment." if name else f"{at} sets an environment value."
         if how == "write":
             return f"{at} changes the environment."
         if name:
             return f"{at} reads {name} from the environment."
         return f"{at} reads the environment. The name is not a literal in this box."
     parts = [f"{at}."]
-    timeout = _timeout(fact)
+    timeout = _timeout_line(fact)
     if timeout:
         parts.append(timeout)
     parts.append("This call is inside try." if fact.get("caught") else "This call is not inside try.")
@@ -82,52 +595,6 @@ def _expert(fact):
     return " ".join(parts)
 
 
-def for_box(node, scope, constants):
+def for_box(node, scope, consts):
     """The plain and expert sentences for this box, one pair per fact. [] when there is no fact."""
-    return [{"fact": fact, "plain": _plain(fact), "expert": _expert(fact)} for fact in facts(node, scope, constants)]
-
-
-def _quotes(text):
-    return [one or two for one, two in _QUOTED.findall(text)]
-
-
-def _fits(text, fact):
-    """True when this one line repeats the fact and does not name a new quoted string or an alarm."""
-    if not isinstance(text, str):
-        return False
-    line = text.strip()
-    if not line or "\n" in line or len(line) > 240 or fact["at"] not in line:
-        return False
-    allowed = fact["at"]
-    name = fact.get("name") or ""
-    for quoted in _quotes(line):
-        if quoted and quoted not in allowed and quoted != name:
-            return False
-    low = line.casefold()
-    return not any(word in low and word not in allowed.casefold() for word in _ALARM)
-
-
-def reworded(reply, rows):
-    """Sentences from a model reply that still point at a fact. A reply that is not the JSON
-    asked for is ignored, and so is one sentence that adds a name or a risk. rows are
-    {"id", "fact"} for notes already on the plan."""
-    text = reply.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
-    try:
-        said = json.loads(text, object_pairs_hook=lambda pairs: _object(pairs, "the reply"))
-    except (ValueError, RecursionError, PlanError):
-        return []
-    notes = said.get("notes") if isinstance(said, dict) and set(said) == {"notes"} else None
-    if not isinstance(notes, list):
-        return []
-    pending = {(row["id"], row["fact"]["at"]): row["fact"] for row in rows}
-    kept = []
-    for item in notes:
-        if not isinstance(item, dict) or set(item) != {"id", "at", "plain", "expert"}:
-            continue
-        fact = pending.get((item["id"], item["at"]))
-        if fact is None or not _fits(item["plain"], fact) or not _fits(item["expert"], fact):
-            continue
-        kept.append({"id": item["id"], "at": item["at"], "plain": item["plain"].strip(), "expert": item["expert"].strip()})
-    return kept
+    return [{"fact": fact, "plain": _plain(fact), "expert": _expert(fact)} for fact in facts(node, scope, consts)]

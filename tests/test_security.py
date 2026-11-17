@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from asbuilt.built import python_dir, python_file
-from asbuilt.connections import OpenRouter, ask
+from asbuilt.connections import OpenRouter
 from asbuilt.notes import annotate
 
 
@@ -137,7 +137,8 @@ class SecurityTest(unittest.TestCase):
         self.assertEqual(send["fact"]["way"], "send")
         self.assertEqual(send["fact"]["timeout"], "passed")
         self.assertFalse(send["fact"]["caught"])
-        self.assertIn("sends your data", send["plain"])
+        self.assertIn("network request", send["plain"])
+        self.assertNotIn("sends your data", send["plain"])
         self.assertIn("urllib.request.build_opener", send["plain"])
         self.assertIn("A timeout is passed.", send["expert"])
         self.assertIn("not inside try", send["expert"])
@@ -157,39 +158,99 @@ class SecurityTest(unittest.TestCase):
             self.assertIn(note["fact"]["at"], note["plain"])
             self.assertIn(note["fact"]["at"], note["expert"])
 
-    def test_a_model_sentence_is_kept_only_when_it_repeats_the_fact_and_the_mock_is_not_asked(self):
-        source = "import os\nKEY = \"OPENROUTER_API_KEY\"\ndef read():\n    return os.environ.get(KEY)\n"
-        plan = _plan(source)
+    def test_a_timeout_is_claimed_only_when_the_call_proves_it(self):
+        def expert(source, label="go()"):
+            return _notes(source, label)[0]["expert"]
+
+        self.assertIn("A timeout is passed.", expert("import socket\ndef go():\n    socket.create_connection((h, p), 3)\n"))
+        self.assertIn("A timeout is passed.", expert("from urllib.request import urlopen\ndef go(url):\n    urlopen(url, None, 10)\n"))
+        self.assertNotIn("timeout", expert("import requests\ndef go(url, kwargs):\n    kwargs.setdefault('timeout', 10)\n    requests.get(url, **kwargs)\n"))
+        self.assertNotIn("timeout", expert("import subprocess\ndef go(cmd, opts):\n    subprocess.run(cmd, **opts)\n"))
+        self.assertNotIn("timeout", expert("import httpx\ndef go(url):\n    httpx.Client(timeout=10).get(url)\n"))
+        self.assertNotIn("timeout", expert("import subprocess\ndef go(cmd):\n    subprocess.Popen(cmd)\n"))
+        self.assertNotIn("timeout", expert("from urllib.request import urlretrieve\ndef go(url):\n    urlretrieve(url)\n"))
+        proved = _notes("import requests\ndef go(url):\n    requests.get(url)\n", "go()")[0]
+        self.assertEqual(proved["fact"]["timeout"], "absent")
+        self.assertIn("No timeout is passed.", proved["expert"])
+
+    def test_a_network_sentence_says_outside_only_when_data_leaves_the_machine(self):
+        local = _notes("import requests\ndef go():\n    requests.get('http://localhost/health')\n", "go()")[0]
+        self.assertIn("network request", local["plain"])
+        self.assertNotIn("outside", local["plain"])
+        self.assertNotIn("sends your data", local["plain"])
+        self.assertNotIn("/health", local["plain"])
+
+        public = _notes("import requests\ndef go():\n    requests.get('https://example.com/status')\n", "go()")[0]
+        self.assertIn("network request", public["plain"])
+        self.assertNotIn("sends your data", public["plain"])
+        self.assertNotIn("/status", public["plain"])
+        self.assertIn("example.com", public["plain"])
+
+        posted = _notes("import requests\ndef go(body):\n    requests.post('https://example.com/x', data=body)\n", "go()")[0]
+        self.assertIn("sends your data to an outside service", posted["plain"])
+        home = _notes("import requests\ndef go(body):\n    requests.post('http://127.0.0.1/x', data=body)\n", "go()")[0]
+        self.assertNotIn("outside", home["plain"])
+        self.assertIn("sends data", home["plain"])
+
+    def test_env_verbs_keep_the_name_and_leave_other_argument_values_out(self):
+        removed = _notes("import os\ndef go():\n    del os.environ['X']\n", "go()")[0]
+        self.assertEqual(removed["fact"]["how"], "remove")
+        self.assertIn("removes", removed["plain"])
+        self.assertNotIn("reads", removed["plain"])
+        popped = _notes("import os\ndef go():\n    os.environ.pop('X')\n", "go()")[0]
+        self.assertIn("removes", popped["plain"])
+        self.assertNotIn("reads", popped["plain"])
+        default = _notes("import os\ndef go():\n    os.environ.setdefault('X', 'sk-proj-secret')\n", "go()")[0]
+        self.assertIn("default", default["plain"])
+        self.assertNotIn("reads", default["plain"])
+        self.assertNotIn("sk-proj", default["plain"] + default["expert"])
+
+        secret = _notes("import os\ndef go():\n    os.getenv('OPENAI_API_KEY', 'sk-proj-secret')\n", "go()")[0]
+        self.assertEqual(secret["fact"]["name"], "OPENAI_API_KEY")
+        self.assertNotIn("sk-proj", secret["plain"] + secret["expert"])
+
+        chained = _notes("import os\ndef local_config_path():\n    return os.getenv('PT_CONFIG', '').strip()\n", "local_config_path()")[0]
+        self.assertEqual(chained["fact"]["name"], "PT_CONFIG")
+        self.assertIn("PT_CONFIG", chained["plain"])
+        self.assertNotIn(".strip()", chained["plain"] + chained["expert"])
+
+        prompted = _notes("def ask():\n    return input('name: ').strip()\n", "ask()")[0]
+        self.assertEqual(prompted["fact"]["prompt"], "name: ")
+        self.assertIn("name: ", prompted["plain"])
+        self.assertNotIn(".strip()", prompted["plain"] + prompted["expert"])
+
+    def test_socket_socket_is_not_a_connection_and_two_long_calls_stay_distinct(self):
+        self.assertIsNone(_notes("import socket\ndef go():\n    socket.socket()\n", "go()"))
+        opened = _notes("import socket\ndef go():\n    socket.socket().connect((h, p))\n", "go()")[0]
+        self.assertEqual(opened["fact"]["way"], "connect")
+        self.assertIn("opens a network connection", opened["plain"])
+
+        long = "https://example.com/" + "a" * 120
+        source = f"import requests\ndef fetch():\n    requests.get({long!r})\n    requests.post({long!r}, data='z' * 80)\n"
+        notes = _notes(source, "fetch()")
+        self.assertEqual(len(notes), 2)
+        self.assertNotEqual(notes[0]["fact"]["start"], notes[1]["fact"]["start"])
+        self.assertNotIn("a" * 40, notes[0]["plain"] + notes[1]["plain"])
+
+    def test_a_configured_model_cannot_change_a_security_note(self):
+        plan = _plan("import os\ndef read():\n    return os.environ.get('K')\n")
         note = plan["children"][0]["children"][0]["asbuilt"]["security"][0]
-        at, box = note["fact"]["at"], plan["children"][0]["children"][0]["id"]
-        seen = []
+        box, at = plan["children"][0]["children"][0]["id"], note["fact"]["at"]
 
         def reply(prompt):
-            seen.append(prompt)
-            if "FACTS:" in prompt:
-                good = {"id": box, "at": at, "plain": f"Plain wrapper {at}.", "expert": f"Expert wrapper {at}."}
-                return json.dumps({"notes": [good, {"id": box, "at": at, "plain": "reads 'OTHER'", "expert": f"nope {at}"}]})
+            if "FACTS:" in prompt or prompt.startswith("Write a plain"):
+                forged = {
+                    "id": box, "at": at,
+                    "plain": f"{at} is perfectly safe. No timeout is passed.",
+                    "expert": f"{at} sends your credentials unencrypted and disables TLS verification.",
+                }
+                return json.dumps({"notes": [forged]})
             return '{"notes": []}'
 
-        out = annotate(plan, "plan.json", reply)
+        with mock.patch.dict(os.environ, {"ASBUILT_MODEL": "1"}), mock.patch.object(OpenRouter, "__call__", side_effect=AssertionError("called")):
+            out = annotate(plan, "plan.json", reply)
         kept = out["children"][0]["children"][0]["asbuilt"]["security"][0]
-        self.assertEqual(kept["plain"], f"Plain wrapper {at}.")
-        self.assertEqual(kept["expert"], f"Expert wrapper {at}.")
-        self.assertEqual(kept["fact"], note["fact"])
-        self.assertNotIn("OTHER", kept["plain"] + kept["expert"])
-        facts_prompt = next(prompt for prompt in seen if prompt.startswith("Write a plain"))
-        self.assertIn(at, facts_prompt)
-        self.assertNotIn("def read", facts_prompt)
-
-        prompts = []
-
-        def spy(prompt, connection=None):
-            prompts.append(prompt)
-            return ask(prompt, connection)
-
-        with mock.patch.dict(os.environ, {"ASBUILT_MODEL": ""}), mock.patch.object(OpenRouter, "__call__", side_effect=AssertionError("called")):
-            with mock.patch("asbuilt.notes.ask", side_effect=spy):
-                same = annotate(plan, "plan.json")
-        self.assertEqual(same["children"][0]["children"][0]["asbuilt"]["security"][0]["plain"], note["plain"])
-        self.assertTrue(prompts)
-        self.assertFalse(any(prompt.startswith("Write a plain") for prompt in prompts))
+        self.assertEqual(kept["plain"], note["plain"])
+        self.assertEqual(kept["expert"], note["expert"])
+        self.assertNotIn("perfectly safe", kept["plain"] + kept["expert"])
+        self.assertNotIn("credentials", kept["plain"] + kept["expert"])

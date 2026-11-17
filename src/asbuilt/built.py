@@ -271,10 +271,10 @@ def python_file(name, source):
             else:
                 decoded, definitions = text.decode(), _definitions(root)
                 scope = _scope(list(root.named_children), None, False)
-                from asbuilt.marks import module_constants
+                from asbuilt.security import constants as security_constants
                 from asbuilt.security import for_box
 
-                constants = module_constants(list(root.named_children))
+                constants = security_constants(list(root.named_children))
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
         children, at = [], {}
