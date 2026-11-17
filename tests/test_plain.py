@@ -695,7 +695,10 @@ class PlainTest(unittest.TestCase):
         )
         self.assertEqual(
             _lines(constant, "_run_in_sandbox()"),
-            ["_run_in_sandbox runs the command git."],
+            [
+                "_run_in_sandbox runs the command git.",
+                "_run_in_sandbox waits up to 60 seconds.",
+            ],
         )
         missing = (
             "import subprocess\n"
@@ -734,6 +737,70 @@ class PlainTest(unittest.TestCase):
         text = " ".join(_lines(source, "fail()"))
         self.assertNotIn("says", text)
         self.assertNotIn("OPENROUTER_API_KEY", text)
+
+    def test_a_once_assigned_constant_is_a_readable_timeout(self):
+        source = (
+            "import subprocess\n"
+            "TIMEOUT = 120\n"
+            "def launchctl_list():\n"
+            '    subprocess.run(["launchctl", "list"], timeout=TIMEOUT)\n'
+        )
+        self.assertEqual(
+            _lines(source, "launchctl_list()"),
+            [
+                "launchctl_list runs the command launchctl.",
+                "launchctl_list waits up to 120 seconds.",
+            ],
+        )
+        rebound = (
+            "import subprocess\n"
+            "TIMEOUT = 120\n"
+            "TIMEOUT = 5\n"
+            "def launchctl_list():\n"
+            '    subprocess.run(["launchctl", "list"], timeout=TIMEOUT)\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(rebound, "launchctl_list()")))
+        typed = (
+            "import requests\n"
+            "LIMIT = 15\n"
+            "def fetch(timeout: int = LIMIT):\n"
+            '    requests.get("https://example.com/x", timeout=timeout)\n'
+        )
+        self.assertEqual(
+            _lines(typed, "fetch()"), ["By default fetch waits up to 15 seconds."]
+        )
+        floated = (
+            "import requests\n"
+            "def fetch():\n"
+            '    requests.get("https://example.com/x", timeout=10.0)\n'
+        )
+        self.assertEqual(
+            _lines(floated, "fetch()"), ["fetch waits up to 10.0 seconds."]
+        )
+
+    def test_a_bad_wait_clears_an_earlier_literal(self):
+        source = (
+            "import requests\n"
+            "def _CloudBackend():\n"
+            '    requests.get("https://example.com/a", timeout=30)\n'
+            '    requests.get("https://example.com/b")\n'
+        )
+        self.assertNotIn("30", " ".join(_lines(source, "_CloudBackend()")))
+        self.assertNotIn("second", " ".join(_lines(source, "_CloudBackend()")))
+
+    def test_a_retry_loop_says_each_try(self):
+        source = (
+            "import requests\n"
+            "def fetch():\n"
+            "    for _ in range(3):\n"
+            "        try:\n"
+            '            requests.get("https://example.com", timeout=15)\n'
+            "        except OSError:\n"
+            "            pass\n"
+        )
+        self.assertEqual(
+            _lines(source, "fetch()"), ["Each try, fetch waits up to 15 seconds."]
+        )
 
     def test_a_literal_timeout_names_the_box(self):
         source = 'import requests\ndef send():\n    requests.get("https://example.com/x", timeout=15)\n'

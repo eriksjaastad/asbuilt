@@ -10,6 +10,7 @@ import json
 from asbuilt.built import one_name
 from asbuilt.marks import layer, reaches_out, reads_env, resolve
 from asbuilt.security import (
+    _timeout_index,
     assigned,
     call_arguments,
     call_way,
@@ -196,56 +197,88 @@ def _in_retry(node, fn):
     return False
 
 
-# These calls wait. A client constructor does not, unless it is given a timeout.
-_WAITS = {
-    "run",
-    "call",
-    "check_call",
-    "check_output",
-    "Popen",
-    "urlopen",
-    "get",
-    "post",
-    "put",
-    "patch",
-    "delete",
-    "head",
-    "options",
-    "request",
-    "send",
-    "create_connection",
-    "create_server",
-    "SMTP",
-    "SMTP_SSL",
-    "IMAP4",
-    "IMAP4_SSL",
-}
-
-
-def _takes_seconds(path, call, facts):
-    """True for a call whose timeout is in seconds, not milliseconds."""
-    roots = ("requests", "httpx", "socket", "subprocess", "smtplib", "imaplib")
-    if path and (path[0] in roots or path[:2] == ("urllib", "request")):
-        return True
+def _wait_status(call, facts):
+    """passed, none, absent, or None. The security fact is the list of calls that wait."""
+    fun = next(iter(call.named_children), None)
+    if fun is None:
+        return None
+    parent = call.parent
+    while parent is not None:
+        if parent.type == "call":
+            other = next(iter(parent.named_children), None)
+            if other is not None and other.start_byte == fun.start_byte:
+                return None
+        parent = parent.parent
     for fact in facts:
-        if fact.get("timeout") != "passed":
+        if fact.get("kind") != "calls out" or "timeout" not in fact:
             continue
-        if not (call.start_byte <= fact.get("start", -1) < call.end_byte):
-            continue
-        at = fact.get("at") or ""
-        if at.startswith(
-            (
-                "urllib.",
-                "requests.",
-                "httpx.",
-                "socket.",
-                "subprocess.",
-                "smtplib.",
-                "imaplib.",
-            )
+        if fact.get("start") == fun.start_byte:
+            return fact["timeout"]
+    return None
+
+
+def _numeric(node):
+    if node is None:
+        return None
+    if node.type == "integer":
+        try:
+            return int(node.text.decode(), 0)
+        except ValueError:
+            return None
+    if node.type == "float":
+        try:
+            return float(node.text.decode())
+        except ValueError:
+            return None
+    return None
+
+
+def _stable_numbers(nodes):
+    """Module or class numbers assigned once. A second binding, or one inside a branch, drops the name."""
+    found, banned = {}, set()
+
+    def ban(names):
+        for name in names:
+            banned.add(name)
+            found.pop(name, None)
+
+    def walk(node, conditional):
+        if node.type == "decorated_definition":
+            inner = node.child_by_field_name("definition")
+            if inner is not None:
+                walk(inner, conditional)
+            return
+        if node.type in ("function_definition", "lambda", "class_definition"):
+            label = node.child_by_field_name("name") if node.type != "lambda" else None
+            if label is not None:
+                ban([label.text.decode()])
+            return
+        if node.type == "assignment":
+            kids = list(node.named_children)
+            names = [kid.text.decode() for kid in kids[:-1] if kid.type == "identifier"]
+            number = _numeric(kids[-1]) if not conditional and len(names) == 1 else None
+            if not names or number is None or names[0] in found or names[0] in banned:
+                ban(names)
+            else:
+                found[names[0]] = number
+            return
+        if node.type in (
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "try_statement",
+            "with_statement",
+            "match_statement",
         ):
-            return True
-    return False
+            for child in node.named_children:
+                walk(child, True)
+            return
+        for child in node.named_children:
+            walk(child, conditional)
+
+    for node in nodes:
+        walk(node, False)
+    return found, banned
 
 
 def _param_default(node, bound):
@@ -529,7 +562,6 @@ class _Story:
         self.events = []
         self.keys = set()
         self.bearer = None
-        self.timeout_attrs = set()
         self.returns = None
 
 
@@ -658,7 +690,7 @@ def _sentences(story):
             pending.append(f"{story.name} " + _and(bits) + ".")
         elif story.exception and not story.returns:
             pending.append(f"{story.name} is an exception.")
-    if isinstance(story.timeout, int):
+    if isinstance(story.timeout, (int, float)) and not isinstance(story.timeout, bool):
         if story.timeout_loop and story.timeout_default:
             pending.append(
                 f"By default each try, {story.name} waits up to {story.timeout} seconds."
@@ -1049,53 +1081,81 @@ def _read_if(node, story, params, assigns, facts, fn):
         story.choices.append((lit, call, env))
 
 
+def _enclosing_class(fn):
+    cur = fn.parent
+    while cur is not None and cur.type != "class_definition":
+        cur = cur.parent
+    return cur
+
+
+def _numbers_for(fn):
+    """Once-assigned module and class numbers, minus names this function rebinds."""
+    module = _module(fn)
+    found, banned = _stable_numbers(module.named_children)
+    numbers = dict(found)
+    for name in banned:
+        numbers.pop(name, None)
+    cls = _enclosing_class(fn)
+    body = cls.child_by_field_name("body") if cls is not None else None
+    if body is not None:
+        class_found, class_banned = _stable_numbers(body.named_children)
+        for name in class_banned:
+            numbers.pop(name, None)
+        numbers.update(class_found)
+    rebound = set()
+
+    def walk(node):
+        if node.type in _NESTED and node is not fn:
+            return
+        if node.type == "assignment":
+            for target in node.named_children[:-1]:
+                if target.type == "identifier":
+                    rebound.add(target.text.decode())
+        for child in node.named_children:
+            walk(child)
+
+    walk(fn)
+    head = fn.child_by_field_name("parameters")
+    for child in head.named_children if head is not None else ():
+        name = one_name(child)
+        if name:
+            rebound.add(name)
+    return {name: value for name, value in numbers.items() if name not in rebound}
+
+
 def _function(fn, scope, words, bound, story, attrs):
     facts = security_facts(fn, scope, words)
+    numbers = _numbers_for(fn)
     head = fn.child_by_field_name("parameters")
-    defaults, params, literal_defaults = {}, set(), set()
+    defaults, params, literal_defaults = {}, set(), {}
     for child in head.named_children if head is not None else ():
         name = one_name(child)
         if name and name != "self":
             params.add(name)
             defaults[name] = _param_default(child, bound)
             if child.type in ("default_parameter", "typed_default_parameter"):
-                if child.named_children[-1].type == "integer":
-                    literal_defaults.add(name)
+                value = child.named_children[-1]
+                number = _numeric(value)
+                if number is None and value.type == "identifier":
+                    number = numbers.get(value.text.decode())
+                if number is not None:
+                    literal_defaults[name] = number
     assigns, local_strings, fixed_env = {}, {}, set()
-    timeout_locals = {}
     groups = {name: value for name, value in bound.items() if isinstance(value, tuple)}
 
     def timeout_of(expr):
         if expr is None:
             return None
-        if expr.type == "integer":
-            try:
-                return int(expr.text.decode(), 0), False
-            except ValueError:
-                return None
+        number = _numeric(expr)
+        if number is not None:
+            return number, False
         if expr.type == "identifier":
             name = expr.text.decode()
-            # A named constant or an expression is not a readable literal.
-            if name in literal_defaults and isinstance(defaults.get(name), int):
-                return defaults[name], True
-            attr = timeout_locals.get(name)
-            if attr in story.timeout_attrs and isinstance(attrs.get(attr), int):
-                return attrs[attr], True
-        attr = _self_attr(expr)
-        if attr in story.timeout_attrs and isinstance(attrs.get(attr), int):
-            return attrs[attr], True
+            if name in literal_defaults:
+                return literal_defaults[name], True
+            if name in numbers:
+                return numbers[name], False
         return None
-
-    def from_timeout(expr):
-        if expr is None or expr.type != "identifier":
-            return False
-        name = expr.text.decode()
-        if name in literal_defaults:
-            return True
-        if name in timeout_locals and timeout_locals[name] in story.timeout_attrs:
-            return True
-        attr = _self_attr(expr)
-        return bool(attr and attr in story.timeout_attrs)
 
     def note_time(call, expr):
         """One shared time, or none. Every blocking call must show the same literal."""
@@ -1142,19 +1202,10 @@ def _function(fn, scope, words, bound, story, attrs):
                             local_strings.pop(name, None)
                         if _keeps(value, scope, groups):
                             fixed_env.add(name)
-                        attr = _self_attr(value)
-                        if attr and attr in story.timeout_attrs:
-                            timeout_locals[name] = attr
                     got = _from_param(value, defaults)
                     attr = _self_attr(target)
                     if attr and got is not None:
                         attrs[attr] = got
-                        if (
-                            value.type == "identifier"
-                            and value.text.decode() in literal_defaults
-                            and isinstance(got, int)
-                        ):
-                            story.timeout_attrs.add(attr)
         if cur.type == "if_statement":
             _read_if(cur, story, params, assigns, facts, fn)
         if cur.type == "raise_statement" and _escapes(cur, fn):
@@ -1200,14 +1251,19 @@ def _function(fn, scope, words, bound, story, attrs):
                     or _keeps(env, scope, groups)
                 ):
                     story.keeps_env = True
-            if _takes_seconds(path, cur, facts):
+            status = _wait_status(cur, facts)
+            if status in ("absent", "none"):
+                story.time_bad = True
+                story.timeout = None
+            elif status == "passed" or (
+                path and path[0] in ("smtplib", "imaplib") and "timeout" in named
+            ):
                 expr = named.get("timeout")
-                if expr is None:
-                    expr = next(
-                        (value for value in positional if from_timeout(value)), None
-                    )
-                if expr is not None or (path and path[-1] in _WAITS):
-                    note_time(cur, expr)
+                if expr is None and path is not None:
+                    index = _timeout_index(path)
+                    if index is not None and not _splat and len(positional) > index:
+                        expr = positional[index]
+                note_time(cur, expr)
             for name in _bearer(cur, assigns, facts):
                 story.keys.add(name)
                 story.bearer = name
