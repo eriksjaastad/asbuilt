@@ -17,8 +17,8 @@ test("49 boxes are drawn, each with a wash, a label and a margin, and nothing is
   assert.equal(Object.keys(pieces(svg, "box")).length, 49);
   assert.equal(Object.keys(pieces(svg, "wash")).length, 49);
   assert.equal(svg.split("<text").length, 50);
-  const [w, h] = [laid.width + 20, laid.height + 20];
-  assert.ok(svg.includes(`viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"`));
+  const [w, h] = [laid.width + 32, laid.height + 32];
+  assert.ok(svg.includes(`viewBox="-16 -16 ${w} ${h}" width="${w}" height="${h}"`));
   assert.ok(laid.boxes.every((b) => svg.includes(`<text x="${b.x + b.w / 2}" y="${b.y + 22}"`)));
   assert.equal(svg.split('fill="rgba(170,158,135,0.20)"').length, 50);
   assert.doesNotMatch(svg, /NaN|undefined|Infinity|fill="black"/);
@@ -70,9 +70,9 @@ test("an arrow's label is drawn where layout put it in the note's type, escaped;
   assert.match(texts[0][3], escaped);
 });
 
-test("an unmarked plan draws byte for byte as before marks existed, and so do planned and unknown marks", () => {
+test("an unmarked plan keeps its drawing, and planned and unknown marks draw identically", () => {
   const svg = draw(laid, rough.generator());
-  assert.equal(createHash("sha256").update(svg).digest("hex"), "ec9a518dc03484b458c305a4b9b196f2d3e82e1cbd45b7dd260fd5dbd30bd15e");
+  assert.equal(createHash("sha256").update(svg).digest("hex"), "154be37bfcc6f8725b7b6ab8fa104027e64c758e1c0aca0c8d7f341875e9e457");
   for (const mark of ["planned", "bogus", "constructor", "toString", 7, null]) {
     const marked = { ...laid, boxes: laid.boxes.map((b) => ({ ...b, mark })), arrows: laid.arrows.map((a) => ({ ...a, mark })) };
     assert.equal(draw(marked, rough.generator()), svg, String(mark));
@@ -96,7 +96,7 @@ test("each mark draws its hue, dash, fade and tag on a box, its wash and an arro
 
 test("a chart with a mark gets a legend row under it, wide enough for its four entries, with each mark's dash and hue", () => {
   const svg = draw({ width: 60, height: 80, boxes: [{ ...one("b"), mark: "dropped" }], arrows: [] }, rough.generator());
-  assert.match(svg, /viewBox="0 0 500 134" width="500" height="134"/);
+  assert.match(svg, /viewBox="-16 -16 512 146" width="512" height="146"/);
   const rows = [...svg.matchAll(/<line x1="(\d+)" y1="97" x2="\d+" y2="97" stroke="([^"]*)" stroke-width="2"([^/]*)\/><text [^>]*>([^<]*)<\/text>/g)].map((m) => m.slice(1));
   const cues = [["10", "#2F2E2C", "", "as planned"], ...Object.values(MARKS).map((c, i) => [String(130 + 120 * i), c.hue, (c.dash ? ` stroke-dasharray="${c.dash}"` : "") + (c.fade < 1 ? ` opacity="${c.fade}"` : ""), c.tag])];
   assert.deepEqual(rows, cues);

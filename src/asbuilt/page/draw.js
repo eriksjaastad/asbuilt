@@ -10,8 +10,9 @@ import { cued, cueOf, drawn, esc, INK, MARKS, seedOf } from "./shapes.js";
 
 const WASH = "rgba(170,158,135,0.20)";
 const PAPER = "#F9F5EB"; // the page background in index.html
+const MARGIN = 16; // room on every side for rough strokes and the displaced wash
 const filter = (id, freq, scale, seed, w, h) =>
-  `<filter id="${id}" filterUnits="userSpaceOnUse" x="0" y="0" width="${w}" height="${h}">` +
+  `<filter id="${id}" filterUnits="userSpaceOnUse" x="${-MARGIN}" y="${-MARGIN}" width="${w + 2 * MARGIN}" height="${h + 2 * MARGIN}">` +
   `<feTurbulence type="fractalNoise" baseFrequency="${freq}" numOctaves="2" seed="${seed}" result="n"/>` +
   `<feDisplacementMap in="SourceGraphic" in2="n" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/></filter>`;
 
@@ -64,7 +65,7 @@ export function draw(laid, gen) {
     tag(cueOf(a.mark), (x0 + x1) / 2 + 6, (y0 + y1) / 2 + 4, "start");
   }
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w + 20} ${h + 20}" width="${w + 20}" height="${h + 20}">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-MARGIN} ${-MARGIN} ${w + 2 * MARGIN} ${h + 2 * MARGIN}" width="${w + 2 * MARGIN}" height="${h + 2 * MARGIN}">` +
     `<defs>${filter("wash", 0.035, 12, 7, w, h)}${filter("ink", 0.08, 2.2, 3, w, h)}</defs>` +
     `<g filter="url(#wash)">${washes.join("")}</g><g filter="url(#ink)">${inks.join("")}${arrows(laid.arrows, gen)}</g>${labels.join("")}` +
     `${marked ? legend(laid.height + LEGEND / 2) : ""}</svg>`

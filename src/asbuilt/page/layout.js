@@ -15,7 +15,7 @@ const OPTIONS = {
   "elk.padding": PADDING,
   ...ARROW_ROOM,
 };
-// A chart is at most a 1440 px laptop screen wide, less the 10 px draw.js leaves on each side, and grows downward.
+// Target a laptop's width; draw.js adds room for ink, and the page scales any overflow to its viewport.
 export const MAX_WIDTH = 1420;
 const NESTED = 28; // a box's padding, left and right, taken from the room inside it
 const MAX_LAYOUTS = 40;

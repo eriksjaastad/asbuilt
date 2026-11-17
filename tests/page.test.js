@@ -124,7 +124,8 @@ test("a save redraws the page, a broken save keeps the last good chart dimmed, a
 test("no chart scrolls sideways: not a wide plan on a laptop, and not a box too wide to fold in a small window", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
   const file = join(dir, "plan.json");
-  writeFileSync(file, plan(Array.from({ length: 14 }, (_, i) => `box${i}`)));
+  const wide = JSON.parse(plan(Array.from({ length: 24 }, (_, i) => `box${i}`)));
+  writeFileSync(file, JSON.stringify(wide));
   const { run, address } = serve(file, t.signal);
   address.catch(() => {});
   let browser;
@@ -134,7 +135,23 @@ test("no chart scrolls sideways: not a wide plan on a laptop, and not a box too 
     await page.goto(await address);
     await page.locator("svg").waitFor();
     const sideways = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    const completeEdges = () => page.evaluate(() => {
+      const svg = document.querySelector("#chart > svg");
+      const bounds = [svg.viewBox.baseVal, ...[...svg.querySelectorAll("filter")].map((f) =>
+        Object.fromEntries(["x", "y", "width", "height"].map((key) => [key, f[key].baseVal.value])))];
+      return [...svg.querySelectorAll("[data-box], [data-wash]")].flatMap((g) => {
+        const b = g.getBBox();
+        const pad = g.hasAttribute("data-wash") ? 6 : 2.5; // displacement, plus the ink's half-stroke
+        const fits = bounds.every((v) => b.x >= v.x + pad && b.y >= v.y + pad && b.x + b.width <= v.x + v.width - pad && b.y + b.height <= v.y + v.height - pad);
+        return fits ? [] : [{ id: g.dataset.box ?? g.dataset.wash, x: b.x, y: b.y, right: b.x + b.width, bottom: b.y + b.height }];
+      });
+    });
     assert.equal(await sideways(), 0);
+    assert.deepEqual(await completeEdges(), [], "flat chart's outer strokes fit the viewport and filters");
+    writeFileSync(file, JSON.stringify({ ...wide, children: [{ id: "file", children: wide.children }] }));
+    await page.locator('[data-box="file"]').waitFor();
+    assert.equal(await sideways(), 0);
+    assert.deepEqual(await completeEdges(), [], "grouped chart's outer strokes fit the viewport and filters");
     writeFileSync(file, plan(["x".repeat(300), "draw"]));
     await page.locator("text=draw").waitFor();
     await page.setViewportSize({ width: 800, height: 600 });
