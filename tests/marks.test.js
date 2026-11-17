@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { byMarks, carries, markCounts, showing, shown } from "../src/asbuilt/page/marks.js";
+import { byMarks, carries, hiddenBoxes, markCounts, showing, shown } from "../src/asbuilt/page/marks.js";
 import { pipeline } from "../src/asbuilt/page/pipeline.js";
 
 const badge = (id, badges) => ({ id, asbuilt: { badges } });
@@ -69,13 +69,36 @@ test("marks and the pipeline both apply: a box has to be reached and carry a cho
 });
 
 test("the line says in plain words what is shown, which boxes are hidden and why", () => {
-  assert.equal(showing(["env"], ["a()", "b()"], 1), "Showing boxes whose own code uses environment settings. Hiding 2 boxes whose own code does not: a(), b(). Also hiding 1 arrow to or from a box whose own code does not.");
-  assert.equal(showing(["calls out", "env"], ["a()"], 0), "Showing boxes whose own code uses environment settings or talks to the network or runs programs. Hiding 1 box whose own code does not: a().");
-  assert.equal(showing(["env"], [], 0), "Showing boxes whose own code uses environment settings. Hiding nothing.");
-  assert.equal(showing(["writes"], ["a", "b", "c", "d", "e", "f", "g", "h"], 2), "Showing boxes whose own code writes files. Hiding 8 boxes whose own code does not: a, b, c, d, e, f, and 2 more. Also hiding 2 arrows to or from a box whose own code does not.");
-  assert.equal(carries(["input"]), "No box here has its own code that asks a person to type.");
-  assert.equal(carries(["env", "calls out"]), "No box here has its own code that uses environment settings or talks to the network or runs programs.");
-  assert.equal(carries(["model"], "main()"), "No box in what main() reaches has its own code that uses an AI library.");
+  const fn = (name) => ({ name, checked: true });
+  assert.equal(showing(["env"], [fn("a()"), fn("b()")], 1), "Showing functions and classes whose own code uses environment settings, and the boxes that hold them. Hiding 2 functions and classes whose own code does not: a(), b(). Also hiding 1 arrow that does not join two such functions or classes.");
+  assert.equal(showing(["calls out", "env"], [fn("a()")], 0), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 1 function or class whose own code does not: a().");
+  assert.equal(showing(["env"], [], 0), "Showing functions and classes whose own code uses environment settings, and the boxes that hold them. Hiding nothing.");
+  assert.equal(showing(["writes"], ["a", "b", "c", "d", "e", "f", "g", "h"].map(fn), 2), "Showing functions and classes whose own code writes files, and the boxes that hold them. Hiding 8 functions and classes whose own code does not: a, b, c, d, e, f, and 2 more. Also hiding 2 arrows that do not join two such functions or classes.");
+  assert.equal(carries(["input"]), "No function or class here has its own code that asks a person to type. Code outside a function or class is not checked.");
+  assert.equal(carries(["env", "calls out"]), "No function or class here has its own code that uses environment settings or talks to the network or runs programs. Code outside a function or class is not checked.");
+  assert.equal(carries(["model"], "main()"), "No function or class in what main() reaches has its own code that uses the OpenAI or Anthropic library. Code outside a function or class is not checked.");
+});
+
+test("a file whose top-level code was never checked is not said to lack the mark", () => {
+  // top.py has KEY = os.environ["K"] at top level: no box carries that code, so no mark is proven for it.
+  const files = {
+    id: "app",
+    children: [
+      { id: "top.py", labels: [{ text: "top.py" }], children: [{ id: "f", labels: [{ text: "f()" }], asbuilt: { text: "def f():\n    pass\n" } }] },
+      { id: "env.py", labels: [{ text: "env.py" }], children: [{ id: "g", labels: [{ text: "g()" }], asbuilt: { text: "def g():\n    os.environ['K']\n", badges: ["env"] } }] },
+    ],
+  };
+  const hidden = hiddenBoxes(files, ["env.py", "g"]);
+  assert.deepEqual(hidden, [{ name: "top.py", checked: false }, { name: "f()", checked: true }]);
+  const line = showing(["env"], hidden, 0);
+  assert.equal(line, "Showing functions and classes whose own code uses environment settings, and the boxes that hold them. Hiding 1 function or class whose own code does not: f(). Hiding 1 other box holding no such function or class: top.py. Code outside a function or class is not checked.");
+  assert.equal(line.includes("does not: top.py"), false);
+});
+
+test("hidden boxes that share a label are told apart by the box that holds them", () => {
+  const run = (id) => ({ id, labels: [{ text: "run()" }], asbuilt: { text: "def run():\n    pass\n" } });
+  const files = { id: "app", children: [{ id: "a.py", children: [run("a")] }, { id: "b.py", children: [run("b"), { id: "solo", labels: [{ text: "solo()" }], asbuilt: { text: "" } }] }] };
+  assert.deepEqual(hiddenBoxes(files, ["a.py", "b.py"]).map((h) => h.name), ["run() in a.py", "run() in b.py", "solo()"]);
 });
 
 test("a mark button's count is how many boxes in this view prove it", () => {
