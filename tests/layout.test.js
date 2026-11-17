@@ -446,15 +446,31 @@ test("two lanes too wide together give up a share each, and a group that fits be
   assert.equal(new Set(tools.map((t) => at(laid, t.id).y)).size, 1, "tools is still one row");
 });
 
-test("a knot in a chart already far past a laptop is laid out as the plan is, not folded twice as lanes", async () => {
+test("a wide knot that folding can fit is still drawn as lanes, with no arrow pointing up", async () => {
   const knot = between();
   const plan = { id: "root", children: [part("file", boxes("b", 24)), ...knot.children], edges: knot.edges };
-  assert.ok(lanes(prepare(plan)), "the knot is still there");
-  const elk1 = counted();
-  const laid = await layout(plan, elk1);
-  assert.ok(elk1.runs < 30, `${elk1.runs} layouts`);
-  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  const laid = await layout(plan, elk);
+  const bends = laid.arrows.reduce((n, a) => n + a.points.length - 2, 0);
+  const length = Math.round(laid.arrows.reduce((n, a) => n + a.points.slice(1).reduce((s, p, i) => s + Math.hypot(p[0] - a.points[i][0], p[1] - a.points[i][1]), 0), 0));
+  assert.deepEqual([ups(laid).length, bends, length, Math.round(laid.width), Math.round(laid.height)], [0, 4, 242, 1418, 1340]);
   assertSound(plan, laid, 29, 2);
+  const [group, results] = ["g", "results"].map((id) => at(laid, id));
+  assert.ok(results.x >= group.x + group.w || results.x + results.w <= group.x, "results stands beside the group");
+  // Same knot, handed back still twice a laptop wide, with rows left to fold. Nine centred layouts, then give up.
+  // Take that give-up away and the centred pass keeps going.
+  const laned = (box) => (box.children ?? []).some((child) => child.id.startsWith(LANES) || laned(child));
+  const kids = Array.from({ length: 80 }, (_, i) => [
+    { id: `a${i}`, x: 0, y: i * 100, width: 190, height: 70 },
+    { id: `b${i}`, x: 3000, y: i * 100, width: 190, height: 70 },
+  ]).flat();
+  let centred = 0;
+  const stuck = { layout: async (graph) => {
+    if (!laned(graph)) return elk.layout(graph);
+    if (placement(graph) === "SIMPLE") centred++;
+    return { id: graph.id, width: MAX_WIDTH * 2 + 80, height: 8000, edges: [], children: [{ id: "file", x: 0, y: 40, width: 3400, height: 8000, children: kids }] };
+  } };
+  await layout(plan, stuck);
+  assert.equal(centred, 9);
 });
 
 test("a knot whose lanes cannot fit is not folded lane under lane: three tries each way round, then ELK's own layout", async () => {
