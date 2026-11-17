@@ -114,13 +114,13 @@ class PlainTest(unittest.TestCase):
             [
                 "OpenRouter sends data to openrouter.ai over the internet, using a key read from OPENROUTER_API_KEY.",
                 "By default OpenRouter waits up to 60 seconds.",
-                "If the key is missing, OpenRouter stops with an error.",
+                'If the key is missing, OpenRouter stops with an error that says "OPENROUTER_API_KEY is not set.", among others.',
             ],
         )
         self.assertEqual(
             got["ClaudeCLI"],
             [
-                "ClaudeCLI runs the command claude, keeps only a fixed set of environment names, and returns the command's output.",
+                "ClaudeCLI runs the command claude and keeps only a fixed set of environment names.",
                 "By default ClaudeCLI waits up to 300 seconds.",
                 'ClaudeCLI can stop with an error that says "claude is not signed in to claude.ai: run claude auth login." or "claude replied with nothing.", among others.',
             ],
@@ -330,6 +330,60 @@ class PlainTest(unittest.TestCase):
             _lines(source, "fail()"),
             ['fail stops with an error that says "no name."'],
         )
+
+    def test_command_output_needs_every_return_to_be_stdout(self):
+        mixed = (
+            "import subprocess\n"
+            "def run_git(args):\n"
+            "    result = subprocess.run(['git', *args], capture_output=True)\n"
+            "    if result.returncode in (3, 4):\n"
+            "        return None\n"
+            "    return result.stdout\n"
+        )
+        text = " ".join(_lines(mixed, "run_git()"))
+        self.assertIn("runs the command git", text)
+        self.assertNotIn("command's output", text)
+        only = (
+            "import subprocess\n"
+            "def run_git(args):\n"
+            "    result = subprocess.run(['git', *args], capture_output=True)\n"
+            "    return result.stdout\n"
+        )
+        self.assertIn(
+            "returns the command's output", " ".join(_lines(only, "run_git()"))
+        )
+
+    def test_an_fstring_of_a_module_constant_is_the_message(self):
+        source = (
+            'KEY = "OPENROUTER_API_KEY"\n'
+            "import os\n"
+            "class ConnectionFailed(Exception):\n"
+            "    pass\n"
+            "def call():\n"
+            "    key = os.environ.get(KEY)\n"
+            "    if not key:\n"
+            '        raise ConnectionFailed(f"{KEY} is not set.")\n'
+            "    return key\n"
+        )
+        self.assertEqual(
+            _lines(source, "call()"),
+            [
+                'If the environment value OPENROUTER_API_KEY is missing, call stops with an error that says "OPENROUTER_API_KEY is not set."'
+            ],
+        )
+
+    def test_click_usage_error_quotes_its_first_argument(self):
+        source = (
+            "import click\n"
+            "def config_show(effective):\n"
+            "    if not effective:\n"
+            '        raise click.UsageError("only --effective is currently supported", "extra")\n'
+            "    return None\n"
+        )
+        text = " ".join(_lines(source, "config_show()"))
+        self.assertIn('"only --effective is currently supported"', text)
+        self.assertNotIn("If effective", text)
+        self.assertNotIn("extra", text)
 
     def test_a_repeated_message_is_quoted_once(self):
         source = (

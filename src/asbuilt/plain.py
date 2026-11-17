@@ -580,7 +580,7 @@ class _Story:
         self.send_host = None
         self.send_local = False
         self.command = None
-        self.command_output = False
+        self.command_output = None
         self.keeps_env = False
         self.is_class = False
         self.timeout = None
@@ -939,7 +939,9 @@ def _super_message(init):
 
 
 def _message_slot(name, module):
-    """How this error takes its message: one positional, or the named parameter. None if unproven."""
+    """How this error takes its message: one positional, the first, or a named parameter."""
+    if name in ("ClickException", "UsageError"):
+        return ("first", None)
     if name in _BUILTIN_ERRORS:
         return ("sole", None)
     cls = _class_node(module, name)
@@ -964,11 +966,44 @@ def _message_slot(name, module):
     return None
 
 
+def _fstring(node, words):
+    """An f-string made only of literals and module constants, or None."""
+    raw = node.text.decode().lstrip()
+    if not raw[:1].lower() == "f" and not raw[:2].lower() in ("fr", "rf"):
+        return None
+    parts = []
+    for child in node.named_children:
+        if child.type in ("string_start", "string_end"):
+            continue
+        if child.type == "string_content":
+            text = child.text.decode()
+            if "\\" in text or "{{" in text or "}}" in text:
+                return None
+            parts.append(text)
+            continue
+        if child.type != "interpolation":
+            return None
+        body = child.text.decode()[1:-1]
+        if "!" in body or ":" in body:
+            return None
+        expr = next(iter(child.named_children), None)
+        if expr is not None and expr.type == "string":
+            value = string_literal(expr)
+        elif expr is not None and expr.type == "identifier":
+            value = words.get(expr.text.decode())
+        else:
+            value = None
+        if not isinstance(value, str):
+            return None
+        parts.append(value)
+    return "".join(parts) if parts else None
+
+
 def _string_value(node, words, local_strings):
     if node is None:
         return None
     if node.type == "string":
-        return string_literal(node)
+        return string_literal(node) or _fstring(node, words)
     if node.type == "identifier":
         value = local_strings.get(node.text.decode(), words.get(node.text.decode()))
         return value if isinstance(value, str) else None
@@ -990,6 +1025,9 @@ def _quoted_message(expr, words, local_strings, module):
         if named or len(positional) != 1:
             return None
         return _string_value(positional[0], words, local_strings)
+    if kind == "first":
+        arg = positional[0] if positional else named.get("message")
+        return _string_value(arg, words, local_strings)
     cls = _class_node(module, _callee(expr))
     init = _init_method(cls) if cls is not None else None
     names = _param_names(init) if init is not None else []
@@ -1216,8 +1254,13 @@ def _function(fn, scope, words, bound, story, attrs):
             )
         if cur.type == "return_statement":
             expr = next(iter(cur.named_children), None)
-            if _command_stdout(expr, assigns, scope, fn):
-                story.command_output = True
+            stdout = bool(_command_stdout(expr, assigns, scope, fn))
+            # Every return has to be that stdout. One path that returns something else drops the claim.
+            story.command_output = (
+                stdout
+                if story.command_output is None
+                else story.command_output and stdout
+            )
         if cur.type == "return_statement" and story.choices and not in_if:
             expr = next(iter(cur.named_children), None)
             if expr is not None and expr.type == "call":
