@@ -446,31 +446,79 @@ test("two lanes too wide together give up a share each, and a group that fits be
   assert.equal(new Set(tools.map((t) => at(laid, t.id).y)).size, 1, "tools is still one row");
 });
 
-test("a wide knot that folding can fit is still drawn as lanes, with no arrow pointing up", async () => {
-  const knot = between();
-  const plan = { id: "root", children: [part("file", boxes("b", 24)), ...knot.children], edges: knot.edges };
-  const laid = await layout(plan, elk);
+const shape = (laid) => {
   const bends = laid.arrows.reduce((n, a) => n + a.points.length - 2, 0);
   const length = Math.round(laid.arrows.reduce((n, a) => n + a.points.slice(1).reduce((s, p, i) => s + Math.hypot(p[0] - a.points[i][0], p[1] - a.points[i][1]), 0), 0));
-  assert.deepEqual([ups(laid).length, bends, length, Math.round(laid.width), Math.round(laid.height)], [0, 4, 242, 1418, 1340]);
-  assertSound(plan, laid, 29, 2);
-  const [group, results] = ["g", "results"].map((id) => at(laid, id));
-  assert.ok(results.x >= group.x + group.w || results.x + results.w <= group.x, "results stands beside the group");
-  // Same knot, handed back still twice a laptop wide, with rows left to fold. Nine centred layouts, then give up.
-  // Take that give-up away and the centred pass keeps going.
-  const laned = (box) => (box.children ?? []).some((child) => child.id.startsWith(LANES) || laned(child));
-  const kids = Array.from({ length: 80 }, (_, i) => [
-    { id: `a${i}`, x: 0, y: i * 100, width: 190, height: 70 },
-    { id: `b${i}`, x: 3000, y: i * 100, width: 190, height: 70 },
-  ]).flat();
+  return [ups(laid).length, bends, length, Math.round(laid.width), Math.round(laid.height)];
+};
+// Three modules of 24 functions beside a two-way knot. The fold is still far past two laptops after nine layouts,
+// and still coming down about 1260px a layout; main finishes it as lanes.
+const stillNarrowing = () => {
+  const knot = between();
+  const modules = [0, 1, 2].map((i) => part(`m${i}`, boxes(`m${i}f`, 24)));
+  return { id: "root", children: [...modules, ...knot.children], edges: knot.edges };
+};
+const laned = (box) => (box.children ?? []).some((child) => child.id.startsWith(LANES) || laned(child));
+const foldRows = Array.from({ length: 80 }, (_, i) => [
+  { id: `a${i}`, x: 0, y: i * 100, width: 190, height: 70 },
+  { id: `b${i}`, x: 3000, y: i * 100, width: 190, height: 70 },
+]).flat();
+const wideFold = (id, width) => ({ id, width, height: 8000, edges: [], children: [{ id: "file", x: 0, y: 40, width: 3400, height: 8000, children: foldRows }] });
+
+test("a knot that is still narrowing stays lanes, with no arrow pointing up", async () => {
+  const plan = stillNarrowing();
+  const laid = await layout(plan, elk);
+  assert.deepEqual(shape(laid), [0, 4, 242, 1388, 4140]);
+  assertSound(plan, laid, 79, 2);
+});
+
+test("the other way round is tried when the first lane fold is not narrowing", async () => {
+  const plan = stillNarrowing();
+  const head = (box) => {
+    if (box.id?.startsWith(LANES)) return box.children?.[0]?.id;
+    return (box.children ?? []).map(head).find(Boolean);
+  };
+  let first = null;
+  const stuckFirst = { layout: async (graph) => {
+    if (!laned(graph)) return elk.layout(graph);
+    const id = head(graph);
+    if (first === null) first = id;
+    if (id === first) return wideFold(graph.id, MAX_WIDTH * 2 + 80);
+    return elk.layout(graph);
+  } };
+  const laid = await layout(plan, stuckFirst);
+  assert.deepEqual(shape(laid), [0, 4, 242, 1388, 4140]);
+});
+
+test("a lane fold that is not narrowing is given up, and a plain chart is not", async () => {
+  const knot = stillNarrowing();
   let centred = 0;
   const stuck = { layout: async (graph) => {
-    if (!laned(graph)) return elk.layout(graph);
-    if (placement(graph) === "SIMPLE") centred++;
-    return { id: graph.id, width: MAX_WIDTH * 2 + 80, height: 8000, edges: [], children: [{ id: "file", x: 0, y: 40, width: 3400, height: 8000, children: kids }] };
+    if (!laned(graph) || placement(graph) !== "SIMPLE") return elk.layout(graph);
+    centred++;
+    return wideFold(graph.id, MAX_WIDTH * 2 + 80);
   } };
-  await layout(plan, stuck);
-  assert.equal(centred, 9);
+  await layout(knot, stuck);
+  assert.equal(centred, 10, "five centred layouts each way, then the plan as it is");
+  // Latest width bounces up, but the narrowest is still coming down. That fold is not given up.
+  const bounce = [9000, 7000, 8000, 7500, 5500, 6500, 6000, 4000, 4500, 3000, MAX_WIDTH];
+  const head = (box) => box.id?.startsWith(LANES) ? box.children?.[0]?.id : (box.children ?? []).map(head).find(Boolean);
+  let first = null;
+  let at = 0;
+  const bouncing = { layout: async (graph) => {
+    if (!laned(graph) || placement(graph) !== "SIMPLE" || (first !== null && head(graph) !== first)) return elk.layout(graph);
+    if (first === null) first = head(graph);
+    return wideFold(graph.id, bounce[at++]);
+  } };
+  assert.ok((await layout(knot, bouncing)).width <= MAX_WIDTH);
+  assert.equal(at, bounce.length);
+  // No knot, so this is the plain fold. It sits still and then fits. The lane stop does not apply to it.
+  let plain = 0;
+  const file = { id: "root", children: [part("file", boxes("b", 24))] };
+  const pausing = { layout: async (graph) => wideFold(graph.id, ++plain < 12 ? MAX_WIDTH * 2 + 80 : MAX_WIDTH) };
+  const laid = await layout(file, pausing);
+  assert.equal(plain, 12);
+  assert.ok(laid.width <= MAX_WIDTH);
 });
 
 test("a knot whose lanes cannot fit is not folded lane under lane: three tries each way round, then ELK's own layout", async () => {

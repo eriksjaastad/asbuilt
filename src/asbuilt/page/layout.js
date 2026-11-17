@@ -79,20 +79,26 @@ const laidOut = (prepared, elk, hidden, options) => {
   return elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...options } });
 };
 
+// How far back a lane fold looks, and how far its narrowest width has to fall in that time. A fold that is
+// getting somewhere comes down about 1260px a layout, so about 5000px in four. One that is still twice a
+// laptop wide and has not come down 800px in four layouts is wandering, and that way round is not coming
+// back inside one.
+const [LANE_WINDOW, LANE_STEP] = [4, 800];
+
 async function narrow(prepared, elk, hidden, options, lanes) {
-  let [out, room, best, stall, gaveUp] = [null, MAX_WIDTH, Infinity, 0, false];
+  let [out, room, best, stall, narrowest] = [null, MAX_WIDTH, Infinity, 0, Infinity];
+  const trail = [];
   for (let n = 0; n < MAX_LAYOUTS; n++) {
     out = await laidOut(prepared, elk, hidden, options);
     if (out.width <= MAX_WIDTH) break;
     // Still more than twice a laptop after a straight try: more of those will not fit it. The centred pass will.
     if (options === STRAIGHT && out.width > MAX_WIDTH * 2) break;
-    // A lane fold's own progress, not the width it started from. After nine centred layouts the narrowest is still
-    // twice a laptop: this way round is not coming back inside one. A fold that has already been inside that, even
-    // from a wide start, is left to finish.
-    if (lanes && options === CENTRED && n >= 8 && Math.min(best, out.width) > MAX_WIDTH * 2) {
-      gaveUp = true;
-      break;
-    }
+    if (out.width < narrowest - 1) narrowest = out.width;
+    trail.push(narrowest);
+    const ago = trail[trail.length - 1 - LANE_WINDOW];
+    // The narrowest, not the latest width: a try can bounce wider while the best so far is still coming down.
+    // Once that best has been inside twice a laptop, the fold is left to finish even if it then sits still.
+    if (lanes && options === CENTRED && ago !== undefined && narrowest > MAX_WIDTH * 2 && ago - narrowest < LANE_STEP) break;
     // A row that did not make the chart narrower: fold several rows, and every wide box, on the next try.
     const limit = 1 + stall * 2;
     const stalled = !(out.width < best - 1);
@@ -104,7 +110,7 @@ async function narrow(prepared, elk, hidden, options, lanes) {
     if (!more.length) break;
     for (const e of more) hidden.set(e.id, e);
   }
-  return { out, gaveUp };
+  return out;
 }
 
 async function fitted(prepared, elk, hidden, firstWidth, lanes) {
@@ -112,7 +118,7 @@ async function fitted(prepared, elk, hidden, firstWidth, lanes) {
   // and that search was almost all of the time. Go straight to the centred pass.
   if (!(firstWidth > MAX_WIDTH * 3)) {
     const straight = await narrow(prepared, elk, hidden, STRAIGHT, false);
-    if (straight.out.width <= MAX_WIDTH) return straight;
+    if (straight.width <= MAX_WIDTH) return straight;
     hidden.clear();
   }
   return narrow(prepared, elk, hidden, CENTRED, lanes);
@@ -126,8 +132,7 @@ async function chart(prepared, elk, hide, parts, lanes) {
   // were thrown away, and that search was almost all of the time.
   const wide = spread(prepared);
   let out = wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
-  let gaveUp = false;
-  if (!out || out.width > MAX_WIDTH) ({ out, gaveUp } = await fitted(prepared, elk, hidden, out?.width ?? wide, lanes));
+  if (!out || out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden, out?.width ?? wide, lanes);
   const [boxes, cut, held, spot, shown] = [[], new Map(), new Map(), new Map(), new Map()];
   const origin = { [out.id]: [0, 0] };
   const walk = (box, level, holders) => {
@@ -178,21 +183,17 @@ async function chart(prepared, elk, hide, parts, lanes) {
   const sound = out.width <= MAX_WIDTH && [...cut.values()].every(({ drawn: g }) =>
     boxes.every((b) => (within(b, g) ? inside(b, g) : within(g, b) || apart(g, b))) &&
     drawnEdges.every((e, i) => [e.sources[0], e.targets[0]].some((id) => within(shown.get(id), g)) || !lines[i].points.slice(1).some((q, k) => across(lines[i].points[k], q, g))));
-  return { sound, gaveUp, laid: { width: out.width, height: out.height, boxes, arrows: lines } };
+  return { sound, laid: { width: out.width, height: out.height, boxes, arrows: lines } };
 }
 
 export async function layout(plan, elk) {
   const prepared = prepare(plan);
-  // A knot's two lanes can stand either way round: the plan's way is tried first, then the other. When the first
-  // way's fold is still twice a laptop wide after nine centred layouts, the other way is the same search again.
-  let gaveUp = false;
+  // A knot's two lanes can stand either way round. Each way is judged on its own: one fold wandering does not skip the other.
   for (const turned of [false, true]) {
-    if (gaveUp) break;
     const laned = lanes(prepared, turned);
     if (!laned) break;
     const made = await chart(laned.graph, elk, laned.hidden, laned.parts, true);
     if (made.sound) return made.laid;
-    gaveUp = made.gaveUp;
   }
   return (await chart(prepared, elk, new Set(), new Map(), false)).laid;
 }
