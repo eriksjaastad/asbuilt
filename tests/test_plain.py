@@ -319,6 +319,44 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(" ".join(lines).count(", among others"), 1)
         self.assertNotIn("three", lines[0])
 
+    def test_any_other_escaping_raise_is_among_others(self):
+        bare = (
+            "def send_email():\n"
+            '    raise ValueError("missing password")\n'
+            "    try:\n"
+            "        send()\n"
+            "    except OSError:\n"
+            "        raise\n"
+        )
+        text = " ".join(_lines(bare, "send_email()"))
+        self.assertIn('"missing password"', text)
+        self.assertIn(", among others", text)
+        mirror = (
+            "def mirror():\n"
+            "    try:\n"
+            "        work()\n"
+            "    except Exception:\n"
+            "        raise\n"
+            '    raise RuntimeError("copy failed")\n'
+        )
+        text = " ".join(_lines(mirror, "mirror()"))
+        self.assertIn('"copy failed"', text)
+        self.assertIn(", among others", text)
+        pull = (
+            "def pull(name):\n"
+            '    raise RuntimeError("mailbox missing")\n'
+            "    raise RuntimeError(\n"
+            '        f"could not pull {name} "\n'
+            '        "from the server"\n'
+            "    )\n"
+        )
+        text = " ".join(_lines(pull, "pull()"))
+        self.assertIn('"mailbox missing"', text)
+        self.assertNotIn("could not pull", text)
+        self.assertIn(", among others", text)
+        only = 'def fail():\n    raise RuntimeError("only this")\n'
+        self.assertNotIn("among others", " ".join(_lines(only, "fail()")))
+
     def test_a_quoted_message_keeps_its_final_period(self):
         source = 'def fail():\n    raise RuntimeError("no name.")\n'
         self.assertEqual(
@@ -346,6 +384,26 @@ class PlainTest(unittest.TestCase):
         )
         self.assertIn(
             "returns the command's output", " ".join(_lines(only, "run_git()"))
+        )
+        none = (
+            "import subprocess\n"
+            "def output_or_none(args):\n"
+            "    result = subprocess.run(['rclone', *args], capture_output=True)\n"
+            "    if result.returncode in (3, 4):\n"
+            "        return None\n"
+            "    return result.stdout\n"
+        )
+        self.assertNotIn("command's output", " ".join(_lines(none, "output_or_none()")))
+        empty = (
+            "import subprocess\n"
+            "def output_or_empty(args):\n"
+            "    result = subprocess.run(['rclone', *args], capture_output=True)\n"
+            "    if not result.stdout:\n"
+            '        return ""\n'
+            "    return result.stdout\n"
+        )
+        self.assertNotIn(
+            "command's output", " ".join(_lines(empty, "output_or_empty()"))
         )
 
     def test_an_fstring_of_a_module_constant_is_the_message(self):

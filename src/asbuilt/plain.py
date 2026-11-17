@@ -620,8 +620,11 @@ def _failure(story):
             extras.append(phrase)
     if extras:
         line += f", and if {_or(extras)}"
-    others = any(has and msg not in shown for _cond, msg, has, _branch in story.events)
-    if shown and others and ", among others" not in line:
+    # A quote is not the whole story when any other raise escapes, even a bare one.
+    covered = sum(
+        1 for _cond, msg, _has, _branch in story.events if msg and msg in shown
+    )
+    if shown and len(story.events) > covered and ", among others" not in line:
         line += ", among others"
     return [_finish(line)]
 
