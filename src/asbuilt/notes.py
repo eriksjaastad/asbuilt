@@ -4,10 +4,14 @@ The model only comments: it cannot add or remove a box. A reply that is not the 
 asked for is refused, the command exits 2, and nothing is written. A run that returns no
 notes, including the mock used unless ASBUILT_MODEL=1, leaves model notes already there.
 A run that returns notes replaces them.
+
+Security sentences are already on the plan. The same opt-in can rephrase them. A sentence
+that does not repeat its fact is left as it was. The mock does not call out.
 """
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -15,10 +19,18 @@ from asbuilt import output
 from asbuilt.compare import check
 from asbuilt.connections import ConnectionFailed, ask
 from asbuilt.plan import _object, parse, read_bytes
+from asbuilt.security import reworded
 from asbuilt.state import PlanError
 
 LABELS = ("tricky part", "common pattern")
 NOTE_MAX = 200
+WORD_PROMPT = """Write a plain sentence and an expert sentence for each fact. Use only the fact.
+The plain sentence is for a beginner. The expert sentence may mention only a field that is present:
+the call, the environment name, a timeout, try, or a loop. Add no other risk.
+Each sentence must contain the fact's "at" text exactly and be one line.
+Reply with JSON only: {{"notes": [{{"id": "<id>", "at": "<at>", "plain": "<sentence>", "expert": "<sentence>"}}]}}
+FACTS: {facts}
+"""
 PROMPT = """Comment on these functions for someone learning the code. Add nothing.
 Reply with JSON only: {{"notes": [{{"id": "<id from the list>", "label": "tricky part" or "common pattern", "text": "<one line, at most {max} characters>"}}]}}
 Skip a function that is neither. Use each id at most once.
@@ -82,11 +94,48 @@ def applied(plan, notes):
     return plan
 
 
+def _rows(plan):
+    rows, todo = [], [plan]
+    while todo:
+        box = todo.pop()
+        todo.extend(box.get("children") or [])
+        for note in (box.get("asbuilt") or {}).get("security") or []:
+            fact = note.get("fact") if isinstance(note, dict) else None
+            if isinstance(fact, dict) and isinstance(fact.get("at"), str):
+                rows.append({"id": box["id"], "fact": fact})
+    return rows
+
+
+def _reword(plan, connection):
+    """Replace a security sentence only when the model repeats that fact. Otherwise leave it.
+    The mock is not asked: a sentence is already filled in from the fact."""
+    rows = _rows(plan)
+    if not rows:
+        return plan
+    if connection is None and os.environ.get("ASBUILT_MODEL") not in ("claude", "1"):
+        return plan
+    payload = [{"id": row["id"], "fact": row["fact"]} for row in rows]
+    chosen = reworded(ask(WORD_PROMPT.format(facts=json.dumps(payload, ensure_ascii=False)), connection), rows)
+    if not chosen:
+        return plan
+    plan = json.loads(json.dumps(plan))
+    by = {(item["id"], item["at"]): item for item in chosen}
+    todo = [plan]
+    while todo:
+        box = todo.pop()
+        todo.extend(box.get("children") or [])
+        for note in (box.get("asbuilt") or {}).get("security") or []:
+            hit = by.get((box.get("id"), (note.get("fact") or {}).get("at")))
+            if hit:
+                note["plain"], note["expert"] = hit["plain"], hit["expert"]
+    return plan
+
+
 def annotate(plan, name, connection=None):
     """`plan` plus model notes. No notes back leaves model notes already there; notes replace them."""
     boxes = _coded(plan)
     if not boxes:
-        return plan
+        return _reword(plan, connection)
     said = [
         {"id": b["id"], "name": (b.get("labels") or [{"text": b["id"]}])[0].get("text", b["id"]), "code": b["asbuilt"]["text"]}
         for b in boxes
@@ -95,9 +144,7 @@ def annotate(plan, name, connection=None):
         notes = read_reply(ask(PROMPT.format(max=NOTE_MAX, boxes=json.dumps(said, ensure_ascii=False)), connection), [b["id"] for b in boxes])
     except PlanError as exc:
         raise PlanError(f"{name}: the model's reply was not used: {exc}") from None
-    if not notes:
-        return plan
-    return applied(plan, notes)
+    return _reword(plan if not notes else applied(plan, notes), connection)
 
 
 def main(argv=None):

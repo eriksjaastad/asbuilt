@@ -271,6 +271,10 @@ def python_file(name, source):
             else:
                 decoded, definitions = text.decode(), _definitions(root)
                 scope = _scope(list(root.named_children), None, False)
+                from asbuilt.marks import module_constants
+                from asbuilt.security import for_box
+
+                constants = module_constants(list(root.named_children))
     box = {"id": name, "labels": [{"text": t} for t in (name, note) if t]}
     if definitions:
         children, at = [], {}
@@ -281,6 +285,9 @@ def python_file(name, source):
             badges = _marks(node, scope)
             if badges:
                 info["badges"] = badges
+            secured = for_box(node, scope, constants)
+            if secured:
+                info["security"] = secured
             child = f"{name}:{ident}:{start}"
             at[ident] = child  # the last def is the one a call reaches
             children.append(

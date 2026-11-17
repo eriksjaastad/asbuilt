@@ -469,3 +469,36 @@ test("a dropped server still says the connection was lost while an empty mark is
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("opening a box shows its plain security sentence and its expert one", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  const plain = "This reads OPENROUTER_API_KEY from the environment: os.environ.get(KEY_NAME).";
+  const expert = "os.environ.get(KEY_NAME) reads OPENROUTER_API_KEY from the environment.";
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{
+      id: "read",
+      labels: [{ text: "read()" }],
+      asbuilt: { text: "def read():\n    return os.environ.get(KEY_NAME)\n", security: [{ plain, expert }] },
+    }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.getByText("read()", { exact: true }).click();
+    await page.locator("#code").waitFor();
+    const panel = await page.locator("#code").innerText();
+    assert.ok(panel.includes(plain) && panel.includes(expert));
+    assert.match(panel, /Plain/);
+    assert.match(panel, /Expert/);
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
