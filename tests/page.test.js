@@ -324,9 +324,12 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
     assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (2)");
     assert.equal(await page.locator("[data-mark='input']").innerText(), "asks a person to type (0)");
-    assert.equal(await page.locator("[data-mark='input']").isDisabled(), true);
+    assert.equal(await page.locator("[data-mark='input']").getAttribute("aria-disabled"), "true");
+    await page.locator("[data-mark='input']").click({ force: true });
+    assert.equal(await page.locator("[data-mark='input']").getAttribute("aria-pressed"), null);
+    assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "true");
     assert.match(await page.locator("[data-mark='input']").getAttribute("title"), /asBuilt found none in this view\. It looks only in functions and classes, for: input\(\)\./);
-    assert.equal(await page.locator("[data-mark='env']").isDisabled(), false);
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-disabled"), "false");
     assert.equal(await page.locator("[data-mark='env']").getAttribute("title"), "");
     await page.locator("[data-mark='env']").click();
     await page.locator("[data-box='local']").waitFor({ state: "detached" });
@@ -346,7 +349,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor();
     await page.locator("[data-box='a.py']").waitFor();
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 3 functions and classes where asBuilt found none of it: local(), ask(), far(). It looks only in functions and classes, for: os.environ, os.getenv; requests, httpx, urllib.request, http.client, socket, subprocess, os.system. Also hiding 3 arrows that do not join two shown functions or classes.");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 3 functions and classes where asBuilt found none of it: local(), ask(), far(). It looks only in functions and classes, for: os.environ, os.getenv; requests, httpx, urllib.request, http.client, os.system, subprocess.run, subprocess.Popen, subprocess.call, subprocess.check_call, subprocess.check_output, socket.socket, socket.create_connection, socket.create_server. Also hiding 3 arrows that do not join two shown functions or classes.");
     await page.locator("#mark-all").click();
     await page.locator("[data-box='local']").waitFor();
     await page.locator("[data-arrow='aside']").waitFor();
@@ -365,7 +368,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='out']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor({ state: "detached" });
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code talks to the network or runs programs or uses the OpenAI or Anthropic library, and the boxes that hold them. Hiding 2 functions and classes where asBuilt found none of it: read(), local(). It looks only in functions and classes, for: requests, httpx, urllib.request, http.client, socket, subprocess, os.system; openai, anthropic. Also hiding 2 arrows that do not join two shown functions or classes.");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code talks to the network or runs programs or uses the OpenAI or Anthropic library, and the boxes that hold them. Hiding 2 functions and classes where asBuilt found none of it: read(), local(). It looks only in functions and classes, for: requests, httpx, urllib.request, http.client, os.system, subprocess.run, subprocess.Popen, subprocess.call, subprocess.check_call, subprocess.check_output, socket.socket, socket.create_connection, socket.create_server; openai, anthropic. Also hiding 2 arrows that do not join two shown functions or classes.");
     assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (1)");
     assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
   } finally {
@@ -404,10 +407,10 @@ test("a mark no box carries is a plain empty chart, not an error over the old on
     assert.equal(await page.locator(".stale").count(), 0);
     assert.equal(await page.locator("[data-box]").count(), 0);
     assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (0)");
-    assert.equal(await page.locator("[data-mark='env']").isDisabled(), false);
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-disabled"), "false");
     await page.locator("#mark-all").click();
     await page.locator("[data-box='local']").waitFor();
-    assert.equal(await page.locator("[data-mark='env']").isDisabled(), true);
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-disabled"), "true");
     await page.getByText("local()", { exact: true }).click();
     await page.locator("#pipeline").waitFor();
     writeFileSync(file, JSON.stringify(plan));

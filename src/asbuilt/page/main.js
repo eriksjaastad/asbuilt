@@ -21,6 +21,8 @@ let plan = null;
 let open = null;
 let focus = null;
 let last = null;
+let looks = null;
+for (const button of markButtons) button.textContent = SAYS[button.dataset.mark];
 
 const listed = (box) => {
   const [boxes, arrows] = [[], []];
@@ -43,7 +45,7 @@ function picture() {
   const draw = shown(plan, id, [...chosen]);
   const empty = Boolean(chosen.size && draw && !draw.children?.length);
   const reached = id ? (find(plan, id).labels?.[0]?.text ?? id) : null;
-  return { base, draw, empty, line: empty ? carries([...chosen], reached) : "" };
+  return { base, draw, empty, line: empty ? carries([...chosen], reached, looks) : "" };
 }
 
 function sayHidden() {
@@ -52,9 +54,11 @@ function sayHidden() {
   for (const button of markButtons) {
     const count = tally[button.dataset.mark] ?? 0;
     button.textContent = `${SAYS[button.dataset.mark]} (${count})`;
-    // A chosen mark stays clickable at 0, so it can still be turned off.
-    button.disabled = count === 0 && !chosen.has(button.dataset.mark);
-    button.title = button.disabled ? `asBuilt found none in this view. ${looked([button.dataset.mark])}` : "";
+    // A chosen mark stays clickable at 0, so it can still be turned off. aria-disabled, not
+    // disabled, so a keyboard still reaches the chip and its reason.
+    const off = count === 0 && !chosen.has(button.dataset.mark);
+    button.setAttribute("aria-disabled", String(off));
+    button.title = off ? `asBuilt found none in this view. ${looked([button.dataset.mark], looks)}` : "";
   }
   // The chart says the empty sentence. The toolbar line is only for a chart that still has boxes.
   if (!chosen.size || !plan || view.empty) {
@@ -64,7 +68,7 @@ function sayHidden() {
   const [full, kept] = [listed(view.base), listed(view.draw)];
   const hidden = hiddenBoxes(view.base, kept.boxes);
   const arrows = full.arrows.filter((id) => !kept.arrows.includes(id)).length;
-  marksNote.textContent = showing([...chosen], hidden, arrows);
+  marksNote.textContent = showing([...chosen], hidden, arrows, looks);
 }
 
 function showCode() {
@@ -83,7 +87,7 @@ const show = latest(async (text) => {
   try {
     const state = JSON.parse(text);
     ok = state?.ok === true;
-    if (ok) plan = state.plan;
+    if (ok) [plan, looks] = [state.plan, state.looks];
   } catch {
     // render turns a message it cannot read into the error panel
   }
@@ -119,7 +123,7 @@ whole.addEventListener("click", () => {
 
 document.getElementById("toolbar").addEventListener("click", (event) => {
   const button = event.target.closest("#mark-all, [data-mark]");
-  if (!button || !last) return;
+  if (!button || !last || button.getAttribute("aria-disabled") === "true") return;
   if (button === markAll) chosen.clear();
   else if (chosen.has(button.dataset.mark)) chosen.delete(button.dataset.mark);
   else chosen.add(button.dataset.mark);
