@@ -3,7 +3,7 @@
 The model only comments: it cannot add or remove a box. A reply that is not the JSON
 asked for is refused, the command exits 2, and nothing is written. A run that returns no
 notes, including the mock used unless ASBUILT_MODEL=1, leaves model notes already there.
-A run that returns notes replaces them.
+A run that returns notes replaces them. Security sentences on the plan are left as written.
 """
 
 import argparse
@@ -83,7 +83,8 @@ def applied(plan, notes):
 
 
 def annotate(plan, name, connection=None):
-    """`plan` plus model notes. No notes back leaves model notes already there; notes replace them."""
+    """`plan` plus model notes. No notes back leaves model notes already there; notes replace them.
+    Security sentences are not sent and are not changed."""
     boxes = _coded(plan)
     if not boxes:
         return plan

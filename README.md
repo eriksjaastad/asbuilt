@@ -77,6 +77,8 @@ The name is followed back to its import, and a parameter or a local of that name
 `model` is the openai or anthropic SDK, including a client built once at the top (`client = OpenAI()`). `env` is an environment read, `input` is input(),
 and `writes` is a file opened or written. A change in later behavior cannot be read from the
 code, so it is not a badge. The badge sits on the box. It does not change the box's id or its arrows.
+A box that calls out, reads the environment, or calls input() also gets two sentences, Plain and Expert.
+Each one names a fact the parser can see in that box: the call, an environment name or a prompt when it is written there, and a URL's host. A network call is a request; it is described as sending data only when the call passes a body, and it is not called outside when the host is local. A timeout is mentioned only when that call shows one, or when leaving it out is itself the proof. A box with no such fact gets no sentence. Building the chart writes these sentences, and a model does not rewrite them.
 The buttons above the chart, next to “Only what this reaches” and “Whole chart”, show only the boxes that carry a chosen badge, and the arrows between those boxes. Several badges means a box with any of them. Each button shows how many boxes in the current view prove that mark. The line beside them says how many boxes and arrows are hidden. When no box carries the mark, the chart says so once, in place of the drawing. All puts the full chart back. With “Only what this reaches” on as well, a box has to be in that pipeline and carry a chosen badge.
 
 The Python files in a folder are charted the same way, including subfolders. Each subfolder is a
