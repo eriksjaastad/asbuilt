@@ -41,7 +41,9 @@ test("the repo-root chart draws all parsed boxes and arrows in a few layouts", {
     execFileSync("uv", ["run", "--offline", "python", "-m", "asbuilt.built", ".", file], { timeout: 30_000 });
     const plan = JSON.parse(readFileSync(file, "utf8"));
     const [boxes, arrows] = [[], []];
+    let leaves = 0;
     const walk = (box) => {
+      if (!box.children?.length) leaves++;
       for (const kid of box.children ?? []) { boxes.push(kid.id); walk(kid); }
       arrows.push(...(box.edges ?? []).map((e) => e.id));
     };
@@ -67,13 +69,13 @@ test("the repo-root chart draws all parsed boxes and arrows in a few layouts", {
       boxes: [...document.querySelectorAll("[data-box]")].map((b) => b.dataset.box).sort(),
       arrows: [...document.querySelectorAll("[data-arrow]")].map((a) => a.dataset.arrow).sort(),
       calls: window.layoutCalls,
-      height: document.querySelector("#chart > svg").viewBox.baseVal.height,
+      height: document.querySelector("#chart > svg").getBoundingClientRect().height,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     }));
     assert.deepEqual(drawn.boxes, boxes.sort());
     assert.deepEqual(drawn.arrows, arrows.sort());
-    assert.ok(drawn.calls <= 8, `${drawn.calls} layouts`);
-    assert.ok(drawn.height < boxes.length * 140, "the chart has not become a single long column");
+    assert.ok(drawn.calls <= 12, `${drawn.calls} layouts`);
+    assert.ok(drawn.height <= leaves * 120, "at least 7.5 leaf boxes per 900px screen");
     assert.equal(drawn.overflow, 0);
   } finally {
     server?.kill();

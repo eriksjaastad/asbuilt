@@ -70,7 +70,9 @@ const STRAIGHT = { [PLACEMENT]: "NETWORK_SIMPLEX", "elk.layered.thoroughness": "
 const CENTRED = { [PLACEMENT]: "SIMPLE" };
 // Start very wide charts with bounded layers instead of an overflowing row. MinWidth weighs boxes and the
 // arrows passing them; three average boxes leave routing room, and each of a knot's lanes gets a smaller share.
-const COMPACT = { ...CENTRED, "elk.layered.layering.strategy": "MIN_WIDTH", "elk.layered.layering.minWidth.upperBoundOnWidth": "3" };
+const COMPACT = { ...CENTRED, "elk.layered.layering.strategy": "MIN_WIDTH", "elk.layered.layering.minWidth.upperBoundOnWidth": "3", "elk.layered.thoroughness": "3" };
+// Compact a fitted chart to remove the tall gaps left by bounded layers. SCANLINE throws on valid nested lanes.
+const FINISH = { "elk.layered.compaction.postCompaction.strategy": "LEFT_RIGHT_CONNECTION_LOCKING", "elk.layered.compaction.postCompaction.constraints": "QUADRATIC" };
 // A bounded layer is a poor starting point for dense, large programs: their long arrow bundles make it taller
 // and slower. Keep their existing search, without paying for a speculative layout first.
 const COMPACT_ITEMS = 512;
@@ -81,16 +83,19 @@ const setOn = (box, options, inLane = false) => {
   (box.children ?? []).filter((c) => c.children?.length).forEach((c) => setOn(c, options, inLane || box.id.startsWith(LANES)));
 };
 
-const laidOut = (prepared, elk, hidden, options) => {
+const laidOut = (prepared, elk, hidden, options, finish = false) => {
   const graph = structuredClone(prepared);
   setOn(graph, options);
-  return elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...options } });
+  if (finish) setOn(graph, FINISH);
+  return elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...options, ...(finish ? FINISH : {}) } });
 };
 
 async function narrow(prepared, elk, hidden, options) {
   let [out, room, best, stall] = [null, MAX_WIDTH, Infinity, 0];
   for (let n = 0; n < MAX_LAYOUTS; n++) {
     out = await laidOut(prepared, elk, hidden, options);
+    // Compaction can widen the result; if so, the next fold uses its actual geometry and tries again.
+    if (options === COMPACT && out.width <= MAX_WIDTH) out = await laidOut(prepared, elk, hidden, options, true);
     if (out.width <= MAX_WIDTH) break;
     // Still more than twice a laptop after a straight try: more of those will not fit it. The centred pass will.
     if (options === STRAIGHT && out.width > MAX_WIDTH * 2) break;
