@@ -8,16 +8,7 @@ import json
 
 from asbuilt.built import one_name
 from asbuilt.marks import layer, reaches_out, reads_env, resolve
-from asbuilt.security import (
-    assigned,
-    call_arguments,
-    call_way,
-    facts as security_facts,
-    host_name,
-    local_host,
-    sent_body,
-    string_literal,
-)
+from asbuilt.security import assigned, call_arguments, call_way, facts as security_facts, string_literal
 
 _NESTED = ("function_definition", "class_definition", "lambda")
 _LISTS = ("list", "tuple", "list_pattern", "pattern_list", "expression_list")
@@ -120,20 +111,6 @@ def _walk(node, visit):
         _walk(child, visit)
 
 
-def _names(node, assigns, depth=0):
-    found = set()
-    if node is None:
-        return found
-    if node.type == "identifier":
-        name = node.text.decode()
-        found.add(name)
-        if depth < 3 and name in assigns:
-            found |= _names(assigns[name], assigns, depth + 1)
-    for child in node.named_children:
-        found |= _names(child, assigns, depth)
-    return found
-
-
 def _env_name(node, scope, words):
     """The one environment name this expression reads, or None."""
     found = []
@@ -197,7 +174,8 @@ def _in_loop(node, fn):
 
 def _takes_seconds(path, call, facts):
     """True for a call whose timeout is in seconds, not milliseconds."""
-    if path and (path[0] in ("requests", "httpx", "socket", "subprocess") or path[:2] == ("urllib", "request")):
+    roots = ("requests", "httpx", "socket", "subprocess", "smtplib", "imaplib")
+    if path and (path[0] in roots or path[:2] == ("urllib", "request")):
         return True
     for fact in facts:
         if fact.get("timeout") != "passed":
@@ -205,7 +183,7 @@ def _takes_seconds(path, call, facts):
         if not (call.start_byte <= fact.get("start", -1) < call.end_byte):
             continue
         at = fact.get("at") or ""
-        if at.startswith(("urllib.", "requests.", "httpx.", "socket.", "subprocess.")):
+        if at.startswith(("urllib.", "requests.", "httpx.", "socket.", "subprocess.", "smtplib.", "imaplib.")):
             return True
     return False
 
@@ -364,25 +342,6 @@ def _return_claim(fn, scope, facts):
     return kinds[0]
 
 
-def _message(expr, words, local_strings):
-    """A plain string this raise carries, or None when the message is built up."""
-    if expr is None:
-        return None
-    if expr.type == "string":
-        return string_literal(expr)
-    if expr.type == "identifier":
-        name = expr.text.decode()
-        if isinstance(local_strings.get(name), str):
-            return local_strings[name]
-        value = words.get(name)
-        return value if isinstance(value, str) else None
-    if expr.type == "call":
-        positional, _named, _splat = call_arguments(expr)
-        if positional:
-            return _message(positional[0], words, local_strings)
-    return None
-
-
 def _bearer(node, assigns, scope, words):
     found = []
     if node.type == "string" and "Bearer" in node.text.decode():
@@ -404,8 +363,8 @@ class _Story:
         self.name = name
         self.exception = False
         self.sends = False
-        self.sends_input = False
-        self.host = None
+        self.send_host = None
+        self.send_local = False
         self.command = None
         self.keeps_env = False
         self.is_class = False
@@ -417,9 +376,10 @@ class _Story:
         self.skipped_env = None
         self.choices = []
         self.otherwise = None
+        self.always = True
         self.raises = False
-        self.messages = []
-        self.missing = []
+        self.events = []
+        self.guards = []
         self.keys = set()
         self.bearer = None
         self.timeout_attrs = set()
@@ -462,21 +422,62 @@ def _choice_line(story):
     return None
 
 
-def _failure(story):
-    if not story.raises:
+def _phrase(cond, keys):
+    if not cond:
         return None
-    guards = []
-    for name in story.missing:
-        guards.append("the key is missing" if name in story.keys else f"the environment value {name} is missing")
-    quoted = [f'"{text}"' for text in story.messages]
+    kind, name = cond
+    if kind == "env":
+        return "the key is missing" if name in keys else f"the environment value {name} is missing"
+    if kind == "empty":
+        return f"{name} is empty"
+    return None
+
+
+def _finish(text):
+    if text.endswith(('."', '!"', '?"', ".", "!", "?")):
+        return text
+    return text + "."
+
+
+def _failure(story):
+    """One sentence. "stops" only when every path raises; a quote stays with its own condition."""
+    if not story.raises:
+        return []
+    verb = "stops" if story.always else "can stop"
     name = story.name
-    if guards and quoted:
-        return f"If {_or(guards)}, {name} stops with an error, and it stops with an error that says {_or(quoted)}."
-    if guards:
-        return f"If {_or(guards)}, {name} stops with an error."
-    if quoted:
-        return f"{name} stops with an error that says {_or(quoted)}."
-    return f"{name} stops with an error."
+    tied = None
+    loose = []
+    hidden = 0
+    for cond, msg in story.events:
+        phrase = _phrase(cond, story.keys)
+        if phrase and msg and tied is None:
+            tied = (phrase, msg)
+        elif msg and len(loose) < 2:
+            loose.append(msg)
+        else:
+            hidden += 1
+    extras = []
+    for cond in story.guards:
+        phrase = _phrase(cond, story.keys)
+        if phrase and (tied is None or phrase != tied[0]) and phrase not in extras:
+            extras.append(phrase)
+    more = hidden > 0 or (tied is not None and loose) or len(loose) > 2
+    if tied:
+        phrase, msg = tied
+        line = f'If {phrase}, {name} {verb} with an error that says "{msg}"'
+    elif loose:
+        shown = " or ".join(f'"{text}"' for text in loose[:2])
+        line = f"{name} {verb} with an error that says {shown}"
+        more = hidden > 0 or len(loose) > 2
+    elif extras:
+        line = f"If {_or(extras)}, {name} {verb} with an error"
+    else:
+        line = f"{name} {verb} with an error"
+    if extras and tied:
+        line += f", and if {_or(extras)}"
+    if more:
+        line += ", among others"
+    return [_finish(line)]
 
 
 def _sentences(story):
@@ -488,11 +489,12 @@ def _sentences(story):
     if choice:
         pending.append(choice)
     if not story.given and not story.choices and not story.otherwise:
-        if story.sends and story.host:
-            what = "what it was given" if story.sends_input else "data"
-            net = "" if local_host(story.host) else " over the internet"
+        if story.send_host:
+            net = "" if story.send_local else " over the internet"
             key = f", using a key read from {story.bearer}" if story.bearer else ""
-            pending.append(f"{story.name} sends {what} to {story.host}{net}{key}.")
+            pending.append(f"{story.name} sends data to {story.send_host}{net}{key}.")
+        elif story.sends and story.bearer:
+            pending.append(f"{story.name} sends data, using a key read from {story.bearer}.")
         elif isinstance(story.command, str):
             line = f"{story.name} runs the command {story.command}"
             if story.keeps_env:
@@ -509,23 +511,115 @@ def _sentences(story):
             pending.append(f"By default {story.name} waits up to {story.timeout} seconds.")
         else:
             pending.append(f"{story.name} waits up to {story.timeout} seconds.")
-    failed = _failure(story)
-    if failed:
-        pending.append(failed)
-    if story.returns and not story.is_class and not story.given and not story.choices and not story.otherwise:
+    pending.extend(_failure(story))
+    if story.returns and not story.given and not story.choices and not story.otherwise:
         pending.append(_return_line(story))
     return [line for line in pending if line][:3]
 
 
 def _apply_facts(story, node, scope, words):
+    """Sends and host come only from security facts, and only from the same call."""
     for fact in security_facts(node, scope, words):
-        if fact["kind"] != "calls out":
+        if fact["kind"] != "calls out" or not fact.get("sends"):
             continue
-        if fact.get("sends"):
-            story.sends = True
-        host = fact.get("host")
-        if host and story.host is None:
-            story.host = host
+        story.sends = True
+        if fact.get("host") and story.send_host is None:
+            story.send_host = fact["host"]
+            story.send_local = bool(fact.get("local"))
+
+
+def _condition(cond, assigns, scope, words, params):
+    """('env', name) or ('empty', parameter) for a `not` check, else None."""
+    if cond is None or cond.type != "not_operator":
+        return None
+    ident = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
+    if ident in params:
+        return ("empty", ident)
+    source = assigns.get(ident) if ident else next(iter(cond.named_children), None)
+    name = _env_name(source, scope, words)
+    return ("env", name) if name else None
+
+
+def _guard(node, fn, assigns, scope, words, params):
+    cur = node.parent
+    while cur is not None and cur != fn and cur.type not in ("function_definition", "class_definition"):
+        if cur.type == "if_statement":
+            body = _block(cur)
+            if _contains(body, node):
+                return _condition(cur.child_by_field_name("condition"), assigns, scope, words, params)
+        cur = cur.parent
+    return None
+
+
+def _text_of(node, words, local_strings):
+    """A plain message, including an f-string of known string constants. None if it is built at run time."""
+    if node is None:
+        return None
+    if node.type == "call":
+        positional, _named, _splat = call_arguments(node)
+        return _text_of(positional[0], words, local_strings) if positional else None
+    if node.type == "identifier":
+        name = node.text.decode()
+        if isinstance(local_strings.get(name), str):
+            return local_strings[name]
+        value = words.get(name)
+        return value if isinstance(value, str) else None
+    plain = string_literal(node)
+    if plain:
+        return plain
+    if node.type != "string":
+        return None
+    parts = []
+    for child in node.children:
+        if child.type == "string_content":
+            parts.append(child.text.decode())
+        elif child.type == "interpolation":
+            ident = next((c for c in child.named_children if c.type == "identifier"), None)
+            piece = _text_of(ident, words, local_strings) if ident is not None else None
+            if not isinstance(piece, str):
+                return None
+            parts.append(piece)
+    return "".join(parts) or None
+
+
+def _stmt_exit(stmt, fn):
+    node = stmt.named_children[0] if stmt.type == "expression_statement" and stmt.named_children else stmt
+    if node.type == "raise_statement":
+        return "raise" if _escapes(node, fn) else "fall"
+    if node.type in ("return_statement", "yield"):
+        return "return"
+    if node.type == "if_statement":
+        body = _block(node)
+        then = _seq(body.named_children if body is not None else [], fn)
+        alt = node.child_by_field_name("alternative")
+        if alt is None:
+            other = "fall"
+        elif alt.type == "else_clause":
+            block = _block(alt)
+            other = _seq(block.named_children if block is not None else [], fn)
+        elif alt.type == "if_statement":
+            other = _stmt_exit(alt, fn)
+        else:
+            other = "mixed"
+        return then if then == other else "mixed"
+    if node.type in ("for_statement", "while_statement", "try_statement", "with_statement", "match_statement"):
+        return "mixed"
+    return "fall"
+
+
+def _seq(stmts, fn):
+    for stmt in stmts:
+        if _doc(stmt):
+            continue
+        kind = _stmt_exit(stmt, fn)
+        if kind != "fall":
+            return kind
+    return "fall"
+
+
+def _always_raises(fn):
+    body = _block(fn)
+    return body is not None and _seq(body.named_children, fn) == "raise"
 
 
 def _returned_call(block):
@@ -546,11 +640,9 @@ def _read_if(node, story, params, assigns, scope, words, fn):
         return
     text = cond.text.decode()
     if cond.type == "not_operator" and body is not None and _escaping_raise(body, fn):
-        ident = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
-        source = assigns.get(ident) if ident else next(iter(cond.named_children), None)
-        name = _env_name(source, scope, words)
-        if name and name not in story.missing:
-            story.missing.append(name)
+        found = _condition(cond, assigns, scope, words, params)
+        if found and found not in story.guards:
+            story.guards.append(found)
     if cond.type == "comparison_operator" and "is not" in text and "None" in text:
         ident = next((c.text.decode() for c in cond.named_children if c.type == "identifier"), None)
         if ident in params and _returned_call(body) == ident:
@@ -652,9 +744,9 @@ def _function(fn, scope, words, bound, story, attrs):
             _read_if(cur, story, params, assigns, scope, words, fn)
         if cur.type == "raise_statement" and _escapes(cur, fn):
             story.raises = True
-            text = _message(next(iter(cur.named_children), None), words, local_strings)
-            if text and text not in story.messages:
-                story.messages.append(text)
+            cond = _guard(cur, fn, assigns, scope, words, params)
+            text = _text_of(next(iter(cur.named_children), None), words, local_strings)
+            story.events.append((cond, text))
         if cur.type == "return_statement" and story.choices and not in_if:
             expr = next(iter(cur.named_children), None)
             if expr is not None and expr.type == "call":
@@ -670,20 +762,6 @@ def _function(fn, scope, words, bound, story, attrs):
                 start, end = story.given_at
                 if not (start <= cur.start_byte and cur.end_byte <= end):
                     story.skipped_env = _env_name(cur, scope, words) or story.skipped_env
-            body = sent_body(cur, path)
-            if body is not None:
-                story.sends = True
-                if _names(body, assigns) & params:
-                    story.sends_input = True
-            url = named.get("url") or (positional[0] if positional else None)
-            host = None
-            if url is not None and url.type == "string":
-                host = host_name(string_literal(url))
-            elif url is not None and url.type == "identifier":
-                value = bound.get(url.text.decode())
-                host = host_name(value) if isinstance(value, str) else None
-            if host:
-                story.host = host
             if call_way(path) == "command" and positional:
                 command = _exec(positional[0], assigns, defaults, attrs)
                 if isinstance(command, str):
@@ -713,6 +791,8 @@ def _function(fn, scope, words, bound, story, attrs):
         if _doc(stmt):
             continue
         visit(stmt)
+    if not _always_raises(fn):
+        story.always = False
     if story.is_class:
         return
     claim = _return_claim(fn, scope, facts)

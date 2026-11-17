@@ -3,38 +3,7 @@
 import os
 import subprocess
 
-
-def label(ok):
-    if ok:
-        return "just now"
-    return "yesterday"
-
-
-def gen():
-    yield "a"
-    return "a"
-
-
-def agent_name():
-    name = os.environ.get("AGENT_NAME")
-    if not name:
-        return None
-    return name
-
-
-def load():
-    name = os.environ.get("AGENT_NAME")
-    if not name:
-        raise RuntimeError("no name")
-    return name
-
-
-def revert(path):
-    try:
-        path.unlink()
-    except OSError as exc:
-        print(f"refused: {exc}")
-    return []
+SECRET_ENV = ("TOKEN",)
 
 
 def missing():
@@ -83,9 +52,6 @@ def load_config():
 
 def lookup(row):
     raise KeyError("config was not found")
-
-
-SECRET_ENV = ("TOKEN",)
 
 
 def collect():

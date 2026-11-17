@@ -11,7 +11,11 @@ _ORDINARY = Path("tests/ordinary.py")
 
 def _lines(source, label):
     box = python_file("t.py", source.encode() if isinstance(source, str) else source)
-    return next(child["asbuilt"].get("plain") or [] for child in box["children"] if child["labels"][0]["text"] == label)
+    return next(
+        child["asbuilt"].get("plain") or []
+        for child in box["children"]
+        if child["labels"][0]["text"] == label
+    )
 
 
 def _classify(value):
@@ -36,7 +40,9 @@ def _classify(value):
 
 def _scan(node, returns, state):
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        if isinstance(
+            child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
             continue
         if isinstance(child, ast.Return):
             returns.append(_classify(child.value))
@@ -49,14 +55,22 @@ def _scan(node, returns, state):
 
 def _escaping_raise(fn):
     def walk(node, handled):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)) and node is not fn:
+        if (
+            isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+            )
+            and node is not fn
+        ):
             return False
         if isinstance(node, ast.Raise):
             return not handled
         if isinstance(node, ast.Try):
             if any(walk(stmt, handled or bool(node.handlers)) for stmt in node.body):
                 return True
-            return any(walk(stmt, handled) for stmt in (*node.handlers, *node.orelse, *node.finalbody))
+            return any(
+                walk(stmt, handled)
+                for stmt in (*node.handlers, *node.orelse, *node.finalbody)
+            )
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
@@ -70,7 +84,11 @@ def _escaping_raise(fn):
 def _analyze(node):
     returns, state = [], {"yield": False, "raise": False}
     bodies = node.body if isinstance(node, ast.ClassDef) else [node]
-    bodies = [item for item in bodies if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))] or [node]
+    bodies = [
+        item
+        for item in bodies
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ] or [node]
     if not isinstance(node, ast.ClassDef):
         bodies = [node]
     for body in bodies:
@@ -81,16 +99,21 @@ def _analyze(node):
 class PlainTest(unittest.TestCase):
     def test_each_box_in_connections_says_what_it_does_in_everyday_words(self):
         box = python_file("connections.py", _CONNECTIONS.read_bytes())
-        got = {child["labels"][0]["text"]: child["asbuilt"].get("plain") for child in box["children"]}
+        got = {
+            child["labels"][0]["text"]: child["asbuilt"].get("plain")
+            for child in box["children"]
+        }
         self.assertEqual(got["ConnectionFailed"], ["ConnectionFailed is an exception."])
         self.assertEqual(got["Mock"], None)
         self.assertEqual(got["_NoRedirect"], None)
-        self.assertEqual(got["_open()"], ["_open returns whatever the network request returns."])
+        self.assertEqual(
+            got["_open()"], ["_open returns whatever the network request returns."]
+        )
         self.assertEqual(
             got["OpenRouter"],
             [
-                "OpenRouter sends what it was given to openrouter.ai over the internet, using a key read from OPENROUTER_API_KEY.",
-                'If the key is missing, OpenRouter stops with an error, and it stops with an error that says "OpenRouter could not be reached." or "OpenRouter replied with nothing it could read.".',
+                "OpenRouter sends data, using a key read from OPENROUTER_API_KEY.",
+                'If the key is missing, OpenRouter can stop with an error that says "OPENROUTER_API_KEY is not set.", among others.',
             ],
         )
         self.assertEqual(
@@ -98,7 +121,7 @@ class PlainTest(unittest.TestCase):
             [
                 "ClaudeCLI runs the command claude and keeps only a fixed set of environment names.",
                 "By default ClaudeCLI waits up to 300 seconds.",
-                'ClaudeCLI stops with an error that says "claude is not signed in to claude.ai: run claude auth login." or "claude replied with nothing.".',
+                'ClaudeCLI can stop with an error that says "claude is not signed in to claude.ai: run claude auth login." or "claude replied with nothing.", among others.',
             ],
         )
         self.assertEqual(
@@ -112,15 +135,10 @@ class PlainTest(unittest.TestCase):
 
     def test_ordinary_code_does_not_inherit_one_file_phrasing(self):
         box = python_file("ordinary.py", _ORDINARY.read_bytes())
-        got = {child["labels"][0]["text"]: child["asbuilt"].get("plain") or [] for child in box["children"]}
-        self.assertEqual(got["label()"], [])
-        self.assertEqual(got["gen()"], [])
-        self.assertEqual(got["agent_name()"], [])
-        self.assertEqual(
-            got["load()"],
-            ['If the environment value AGENT_NAME is missing, load stops with an error, and it stops with an error that says "no name".'],
-        )
-        self.assertEqual(got["revert()"], [])
+        got = {
+            child["labels"][0]["text"]: child["asbuilt"].get("plain") or []
+            for child in box["children"]
+        }
         self.assertEqual(got["missing()"], ["missing returns nothing."])
         self.assertEqual(got["ready()"], ["ready returns the text ok."])
         self.assertEqual(got["mock()"], ["mock returns a fixed text."])
@@ -130,7 +148,10 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(got["stream()"], [])
         self.assertEqual(got["fetch_mini_data()"], ["fetch_mini_data returns nothing."])
         self.assertEqual(got["load_config()"], [])
-        self.assertEqual(got["lookup()"], ['lookup stops with an error that says "config was not found".'])
+        self.assertEqual(
+            got["lookup()"],
+            ['lookup stops with an error that says "config was not found".'],
+        )
         self.assertEqual(got["collect()"], ["collect runs the command rclone."])
         self.assertEqual(got["wait()"], [])
         self.assertEqual(
@@ -142,7 +163,10 @@ class PlainTest(unittest.TestCase):
         )
 
     def test_a_return_claim_needs_every_return_to_agree(self):
-        lines = _lines('def label(ok):\n    if ok:\n        return "just now"\n    return "yesterday"\n', "label()")
+        lines = _lines(
+            'def label(ok):\n    if ok:\n        return "just now"\n    return "yesterday"\n',
+            "label()",
+        )
         self.assertEqual(lines, [])
 
     def test_a_generator_does_not_claim_a_return(self):
@@ -157,8 +181,62 @@ class PlainTest(unittest.TestCase):
         source = 'import os\ndef load():\n    name = os.environ.get("AGENT_NAME")\n    if not name:\n        raise RuntimeError("no name")\n    return name\n'
         self.assertEqual(
             _lines(source, "load()"),
-            ['If the environment value AGENT_NAME is missing, load stops with an error, and it stops with an error that says "no name".'],
+            [
+                'If the environment value AGENT_NAME is missing, load can stop with an error that says "no name".'
+            ],
         )
+
+    def test_a_raise_on_one_path_can_stop(self):
+        source = 'def check(name):\n    if not name:\n        raise ValueError("empty")\n    return name\n'
+        self.assertEqual(
+            _lines(source, "check()"),
+            ['If name is empty, check can stop with an error that says "empty".'],
+        )
+
+    def test_an_env_guard_that_does_not_raise_is_not_why_it_stops(self):
+        source = (
+            "import os\n"
+            "def load(ready):\n"
+            '    name = os.environ.get("AGENT_NAME")\n'
+            "    if not name:\n"
+            "        return None\n"
+            "    if not ready:\n"
+            '        raise RuntimeError("nope")\n'
+            "    return name\n"
+        )
+        text = " ".join(_lines(source, "load()"))
+        self.assertNotIn("AGENT_NAME", text)
+        self.assertIn("can stop", text)
+
+    def test_a_url_on_another_call_is_not_where_data_is_sent(self):
+        source = 'import pandas as pd\ndef load(rows):\n    pd.DataFrame(data=rows)\n    pd.read_csv("https://example.com/data.csv")\n'
+        self.assertEqual(_lines(source, "load()"), [])
+
+    def test_a_browser_host_is_not_borrowed_by_the_send(self):
+        source = (
+            "import webbrowser\nimport requests\n"
+            "def post(api, body):\n"
+            '    webbrowser.open("https://github.com/x")\n'
+            "    requests.post(api, json=body)\n"
+        )
+        text = " ".join(_lines(source, "post()"))
+        self.assertNotIn("github.com", text)
+
+    def test_an_smtp_timeout_is_seconds(self):
+        source = 'import smtplib\ndef send_email():\n    smtplib.SMTP("smtp.example.com", timeout=30)\n'
+        self.assertEqual(
+            _lines(source, "send_email()"), ["send_email waits up to 30 seconds."]
+        )
+
+    def test_a_timeout_passed_to_a_helper_is_not_claimed(self):
+        source = (
+            "def _gh_json(url, timeout):\n"
+            "    import requests\n"
+            "    requests.get(url, timeout=timeout)\n"
+            "def fetch():\n"
+            '    _gh_json("https://example.com", timeout=30)\n'
+        )
+        self.assertEqual(_lines(source, "fetch()"), [])
 
     def test_a_message_that_says_refused_is_not_an_error_unless_it_raises(self):
         source = 'def revert(path):\n    try:\n        path.unlink()\n    except OSError as exc:\n        print(f"refused: {exc}")\n    return []\n'
@@ -177,15 +255,17 @@ class PlainTest(unittest.TestCase):
 
     def test_a_private_address_is_not_over_the_internet(self):
         source = 'import requests\ndef post(payload):\n    requests.post("http://10.1.2.3/x", json=payload)\n'
-        self.assertEqual(_lines(source, "post()"), ["post sends what it was given to 10.1.2.3."])
+        self.assertEqual(_lines(source, "post()"), ["post sends data to 10.1.2.3."])
 
     def test_an_unspecified_address_is_not_over_the_internet(self):
         source = 'import requests\ndef post(payload):\n    requests.post("http://0.0.0.0:8000/x", json=payload)\n'
-        self.assertEqual(_lines(source, "post()"), ["post sends what it was given to 0.0.0.0."])
+        self.assertEqual(_lines(source, "post()"), ["post sends data to 0.0.0.0."])
 
     def test_a_timeout_parameter_default_is_by_default(self):
         source = 'import requests\ndef fetch(timeout=15):\n    requests.get("https://example.com/x", timeout=timeout)\n'
-        self.assertEqual(_lines(source, "fetch()"), ["By default fetch waits up to 15 seconds."])
+        self.assertEqual(
+            _lines(source, "fetch()"), ["By default fetch waits up to 15 seconds."]
+        )
 
     def test_a_literal_timeout_names_the_box(self):
         source = 'import requests\ndef send():\n    requests.get("https://example.com/x", timeout=15)\n'
@@ -221,7 +301,11 @@ class PlainTest(unittest.TestCase):
 
     def test_security_sentences_stay_the_parser_text(self):
         box = python_file("connections.py", _CONNECTIONS.read_bytes())
-        notes = next(child["asbuilt"]["security"] for child in box["children"] if child["labels"][0]["text"] == "OpenRouter")
+        notes = next(
+            child["asbuilt"]["security"]
+            for child in box["children"]
+            if child["labels"][0]["text"] == "OpenRouter"
+        )
         self.assertEqual(
             [(note["plain"], note["expert"]) for note in notes],
             [
@@ -244,7 +328,9 @@ class PlainTest(unittest.TestCase):
             defined = {
                 node.name: node
                 for node in tree.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
             }
             for child in box["children"]:
                 label = child["labels"][0]["text"]
@@ -255,24 +341,61 @@ class PlainTest(unittest.TestCase):
                 for line in lines:
                     self.assertFalse(line.startswith("It "), line)
                 if isinstance(defined[name], ast.ClassDef):
-                    for phrase in ("returns nothing", "returns the text ", "returns a fixed text", "returns an error.", "returns whatever the network"):
+                    for phrase in (
+                        "returns nothing",
+                        "returns the text ",
+                        "returns a fixed text",
+                        "returns an error.",
+                        "returns whatever the network",
+                    ):
                         self.assertNotIn(phrase, text, label)
-                    if "stops with an error" in text:
-                        methods = [item for item in defined[name].body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))]
-                        self.assertTrue(any(_escaping_raise(method) for method in methods), label)
+                    if "stop with an error" in text:
+                        methods = [
+                            item
+                            for item in defined[name].body
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        ]
+                        self.assertTrue(
+                            any(_escaping_raise(method) for method in methods), label
+                        )
                     continue
                 if "returns nothing" in text:
-                    self.assertTrue(returns and all(item[0] == "none" for item in returns) and not state["yield"], label)
+                    self.assertTrue(
+                        returns
+                        and all(item[0] == "none" for item in returns)
+                        and not state["yield"],
+                        label,
+                    )
                 for line in lines:
                     if "returns the text " not in line:
                         continue
                     claimed = line.split("returns the text ", 1)[1].removesuffix(".")
-                    self.assertTrue(returns and all(item == ("text", claimed) for item in returns) and not state["yield"], label)
+                    self.assertTrue(
+                        returns
+                        and all(item == ("text", claimed) for item in returns)
+                        and not state["yield"],
+                        label,
+                    )
                 if "returns a fixed text" in text:
-                    self.assertTrue(returns and all(item[0] == "json" for item in returns) and not state["yield"], label)
+                    self.assertTrue(
+                        returns
+                        and all(item[0] == "json" for item in returns)
+                        and not state["yield"],
+                        label,
+                    )
                 if any(line.endswith("returns an error.") for line in lines):
-                    self.assertTrue(returns and all(item[0] == "error" for item in returns) and not state["yield"], label)
+                    self.assertTrue(
+                        returns
+                        and all(item[0] == "error" for item in returns)
+                        and not state["yield"],
+                        label,
+                    )
                 if "returns whatever the network request returns" in text:
-                    self.assertTrue(returns and all(item[0] == "call" for item in returns) and not state["yield"], label)
-                if "stops with an error" in text:
+                    self.assertTrue(
+                        returns
+                        and all(item[0] == "call" for item in returns)
+                        and not state["yield"],
+                        label,
+                    )
+                if "stop with an error" in text:
                     self.assertTrue(_escaping_raise(defined[name]), label)

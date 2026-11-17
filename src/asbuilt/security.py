@@ -20,7 +20,8 @@ _RUN_TIMEOUT = ("run", "call", "check_call", "check_output")  # Popen has no tim
 _DATA = ("post", "put", "patch")  # the second positional argument is the body
 
 
-def _literal(node):
+def string_literal(node):
+    """The string this node writes, or None when it is not one plain string."""
     if node is None or node.type != "string":
         return None
     try:
@@ -30,14 +31,9 @@ def _literal(node):
     return value if isinstance(value, str) and value else None
 
 
-def string_literal(node):
-    """The string this node writes, or None when it is not one plain string."""
-    return _literal(node)
-
-
 def _assigned_value(node):
     """One string, one int, or a tuple of strings. None for anything mixed or repeated."""
-    lit = _literal(node)
+    lit = string_literal(node)
     if lit:
         return lit
     if node is not None and node.type == "integer":
@@ -49,7 +45,7 @@ def _assigned_value(node):
         return None
     texts = []
     for child in node.named_children:
-        text = _literal(child)
+        text = string_literal(child)
         if not text:
             return None
         texts.append(text)
@@ -141,7 +137,7 @@ def _fn_constants(fn, outer):
         if target.type == "assignment":
             names = pattern(next(iter(target.named_children), None))
             value = target.named_children[-1] if len(target.named_children) > 1 else None
-            lit = _literal(value) if top and len(names) == 1 else None
+            lit = string_literal(value) if top and len(names) == 1 else None
             name = names[0] if len(names) == 1 else None
             if lit and name and name not in direct:
                 direct[name] = lit
@@ -162,7 +158,7 @@ def _fn_constants(fn, outer):
     return kept
 
 
-def _args(call):
+def call_arguments(call):
     args = call.child_by_field_name("arguments")
     positional, named, splat = [], {}, False
     for child in args.named_children if args is not None else ():
@@ -227,7 +223,7 @@ def _bound_name(node, local):
     if node is None:
         return None
     if node.type == "string":
-        return _literal(node)
+        return string_literal(node)
     return local.get(one_name(node) or "")
 
 
@@ -252,11 +248,6 @@ def host_name(text):
     return None
 
 
-def _host(node):
-    """The host of a literal http(s) URL, port removed. None when the URL is not written here."""
-    return host_name(_literal(node))
-
-
 def local_host(host):
     """True for localhost, a loopback address, 0.0.0.0, or a private address."""
     if not host:
@@ -268,10 +259,6 @@ def local_host(host):
     except ValueError:
         return False
     return addr.is_loopback or addr.is_unspecified or addr.is_private
-
-
-def _local(host):
-    return local_host(host)
 
 
 def _module_call(fun, scope):
@@ -328,7 +315,7 @@ def _timeout(call, fun, path, scope):
     """passed, none, absent, or None when this call does not prove it."""
     if not _has_timeout(path):
         return None
-    positional, named, splat = _args(call)
+    positional, named, splat = call_arguments(call)
     if "timeout" in named:
         return "none" if named["timeout"].type == "none" else "passed"
     index = _timeout_index(path)
@@ -339,21 +326,11 @@ def _timeout(call, fun, path, scope):
     return "absent"
 
 
-def call_arguments(call):
-    """Positional nodes, keyword name -> node, and whether the call splats."""
-    return _args(call)
-
-
-def call_way(path):
-    """send, connect, command, or None. The same answer a calls-out fact stores."""
-    return None if not path else _way(path)
-
-
 def sent_body(call, path):
     """The node passed as this call's body, or None when the call does not send one."""
     if not path:
         return None
-    positional, named, _splat = _args(call)
+    positional, named, _splat = call_arguments(call)
     for key in ("data", "json", "body", "content", "files", "payload"):
         node = named.get(key)
         if node is not None and node.type != "none":
@@ -365,12 +342,10 @@ def sent_body(call, path):
     return None
 
 
-def _sends(call, path):
-    """True when this call passes a body. A post's second positional is that body; files= is too."""
-    return sent_body(call, path) is not None
-
-
-def _way(path):
+def call_way(path):
+    """send, connect, command, or None. The same answer a calls-out fact stores."""
+    if not path:
+        return None
     last = path[-1]
     if path[:1] == ("subprocess",) or path[:2] == ("os", "system"):
         return "command"
@@ -449,8 +424,8 @@ def facts(node, module, consts=None):
             if reads_env(path) and path[-1] in _ENV_OP:
                 chosen = (current, fun, path, "env")
                 break
-            way = _way(path)
-            if reaches_out(path) and way and not (path[-1] == "Request" and not _sends(current, path)):
+            way = call_way(path)
+            if reaches_out(path) and way and not (path[-1] == "Request" and sent_body(current, path) is None):
                 chosen = (current, fun, path, "calls out")
                 break
         if chosen is None:
@@ -460,8 +435,8 @@ def facts(node, module, consts=None):
         # the callee, so os.environ["K"] passed into another call is still its own fact.
         callee = next(iter(cur.named_children), cur)
         if kind == "input":
-            positional, _named, _splat = _args(current)
-            prompt = _literal(positional[0]) if positional else None
+            positional, _named, _splat = call_arguments(current)
+            prompt = string_literal(positional[0]) if positional else None
             fields = {}
             if prompt:
                 fields["prompt"] = prompt
@@ -469,7 +444,7 @@ def facts(node, module, consts=None):
             add("input", callee, _shown(fun, [bit] if bit else []), fields)
             return
         if kind == "env":
-            positional, named, _splat = _args(current)
+            positional, named, _splat = call_arguments(current)
             node = positional[0] if positional else named.get("key")
             found_name = _bound_name(node, local)
             fields = {"how": _env_how(path)}
@@ -478,23 +453,23 @@ def facts(node, module, consts=None):
             bit = _name_bit(node, found_name)
             add("env", callee, _shown(fun, [bit] if bit else []), fields)
             return
-        fields = {"way": _way(path), "caught": _within(cur, "try_statement")}
+        fields = {"way": call_way(path), "caught": _within(cur, "try_statement")}
         if _within(cur, "for_statement", "while_statement"):
             fields["repeats"] = True
         timeout = _timeout(current, fun, path, scope)
         if timeout:
             fields["timeout"] = timeout
-        if _sends(current, path):
+        if sent_body(current, path) is not None:
             fields["sends"] = True
         host = None
-        positional, named, _splat = _args(current)
+        positional, named, _splat = call_arguments(current)
         for candidate in (named.get("url"), positional[0] if positional else None):
-            host = _host(candidate)
+            host = host_name(string_literal(candidate))
             if host:
                 break
         if host:
             fields["host"] = host
-            if _local(host):
+            if local_host(host):
                 fields["local"] = True
         add("calls out", callee, _shown(fun, [host] if host else []), fields)
 
