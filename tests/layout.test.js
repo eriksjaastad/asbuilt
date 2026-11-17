@@ -446,6 +446,17 @@ test("two lanes too wide together give up a share each, and a group that fits be
   assert.equal(new Set(tools.map((t) => at(laid, t.id).y)).size, 1, "tools is still one row");
 });
 
+test("a knot in a chart already far past a laptop is laid out as the plan is, not folded twice as lanes", async () => {
+  const knot = between();
+  const plan = { id: "root", children: [part("file", boxes("b", 24)), ...knot.children], edges: knot.edges };
+  assert.ok(lanes(prepare(plan)), "the knot is still there");
+  const elk1 = counted();
+  const laid = await layout(plan, elk1);
+  assert.ok(elk1.runs < 30, `${elk1.runs} layouts`);
+  assert.ok(laid.width <= MAX_WIDTH, `${laid.width} wide`);
+  assertSound(plan, laid, 29, 2);
+});
+
 test("a knot whose lanes cannot fit is not folded lane under lane: three tries each way round, then ELK's own layout", async () => {
   const plan = between();
   plan.children[1] = { id: "results", labels: [{ text: "results".padEnd(180, "-") }] };

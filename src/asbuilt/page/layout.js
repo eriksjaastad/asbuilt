@@ -113,12 +113,16 @@ async function fitted(prepared, elk, hidden, firstWidth) {
 
 // One chart from a plan ready for ELK: `hide` holds the ids of what ELK lays out and the page does not draw, and
 // `parts` says which group each part of a lane belongs to. Boxes and arrows come back in absolute coordinates.
-async function chart(prepared, elk, hide, parts) {
+async function chart(prepared, elk, hide, parts, lanes) {
   const hidden = new Map();
   // A file of many leaves on one row is already far past a laptop. The opening layout and the straight search
   // were thrown away, and that search was almost all of the time.
   const wide = spread(prepared);
+  // Lanes in a chart that wide do not come back inside one laptop. Folding them is that search again, once
+  // each way round, and it still ends too wide. The plan laid out as it is is what fits, and stays so as it grows.
+  if (lanes && wide > MAX_WIDTH * 3) return { sound: false, laid: null };
   let out = wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
+  if (lanes && out && out.width > MAX_WIDTH * 3) return { sound: false, laid: null };
   if (!out || out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden, out?.width ?? wide);
   const [boxes, cut, held, spot, shown] = [[], new Map(), new Map(), new Map(), new Map()];
   const origin = { [out.id]: [0, 0] };
@@ -179,8 +183,8 @@ export async function layout(plan, elk) {
   for (const turned of [false, true]) {
     const laned = lanes(prepared, turned);
     if (!laned) break;
-    const made = await chart(laned.graph, elk, laned.hidden, laned.parts);
+    const made = await chart(laned.graph, elk, laned.hidden, laned.parts, true);
     if (made.sound) return made.laid;
   }
-  return (await chart(prepared, elk, new Set(), new Map())).laid;
+  return (await chart(prepared, elk, new Set(), new Map(), false)).laid;
 }
