@@ -4,6 +4,7 @@ A docstring is not copied. These sentences do not replace a security sentence:
 the page shows the security lines after them, expert included. No model is called.
 """
 
+import builtins
 import json
 
 from asbuilt.built import one_name
@@ -322,88 +323,6 @@ def _exec(node, assigns, defaults, attrs, depth=0):
     if node.type == "parenthesized_expression" and node.named_children:
         return _exec(node.named_children[0], assigns, defaults, attrs, depth + 1)
     return None
-
-
-def _callee_ids(expr):
-    if expr is None:
-        return []
-    if expr.type == "identifier":
-        return [expr.text.decode()]
-    if expr.type in ("parenthesized_expression", "boolean_operator"):
-        found = []
-        for child in expr.named_children:
-            found.extend(_callee_ids(child))
-        return found
-    return []
-
-
-def _top_function(module, name):
-    for child in module.named_children if module is not None else ():
-        node = (
-            child.child_by_field_name("definition")
-            if child.type == "decorated_definition"
-            else child
-        )
-        if node is None or node.type != "function_definition":
-            continue
-        label = node.child_by_field_name("name")
-        if label is not None and label.text.decode() == name:
-            return node
-    return None
-
-
-def _same(left, right):
-    return (
-        left is not None
-        and right is not None
-        and left.start_byte == right.start_byte
-        and left.end_byte == right.end_byte
-    )
-
-
-def _param_receiving(helper, call, expr):
-    head = helper.child_by_field_name("parameters")
-    names = [
-        one_name(child) for child in (head.named_children if head is not None else [])
-    ]
-    names = [name for name in names if name and name != "self"]
-    positional, named, _splat = call_arguments(call)
-    for key, value in named.items():
-        if _same(value, expr) and key in names:
-            return key
-    for index, value in enumerate(positional):
-        if _same(value, expr) and index < len(names):
-            return names[index]
-    return None
-
-
-def _forwards_timeout(helper, param, scope, words):
-    inner = layer(helper, scope)
-    facts = security_facts(helper, inner, words)
-    found = False
-
-    def walk(node):
-        nonlocal found
-        if node.type in _NESTED:
-            return
-        if node.type == "call":
-            path = resolve(next(iter(node.named_children), None), inner)
-            _positional, named, _splat = call_arguments(node)
-            value = named.get("timeout")
-            if (
-                value is not None
-                and value.type == "identifier"
-                and value.text.decode() == param
-                and _takes_seconds(path, node, facts)
-            ):
-                found = True
-        for child in node.named_children:
-            walk(child)
-
-    body = _block(helper)
-    if body is not None:
-        walk(body)
-    return found
 
 
 def _command_stdout(expr, assigns, scope, fn):
@@ -829,17 +748,10 @@ def _message_arg(expr, words, local_strings):
     return False
 
 
-_BUILTIN_ERRORS = set(
-    "Exception BaseException ArithmeticError AssertionError AttributeError BufferError "
-    "EOFError ImportError LookupError MemoryError NameError OSError ReferenceError "
-    "RuntimeError StopAsyncIteration StopIteration SyntaxError SystemError SystemExit "
-    "TypeError ValueError FloatingPointError OverflowError ZeroDivisionError "
-    "ModuleNotFoundError IndexError KeyError UnboundLocalError BlockingIOError "
-    "ChildProcessError ConnectionError FileExistsError FileNotFoundError "
-    "InterruptedError IsADirectoryError NotADirectoryError PermissionError "
-    "ProcessLookupError TimeoutError NotImplementedError RecursionError "
-    "IndentationError TabError UnicodeError".split()
-)
+def _builtin_error(name):
+    """True for a real builtin exception, including ones a short name list would miss."""
+    obj = getattr(builtins, name or "", None)
+    return isinstance(obj, type) and issubclass(obj, BaseException)
 
 
 def _class_node(module, name):
@@ -911,7 +823,7 @@ def _super_message(init):
             if (
                 attr is not None
                 and attr.text.decode() == "__init__"
-                and owner in ("super", *_BUILTIN_ERRORS)
+                and (owner == "super" or _builtin_error(owner))
             ):
                 positional, _named, splat = call_arguments(node)
                 if obj is not None and obj.type == "identifier" and positional:
@@ -942,7 +854,7 @@ def _message_slot(name, module):
     """How this error takes its message: one positional, the first, or a named parameter."""
     if name in ("ClickException", "UsageError"):
         return ("first", None)
-    if name in _BUILTIN_ERRORS:
+    if _builtin_error(name):
         return ("sole", None)
     cls = _class_node(module, name)
     if cls is None:
@@ -957,7 +869,7 @@ def _message_slot(name, module):
         if bases is not None
         else []
     )
-    if any(base in _BUILTIN_ERRORS for base in names):
+    if any(_builtin_error(base) for base in names):
         return ("sole", None)
     for base in names:
         slot = _message_slot(base, module)
@@ -1002,6 +914,11 @@ def _fstring(node, words):
 def _string_value(node, words, local_strings):
     if node is None:
         return None
+    if node.type == "concatenated_string":
+        parts = [
+            _string_value(child, words, local_strings) for child in node.named_children
+        ]
+        return None if any(part is None for part in parts) else "".join(parts)
     if node.type == "string":
         return string_literal(node) or _fstring(node, words)
     if node.type == "identifier":
@@ -1188,21 +1105,9 @@ def _function(fn, scope, words, bound, story, attrs):
         attr = _self_attr(expr)
         return bool(attr and attr in story.timeout_attrs)
 
-    def use_timeout(expr, keyword, call, path, fun):
-        if not (keyword or from_timeout(expr)):
-            return
-        direct = _takes_seconds(path, call, facts)
-        via = False
-        if not direct:
-            for fname in _callee_ids(fun):
-                helper = _top_function(_module(fn), fname)
-                param = (
-                    _param_receiving(helper, call, expr) if helper is not None else None
-                )
-                if param and _forwards_timeout(helper, param, scope, words):
-                    via = True
-                    break
-        if not direct and not via:
+    def use_timeout(expr, keyword, call, path):
+        # A number handed to another function in this file is not claimed.
+        if not (keyword or from_timeout(expr)) or not _takes_seconds(path, call, facts):
             return
         found = timeout_of(expr)
         if found:
@@ -1289,9 +1194,9 @@ def _function(fn, scope, words, bound, story, attrs):
                 ):
                     story.keeps_env = True
             if "timeout" in named:
-                use_timeout(named["timeout"], True, cur, path, fun)
+                use_timeout(named["timeout"], True, cur, path)
             for value in positional:
-                use_timeout(value, False, cur, path, fun)
+                use_timeout(value, False, cur, path)
             for name in _bearer(cur, assigns, facts):
                 story.keys.add(name)
                 story.bearer = name

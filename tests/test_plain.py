@@ -113,7 +113,6 @@ class PlainTest(unittest.TestCase):
             got["OpenRouter"],
             [
                 "OpenRouter sends data to openrouter.ai over the internet, using a key read from OPENROUTER_API_KEY.",
-                "By default OpenRouter waits up to 60 seconds.",
                 'If the key is missing, OpenRouter stops with an error that says "OPENROUTER_API_KEY is not set.", among others.',
             ],
         )
@@ -246,9 +245,7 @@ class PlainTest(unittest.TestCase):
             _lines(source, "send_email()"), ["send_email waits up to 30 seconds."]
         )
 
-    def test_a_timeout_passed_to_a_helper_is_claimed_only_when_the_helper_shows_it(
-        self,
-    ):
+    def test_a_timeout_passed_to_a_helper_is_not_claimed(self):
         forwarded = (
             "def _gh_json(url, timeout):\n"
             "    import requests\n"
@@ -256,9 +253,7 @@ class PlainTest(unittest.TestCase):
             "def fetch():\n"
             '    _gh_json("https://example.com", timeout=30)\n'
         )
-        self.assertEqual(
-            _lines(forwarded, "fetch()"), ["fetch waits up to 30 seconds."]
-        )
+        self.assertEqual(_lines(forwarded, "fetch()"), [])
         hidden = (
             "def _search_week(url, timeout):\n"
             "    return url\n"
@@ -384,6 +379,59 @@ class PlainTest(unittest.TestCase):
         self.assertIn('"only --effective is currently supported"', text)
         self.assertNotIn("If effective", text)
         self.assertNotIn("extra", text)
+
+    def test_a_flag_is_not_called_empty(self):
+        source = (
+            "def toggle(enabled):\n"
+            "    if not enabled:\n"
+            '        raise RuntimeError("turned off")\n'
+            "    return enabled\n"
+        )
+        text = " ".join(_lines(source, "toggle()"))
+        self.assertEqual(text, 'toggle can stop with an error that says "turned off".')
+        self.assertNotIn("enabled", text)
+        self.assertNotIn("is empty", text)
+
+    def test_a_custom_init_that_builds_another_message_is_not_quoted(self):
+        source = (
+            "class CheckoutsMigrationPendingError(ValueError):\n"
+            "    def __init__(self, migration='023'):\n"
+            '        super().__init__(f"project checkouts need migration {migration}")\n'
+            "def checkout():\n"
+            '    raise CheckoutsMigrationPendingError("024")\n'
+        )
+        text = " ".join(_lines(source, "checkout()"))
+        self.assertNotIn("024", text)
+        self.assertNotIn("says", text)
+        self.assertIn("stops", text)
+
+    def test_a_builtin_error_is_quoted_without_a_hand_written_list(self):
+        source = 'def fail():\n    raise ConnectionRefusedError("the port refused the call")\n'
+        self.assertEqual(
+            _lines(source, "fail()"),
+            ['fail stops with an error that says "the port refused the call".'],
+        )
+        broken = 'def fail():\n    raise BrokenPipeError("the pipe closed")\n'
+        self.assertIn('"the pipe closed"', " ".join(_lines(broken, "fail()")))
+        decode = (
+            'def fail():\n    raise UnicodeDecodeError("utf-8", b"", 0, 1, "bad")\n'
+        )
+        self.assertNotIn("utf-8", " ".join(_lines(decode, "fail()")))
+
+    def test_adjacent_string_literals_are_one_message(self):
+        source = (
+            "def fail():\n"
+            "    raise RuntimeError(\n"
+            '        "table not found. "\n'
+            '        "The hook must have fired."\n'
+            "    )\n"
+        )
+        self.assertEqual(
+            _lines(source, "fail()"),
+            [
+                'fail stops with an error that says "table not found. The hook must have fired."'
+            ],
+        )
 
     def test_a_repeated_message_is_quoted_once(self):
         source = (
