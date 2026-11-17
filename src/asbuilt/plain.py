@@ -672,29 +672,25 @@ def _failure(story):
     tied = None
     bare = None
     loose = []
-    messages = 0
-    for cond, msg, has, branch in story.events:
-        if has:
-            messages += 1
+    for cond, msg, _has, branch in story.events:
         phrase = _phrase(cond, story.keys)
         if phrase and msg and tied is None:
             tied = (phrase, msg, branch)
         elif phrase and bare is None:
             bare = (phrase, branch)
-        elif msg and len(loose) < 2:
+        elif msg and msg not in loose and len(loose) < 2:
             loose.append(msg)
-    quoted = 0
+    shown = []
     if tied:
         phrase, msg, branch = tied
         line = f'If {phrase}, {name} {_verb(story, branch)} with an error that says "{msg}"'
-        quoted = 1
+        shown = [msg]
     elif bare:
         phrase, branch = bare
         line = f"If {phrase}, {name} {_verb(story, branch)} with an error"
     elif loose:
-        quoted = len(loose)
-        shown = _or([f'"{text}"' for text in loose])
-        line = f"{name} {_verb(story, False)} with an error that says {shown}"
+        shown = loose
+        line = f"{name} {_verb(story, False)} with an error that says {_or([f'"{text}"' for text in loose])}"
     else:
         line = f"{name} {_verb(story, False)} with an error"
     lead = tied[0] if tied else (bare[0] if bare else None)
@@ -705,7 +701,8 @@ def _failure(story):
             extras.append(phrase)
     if extras:
         line += f", and if {_or(extras)}"
-    if quoted and messages > quoted and ", among others" not in line:
+    others = any(has and msg not in shown for _cond, msg, has, _branch in story.events)
+    if shown and others and ", among others" not in line:
         line += ", among others"
     return [_finish(line)]
 
@@ -845,10 +842,7 @@ _BUILTIN_ERRORS = set(
 )
 
 
-def _plain_exception(name, module):
-    """A builtin error, or a class in this file whose base is one."""
-    if name in _BUILTIN_ERRORS:
-        return True
+def _class_node(module, name):
     for child in module.named_children if module is not None else ():
         node = (
             child.child_by_field_name("definition")
@@ -858,36 +852,159 @@ def _plain_exception(name, module):
         if node is None or node.type != "class_definition":
             continue
         label = node.child_by_field_name("name")
-        if label is None or label.text.decode() != name:
-            continue
-        bases = node.child_by_field_name("superclasses")
-        if bases is None:
-            return False
-        return any(
-            part.type == "identifier" and part.text.decode() in _BUILTIN_ERRORS
-            for part in bases.children
+        if label is not None and label.text.decode() == name:
+            return node
+    return None
+
+
+def _init_method(cls):
+    body = cls.child_by_field_name("body")
+    for child in body.named_children if body is not None else ():
+        node = (
+            child.child_by_field_name("definition")
+            if child.type == "decorated_definition"
+            else child
         )
-    return False
+        if node is None or node.type != "function_definition":
+            continue
+        label = node.child_by_field_name("name")
+        if label is not None and label.text.decode() == "__init__":
+            return node
+    return None
+
+
+def _param_names(fn):
+    head = fn.child_by_field_name("parameters")
+    names = []
+    for child in head.named_children if head is not None else ():
+        name = one_name(child)
+        if name and name not in ("self", "cls"):
+            names.append(name)
+    return names
+
+
+def _super_message(init):
+    """The parameter this __init__ passes to super().__init__, if that is the whole message."""
+    params = set(_param_names(init))
+    found = []
+
+    def walk(node):
+        if node.type in _NESTED:
+            return
+        if node.type == "call":
+            fun = next(iter(node.named_children), None)
+            attr = (
+                fun.child_by_field_name("attribute")
+                if fun is not None and fun.type == "attribute"
+                else None
+            )
+            obj = (
+                fun.child_by_field_name("object")
+                if fun is not None and fun.type == "attribute"
+                else None
+            )
+            owner = (
+                obj.text.decode()
+                if obj is not None and obj.type == "identifier"
+                else _callee(obj)
+            )
+            if (
+                attr is not None
+                and attr.text.decode() == "__init__"
+                and owner in ("super", *_BUILTIN_ERRORS)
+            ):
+                positional, _named, splat = call_arguments(node)
+                if obj is not None and obj.type == "identifier" and positional:
+                    first = positional[0]
+                    if first.type == "identifier" and first.text.decode() in (
+                        "self",
+                        "cls",
+                    ):
+                        positional = positional[1:]
+                if (
+                    not splat
+                    and len(positional) == 1
+                    and positional[0].type == "identifier"
+                ):
+                    name = positional[0].text.decode()
+                    if name in params:
+                        found.append(name)
+        for child in node.named_children:
+            walk(child)
+
+    body = _block(init)
+    if body is not None:
+        walk(body)
+    return found[0] if len(set(found)) == 1 else None
+
+
+def _message_slot(name, module):
+    """How this error takes its message: one positional, or the named parameter. None if unproven."""
+    if name in _BUILTIN_ERRORS:
+        return ("sole", None)
+    cls = _class_node(module, name)
+    if cls is None:
+        return None
+    init = _init_method(cls)
+    if init is not None:
+        param = _super_message(init)
+        return ("param", param) if param else None
+    bases = cls.child_by_field_name("superclasses")
+    names = (
+        [part.text.decode() for part in bases.children if part.type == "identifier"]
+        if bases is not None
+        else []
+    )
+    if any(base in _BUILTIN_ERRORS for base in names):
+        return ("sole", None)
+    for base in names:
+        slot = _message_slot(base, module)
+        if slot:
+            return slot
+    return None
+
+
+def _string_value(node, words, local_strings):
+    if node is None:
+        return None
+    if node.type == "string":
+        return string_literal(node)
+    if node.type == "identifier":
+        value = local_strings.get(node.text.decode(), words.get(node.text.decode()))
+        return value if isinstance(value, str) else None
+    return None
 
 
 def _quoted_message(expr, words, local_strings, module):
-    """The message, when this raise is a plain error with one literal string and nothing else."""
-    if (
-        expr is None
-        or expr.type != "call"
-        or not _plain_exception(_callee(expr), module)
-    ):
+    """The message, when this raise proves which argument is that message. A helper's argument is not one."""
+    if expr is None or expr.type != "call":
+        return None
+    slot = _message_slot(_callee(expr), module)
+    if slot is None:
         return None
     positional, named, splat = call_arguments(expr)
-    if splat or named or len(positional) != 1:
+    if splat:
         return None
-    arg = positional[0]
-    if arg.type == "string":
-        return string_literal(arg)
-    if arg.type == "identifier":
-        value = local_strings.get(arg.text.decode(), words.get(arg.text.decode()))
-        return value if isinstance(value, str) else None
-    return None
+    kind, param = slot
+    if kind == "sole":
+        if named or len(positional) != 1:
+            return None
+        return _string_value(positional[0], words, local_strings)
+    cls = _class_node(module, _callee(expr))
+    init = _init_method(cls) if cls is not None else None
+    names = _param_names(init) if init is not None else []
+    if param not in names:
+        return None
+    bound = {}
+    for index, arg in enumerate(positional):
+        if index >= len(names):
+            return None
+        bound[names[index]] = arg
+    for key, arg in named.items():
+        if key not in names:
+            return None
+        bound[key] = arg
+    return _string_value(bound.get(param), words, local_strings)
 
 
 def _stmt_exit(stmt, fn):

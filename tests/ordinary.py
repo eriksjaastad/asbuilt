@@ -86,6 +86,21 @@ def remove(exc):
     raise _built("remove reminder", exc)
 
 
+def flag_guard(force):
+    if not force:
+        raise RuntimeError("nope")
+    return force
+
+
+def always_fails_branches(force):
+    import os
+
+    key = os.environ.get("TOKEN")
+    if not key:
+        raise RuntimeError("missing")
+    return force
+
+
 def retry():
     import requests
 

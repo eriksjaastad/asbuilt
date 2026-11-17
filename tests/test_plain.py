@@ -112,7 +112,7 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(
             got["OpenRouter"],
             [
-                "OpenRouter sends data, using a key read from OPENROUTER_API_KEY.",
+                "OpenRouter sends data to openrouter.ai over the internet, using a key read from OPENROUTER_API_KEY.",
                 "By default OpenRouter waits up to 60 seconds.",
                 "If the key is missing, OpenRouter stops with an error.",
             ],
@@ -167,6 +167,16 @@ class PlainTest(unittest.TestCase):
         self.assertEqual(got["remove()"], ["remove stops with an error."])
         self.assertNotIn("remove reminder", " ".join(got["remove()"]))
         self.assertEqual(got["retry()"], ["Each try, retry waits up to 15 seconds."])
+        self.assertEqual(
+            got["flag_guard()"], ['flag_guard can stop with an error that says "nope".']
+        )
+        self.assertNotIn("force", " ".join(got["flag_guard()"]))
+        self.assertEqual(
+            got["always_fails_branches()"],
+            [
+                'If the environment value TOKEN is missing, always_fails_branches stops with an error that says "missing".'
+            ],
+        )
 
     def test_a_return_claim_needs_every_return_to_agree(self):
         lines = _lines(
@@ -320,6 +330,53 @@ class PlainTest(unittest.TestCase):
             _lines(source, "fail()"),
             ['fail stops with an error that says "no name."'],
         )
+
+    def test_a_repeated_message_is_quoted_once(self):
+        source = (
+            'def fail():\n    raise ValueError("same")\n    raise ValueError("same")\n'
+        )
+        self.assertEqual(
+            _lines(source, "fail()"),
+            ['fail stops with an error that says "same".'],
+        )
+
+    def test_a_category_is_not_the_message_when_init_passes_the_second_argument(self):
+        source = (
+            "class APIError(Exception):\n"
+            "    def __init__(self, category, message, code):\n"
+            "        super().__init__(message)\n"
+            "def fail():\n"
+            '    raise APIError("validation", "the real message", 2)\n'
+        )
+        text = " ".join(_lines(source, "fail()"))
+        self.assertIn('"the real message"', text)
+        self.assertNotIn("validation", text)
+
+    def test_a_keyword_message_is_quoted_when_init_passes_it_on(self):
+        source = (
+            "class APIError(Exception):\n"
+            "    def __init__(self, message):\n"
+            "        super().__init__(message)\n"
+            "def fail():\n"
+            '    raise APIError(message="the real message")\n'
+        )
+        self.assertEqual(
+            _lines(source, "fail()"),
+            ['fail stops with an error that says "the real message".'],
+        )
+
+    def test_an_argument_init_does_not_pass_on_is_not_quoted(self):
+        source = (
+            "class APIError(Exception):\n"
+            "    def __init__(self, category):\n"
+            '        super().__init__("fixed failure")\n'
+            "def fail():\n"
+            '    raise APIError("validation")\n'
+        )
+        text = " ".join(_lines(source, "fail()"))
+        self.assertNotIn("validation", text)
+        self.assertNotIn("fixed failure", text)
+        self.assertNotIn("says", text)
 
     def test_a_category_argument_is_not_quoted_as_the_message(self):
         source = (

@@ -256,6 +256,18 @@ def _shown(fun, bits):
     return f"{name}({', '.join(bits)})" if bits else f"{name}(...)"
 
 
+def _url_text(node, local):
+    """A URL string and whether the call writes it in place. A constant name is not in place."""
+    if node is None:
+        return None, False
+    if node.type == "string":
+        return string_literal(node), True
+    if node.type == "identifier":
+        value = local.get(node.text.decode())
+        return (value, False) if isinstance(value, str) else (None, False)
+    return None, False
+
+
 def _bound_name(node, local):
     """A string literal, or one assignment of one. None when the node is not a name."""
     if node is None:
@@ -514,17 +526,21 @@ def facts(node, module, consts=None):
             fields["timeout"] = timeout
         if sent_body(current, path) is not None:
             fields["sends"] = True
-        host = None
+        host, shown = None, False
         positional, named, _splat = call_arguments(current)
         for candidate in (named.get("url"), positional[0] if positional else None):
-            host = host_name(string_literal(candidate))
-            if host:
+            text, literal = _url_text(candidate, local)
+            found = host_name(text) if text else None
+            if found:
+                host, shown = found, literal
                 break
         if host:
             fields["host"] = host
             if local_host(host):
                 fields["local"] = True
-        add("calls out", callee, _shown(fun, [host] if host else []), fields)
+        # A name bound to one URL is a host for the plain note. The security line keeps
+        # the call as written, so a constant does not change that sentence.
+        add("calls out", callee, _shown(fun, [host] if shown else []), fields)
 
     def on_subscript(cur, scope, local, how):
         if inside(cur):
@@ -642,7 +658,12 @@ def _plain(fact):
         return f"This runs a command outside this program: {at}."
     if fact.get("way") == "connect":
         return f"This opens a network connection: {at}."
-    if fact.get("sends") and fact.get("host") and not fact.get("local"):
+    if (
+        fact.get("sends")
+        and fact.get("host")
+        and not fact.get("local")
+        and fact["host"] in at
+    ):
         return f"This sends your data to an outside service: {at}."
     if fact.get("sends"):
         return f"This sends data in a network request: {at}."
