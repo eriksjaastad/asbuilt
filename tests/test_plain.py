@@ -774,9 +774,41 @@ class PlainTest(unittest.TestCase):
             "def fetch():\n"
             '    requests.get("https://example.com/x", timeout=10.0)\n'
         )
-        self.assertEqual(
-            _lines(floated, "fetch()"), ["fetch waits up to 10.0 seconds."]
+        self.assertEqual(_lines(floated, "fetch()"), ["fetch waits up to 10 seconds."])
+        fraction = (
+            "import requests\n"
+            "def fetch():\n"
+            '    requests.get("https://example.com/x", timeout=10.5)\n'
         )
+        self.assertEqual(
+            _lines(fraction, "fetch()"), ["fetch waits up to 10.5 seconds."]
+        )
+        grown = (
+            "import subprocess\n"
+            "AUG = 120\n"
+            "AUG += 50\n"
+            "def launchctl_list():\n"
+            '    subprocess.run(["launchctl", "list"], timeout=AUG)\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(grown, "launchctl_list()")))
+        paired = (
+            "import subprocess\n"
+            "AUG = 120\n"
+            "AUG, other = 1, 2\n"
+            "def launchctl_list():\n"
+            '    subprocess.run(["launchctl", "list"], timeout=AUG)\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(paired, "launchctl_list()")))
+        shared = (
+            "import subprocess\n"
+            "TIMEOUT = 120\n"
+            "def other():\n"
+            "    global TIMEOUT\n"
+            "    TIMEOUT = 5\n"
+            "def launchctl_list():\n"
+            '    subprocess.run(["launchctl", "list"], timeout=TIMEOUT)\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(shared, "launchctl_list()")))
 
     def test_a_bad_wait_clears_an_earlier_literal(self):
         source = (
@@ -787,6 +819,60 @@ class PlainTest(unittest.TestCase):
         )
         self.assertNotIn("30", " ".join(_lines(source, "_CloudBackend()")))
         self.assertNotIn("second", " ".join(_lines(source, "_CloudBackend()")))
+
+    def test_an_untimed_call_drops_the_other_limit(self):
+        url = (
+            "import requests\nimport urllib.request\n"
+            "def fetch(url):\n"
+            '    requests.get("https://example.com", timeout=30)\n'
+            "    urllib.request.urlopen(url)\n"
+        )
+        self.assertNotIn("second", " ".join(_lines(url, "fetch()")))
+        popen = (
+            "import subprocess\n"
+            "def fetch():\n"
+            '    subprocess.run(["git"], timeout=30)\n'
+            '    subprocess.Popen(["git"]).communicate()\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(popen, "fetch()")))
+        popen_wait = (
+            "import subprocess\n"
+            "def popen_wait(cmd):\n"
+            "    subprocess.run(cmd, timeout=60)\n"
+            "    subprocess.Popen(cmd).communicate()\n"
+        )
+        self.assertNotIn("second", " ".join(_lines(popen_wait, "popen_wait()")))
+        runner = (
+            "import subprocess\n"
+            "class Runner:\n"
+            "    def start(self):\n"
+            '        subprocess.run(["git"], timeout=30)\n'
+            "    def follow(self):\n"
+            '        subprocess.Popen(["git"]).communicate()\n'
+        )
+        self.assertNotIn("second", " ".join(_lines(runner, "Runner")))
+        kept = (
+            "import urllib.request\n"
+            "def fetch(url):\n"
+            "    urllib.request.Request(url)\n"
+            "    urllib.request.urlopen(url, timeout=30)\n"
+        )
+        self.assertEqual(_lines(kept, "fetch()"), ["fetch waits up to 30 seconds."])
+
+    def test_a_loop_that_raises_is_not_each_try(self):
+        source = (
+            "import requests\n"
+            "def _local_model_preflight(models):\n"
+            "    for model in models:\n"
+            "        try:\n"
+            '            requests.get("https://example.com", timeout=10.0)\n'
+            "        except OSError:\n"
+            '            raise RuntimeError("no")\n'
+        )
+        lines = _lines(source, "_local_model_preflight()")
+        self.assertIn("_local_model_preflight waits up to 10 seconds.", lines)
+        self.assertNotIn("Each try", " ".join(lines))
+        self.assertNotIn("10.0", " ".join(lines))
 
     def test_a_retry_loop_says_each_try(self):
         source = (

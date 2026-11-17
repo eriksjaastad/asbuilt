@@ -182,23 +182,50 @@ def _escapes(node, fn):
     return True
 
 
-def _in_retry(node, fn):
-    """A loop that catches and tries again. A plain loop over items is not one."""
+def _inside_loop(node, fn):
     cur = node.parent
     while cur is not None and cur != fn and cur.type not in _NESTED:
         if cur.type in ("for_statement", "while_statement"):
-            body = cur.child_by_field_name("body")
-            if body is not None and any(
-                child.type == "try_statement" for child in body.children
-            ):
-                return True
+            return True
+        cur = cur.parent
+    return False
+
+
+def _except_retries(try_node, fn):
+    """True when an except continues or falls through. An except that leaves is not a retry."""
+    for clause in try_node.children:
+        if clause.type != "except_clause":
+            continue
+        body = next((child for child in clause.children if child.type == "block"), None)
+        if body is None:
+            return True
+        if _seq(body.named_children, fn) in ("raise", "return"):
+            continue
+        statements = [child for child in body.named_children if not _doc(child)]
+        if len(statements) == 1 and statements[0].type == "break_statement":
+            continue
+        return True
+    return False
+
+
+def _in_retry(node, fn):
+    """A loop whose except tries again. A loop that raises, or no except, is not one."""
+    cur = node.parent
+    while cur is not None and cur != fn and cur.type not in _NESTED:
+        if (
+            cur.type == "try_statement"
+            and _inside_loop(cur, fn)
+            and _except_retries(cur, fn)
+        ):
+            return True
+        if cur.type in ("for_statement", "while_statement"):
             return False
         cur = cur.parent
     return False
 
 
-def _wait_status(call, facts):
-    """passed, none, absent, or None. The security fact is the list of calls that wait."""
+def _call_fact(call, facts):
+    """The calls-out fact for this call, or None when a wider call owns that start."""
     fun = next(iter(call.named_children), None)
     if fun is None:
         return None
@@ -210,11 +237,14 @@ def _wait_status(call, facts):
                 return None
         parent = parent.parent
     for fact in facts:
-        if fact.get("kind") != "calls out" or "timeout" not in fact:
-            continue
-        if fact.get("start") == fun.start_byte:
-            return fact["timeout"]
+        if fact.get("kind") == "calls out" and fact.get("start") == fun.start_byte:
+            return fact
     return None
+
+
+def _request_constructor(fact):
+    name = (fact.get("at") or "").split("(", 1)[0].rsplit(".", 1)[-1]
+    return name == "Request"
 
 
 def _numeric(node):
@@ -233,6 +263,44 @@ def _numeric(node):
     return None
 
 
+def _assigned_names(node):
+    """Names this assignment or += writes. An attribute target is not one of them."""
+    names = []
+
+    def walk(cur):
+        if cur.type == "identifier":
+            names.append(cur.text.decode())
+        elif cur.type != "attribute":
+            for child in cur.named_children:
+                walk(child)
+
+    kids = list(node.named_children)
+    targets = kids[:1] if node.type == "augmented_assignment" else kids[:-1]
+    for target in targets:
+        walk(target)
+    return names
+
+
+def _global_rebinds(fn):
+    """Names this function declares global and then writes."""
+    declared, written = set(), set()
+
+    def walk(node):
+        if node.type == "global_statement":
+            declared.update(
+                child.text.decode()
+                for child in node.named_children
+                if child.type == "identifier"
+            )
+        elif node.type in ("assignment", "augmented_assignment"):
+            written.update(name for name in _assigned_names(node) if name in declared)
+        for child in node.named_children:
+            walk(child)
+
+    walk(fn)
+    return written
+
+
 def _stable_numbers(nodes):
     """Module or class numbers assigned once. A second binding, or one inside a branch, drops the name."""
     found, banned = {}, set()
@@ -241,6 +309,19 @@ def _stable_numbers(nodes):
         for name in names:
             banned.add(name)
             found.pop(name, None)
+
+    def ban_globals(node):
+        if node.type == "decorated_definition":
+            inner = node.child_by_field_name("definition")
+            if inner is not None:
+                ban_globals(inner)
+            return
+        if node.type == "function_definition":
+            ban(_global_rebinds(node))
+        if node.type in ("function_definition", "class_definition"):
+            body = node.child_by_field_name("body")
+            for child in body.named_children if body is not None else ():
+                ban_globals(child)
 
     def walk(node, conditional):
         if node.type == "decorated_definition":
@@ -252,11 +333,19 @@ def _stable_numbers(nodes):
             label = node.child_by_field_name("name") if node.type != "lambda" else None
             if label is not None:
                 ban([label.text.decode()])
+            ban_globals(node)
+            return
+        if node.type == "augmented_assignment":
+            ban(_assigned_names(node))
             return
         if node.type == "assignment":
             kids = list(node.named_children)
-            names = [kid.text.decode() for kid in kids[:-1] if kid.type == "identifier"]
-            number = _numeric(kids[-1]) if not conditional and len(names) == 1 else None
+            names = _assigned_names(node)
+            number = (
+                _numeric(kids[-1])
+                if not conditional and len(names) == 1 and kids[0].type == "identifier"
+                else None
+            )
             if not names or number is None or names[0] in found or names[0] in banned:
                 ban(names)
             else:
@@ -691,20 +780,21 @@ def _sentences(story):
         elif story.exception and not story.returns:
             pending.append(f"{story.name} is an exception.")
     if isinstance(story.timeout, (int, float)) and not isinstance(story.timeout, bool):
+        shown = (
+            str(int(story.timeout))
+            if isinstance(story.timeout, float) and story.timeout.is_integer()
+            else story.timeout
+        )
         if story.timeout_loop and story.timeout_default:
             pending.append(
-                f"By default each try, {story.name} waits up to {story.timeout} seconds."
+                f"By default each try, {story.name} waits up to {shown} seconds."
             )
         elif story.timeout_loop:
-            pending.append(
-                f"Each try, {story.name} waits up to {story.timeout} seconds."
-            )
+            pending.append(f"Each try, {story.name} waits up to {shown} seconds.")
         elif story.timeout_default:
-            pending.append(
-                f"By default {story.name} waits up to {story.timeout} seconds."
-            )
+            pending.append(f"By default {story.name} waits up to {shown} seconds.")
         else:
-            pending.append(f"{story.name} waits up to {story.timeout} seconds.")
+            pending.append(f"{story.name} waits up to {shown} seconds.")
     pending.extend(_failure(story))
     if story.returns and not story.given and not story.choices and not story.otherwise:
         pending.append(_return_line(story))
@@ -1107,10 +1197,8 @@ def _numbers_for(fn):
     def walk(node):
         if node.type in _NESTED and node is not fn:
             return
-        if node.type == "assignment":
-            for target in node.named_children[:-1]:
-                if target.type == "identifier":
-                    rebound.add(target.text.decode())
+        if node.type in ("assignment", "augmented_assignment"):
+            rebound.update(_assigned_names(node))
         for child in node.named_children:
             walk(child)
 
@@ -1251,11 +1339,15 @@ def _function(fn, scope, words, bound, story, attrs):
                     or _keeps(env, scope, groups)
                 ):
                     story.keeps_env = True
-            status = _wait_status(cur, facts)
-            if status in ("absent", "none"):
+            fact = _call_fact(cur, facts)
+            if (
+                fact is not None
+                and fact.get("timeout") != "passed"
+                and not _request_constructor(fact)
+            ):
                 story.time_bad = True
                 story.timeout = None
-            elif status == "passed" or (
+            elif (fact is not None and fact.get("timeout") == "passed") or (
                 path and path[0] in ("smtplib", "imaplib") and "timeout" in named
             ):
                 expr = named.get("timeout")
