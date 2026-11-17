@@ -293,3 +293,61 @@ test("closing the code while a filter is on leaves whole chart visible", { timeo
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("choosing marks keeps those boxes and the arrows between them, and all brings the chart back", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  const badge = (id, badges) => ({ id, labels: [{ text: `${id}()` }], asbuilt: { badges } });
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{
+      id: "a.py",
+      children: [badge("read", ["env"]), badge("post", ["calls out"]), { id: "local", labels: [{ text: "local()" }] }],
+      edges: [
+        { id: "uses", sources: ["read"], targets: ["post"] },
+        { id: "aside", sources: ["read"], targets: ["local"] },
+      ],
+    }, badge("ask", ["model"])],
+    edges: [{ id: "out", sources: ["post"], targets: ["ask"] }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='local']").waitFor();
+    await page.locator("[data-arrow='aside']").waitFor();
+    assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "true");
+    await page.locator("[data-mark='env']").click();
+    await page.locator("[data-mark='calls out']").click();
+    await page.locator("[data-box='local']").waitFor({ state: "detached" });
+    await page.locator("[data-box='ask']").waitFor({ state: "detached" });
+    await page.locator("[data-arrow='aside']").waitFor({ state: "detached" });
+    await page.locator("[data-arrow='out']").waitFor({ state: "detached" });
+    await page.locator("[data-box='read']").waitFor();
+    await page.locator("[data-box='post']").waitFor();
+    await page.locator("[data-arrow='uses']").waitFor();
+    await page.locator("[data-box='a.py']").waitFor();
+    assert.match(await page.locator("#marks-note").innerText(), /Hiding \d+ boxes and \d+ arrows/);
+    await page.locator("#mark-all").click();
+    await page.locator("[data-box='local']").waitFor();
+    await page.locator("[data-arrow='aside']").waitFor();
+    assert.equal(await page.locator("#marks-note").innerText(), "");
+    await page.getByText("read()", { exact: true }).click();
+    await page.locator("#pipeline").click();
+    await page.locator("[data-mark='calls out']").click();
+    await page.locator("[data-mark='model']").click();
+    await page.locator("[data-box='local']").waitFor({ state: "detached" });
+    await page.locator("[data-box='read']").waitFor({ state: "detached" });
+    await page.locator("[data-box='ask']").waitFor();
+    await page.locator("[data-box='post']").waitFor();
+    await page.locator("[data-arrow='out']").waitFor();
+    await page.locator("[data-arrow='uses']").waitFor({ state: "detached" });
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
