@@ -285,8 +285,184 @@ test("closing the code while a filter is on leaves whole chart visible", { timeo
     await page.locator("#chart").getByText("run()", { exact: true }).click();
     await page.locator("#whole").waitFor();
     assert.equal(await page.locator("#pipeline").evaluate((button) => button.hidden), true);
+    assert.equal(await page.locator("#code").evaluate((el) => el.hidden), true);
     await page.locator("[data-box='aside']").waitFor({ state: "detached" });
     await page.locator("[data-box='kept']").waitFor();
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("choosing marks keeps those boxes and the arrows between them, and all brings the chart back", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  const badge = (id, badges) => ({ id, labels: [{ text: `${id}()` }], asbuilt: { badges } });
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{
+      id: "a.py",
+      children: [badge("read", ["env"]), badge("post", ["calls out"]), { id: "local", labels: [{ text: "local()" }] }],
+      edges: [
+        { id: "uses", sources: ["read"], targets: ["post"] },
+        { id: "aside", sources: ["read"], targets: ["local"] },
+      ],
+    }, badge("ask", ["model"]), badge("far", ["model"])],
+    edges: [{ id: "out", sources: ["post"], targets: ["ask"] }, { id: "gone", sources: ["far"], targets: ["local"] }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='local']").waitFor();
+    await page.locator("[data-arrow='aside']").waitFor();
+    assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 2");
+    assert.equal(await page.locator("[data-mark='input']").innerText(), "input 0");
+    await page.locator("[data-mark='env']").click();
+    await page.locator("[data-box='local']").waitFor({ state: "detached" });
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "false");
+    await page.locator("[data-mark='env']").click();
+    await page.locator("[data-box='local']").waitFor();
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-pressed"), "false");
+    assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "true");
+    await page.locator("[data-mark='env']").click();
+    await page.locator("[data-mark='calls out']").click();
+    await page.locator("[data-box='local']").waitFor({ state: "detached" });
+    await page.locator("[data-box='ask']").waitFor({ state: "detached" });
+    await page.locator("[data-arrow='aside']").waitFor({ state: "detached" });
+    await page.locator("[data-arrow='out']").waitFor({ state: "detached" });
+    await page.locator("[data-box='read']").waitFor();
+    await page.locator("[data-box='post']").waitFor();
+    await page.locator("[data-arrow='uses']").waitFor();
+    await page.locator("[data-box='a.py']").waitFor();
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: env, calls out. Hiding 3 boxes and 3 arrows.");
+    await page.locator("#mark-all").click();
+    await page.locator("[data-box='local']").waitFor();
+    await page.locator("[data-arrow='aside']").waitFor();
+    assert.equal(await page.locator("#marks-note").innerText(), "");
+    await page.getByText("read()", { exact: true }).click();
+    await page.locator("#pipeline").click();
+    await page.locator("[data-box='far']").waitFor({ state: "detached" });
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 1");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    await page.locator("[data-mark='calls out']").click();
+    await page.locator("[data-mark='model']").click();
+    await page.locator("[data-box='local']").waitFor({ state: "detached" });
+    await page.locator("[data-box='read']").waitFor({ state: "detached" });
+    await page.locator("[data-box='far']").waitFor({ state: "detached" });
+    await page.locator("[data-box='ask']").waitFor();
+    await page.locator("[data-box='post']").waitFor();
+    await page.locator("[data-arrow='out']").waitFor();
+    await page.locator("[data-arrow='uses']").waitFor({ state: "detached" });
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: calls out, model. Hiding 2 boxes and 2 arrows.");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 1");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a mark no box carries is a plain empty chart, not an error over the old one", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"], text: "def read():\n    pass\n" } }, { id: "local", labels: [{ text: "local()" }] }],
+    edges: [{ id: "e", sources: ["read"], targets: ["local"] }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='local']").waitFor();
+    assert.equal(await page.locator("[data-mark='input']").innerText(), "input 0");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 0");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    await page.locator("[data-mark='input']").click();
+    await page.locator(".empty").waitFor();
+    assert.equal(await page.locator(".empty").innerText(), "No box here carries input.");
+    assert.equal(await page.locator("#marks-note").innerText(), "");
+    assert.equal(await page.locator(".error").count(), 0);
+    assert.equal(await page.locator(".stale").count(), 0);
+    assert.equal(await page.locator("[data-box]").count(), 0);
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    await page.locator("#mark-all").click();
+    await page.locator("[data-box='read']").waitFor();
+    await page.getByText("read()", { exact: true }).click();
+    await page.locator("#pipeline").click();
+    await page.locator("[data-mark='model']").click();
+    await page.locator(".empty").waitFor();
+    assert.equal(await page.locator(".empty").innerText(), "No box in what read() reaches carries model.");
+    assert.equal(await page.locator("#marks-note").innerText(), "");
+    assert.equal(await page.locator(".error").count(), 0);
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a bad plan still shows the error while an empty mark is on", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"] } }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='read']").waitFor();
+    await page.locator("[data-mark='input']").click();
+    await page.locator("#chart > .empty").waitFor();
+    writeFileSync(file, "{ not json");
+    await page.locator("#chart > .error").waitFor();
+    assert.match(await page.locator("#chart > .error").innerText(), /is not valid JSON/);
+    assert.equal(await page.locator("#chart > .empty").count(), 0);
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a dropped server still says the connection was lost while an empty mark is on", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(file, JSON.stringify({
+    id: "app",
+    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"] } }],
+  }));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='read']").waitFor();
+    await page.locator("[data-mark='input']").click();
+    await page.locator("#chart > .empty").waitFor();
+    server.kill();
+    await page.locator("#chart > .error").waitFor();
+    assert.match(await page.locator("#chart > .error").innerText(), /Lost the connection to asbuilt/);
+    assert.equal(await page.locator("#chart > .empty").count(), 0);
   } finally {
     server.kill();
     await browser?.close();

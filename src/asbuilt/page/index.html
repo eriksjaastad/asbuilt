@@ -14,7 +14,10 @@
   #source { overflow: auto; min-height: 0; }
   #code pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; font: inherit; }
   #code p { margin: 0 0 8px; }
-  #code .actions { display: flex; gap: 8px; flex: none; margin: 0 0 12px; }
+  #toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; padding: 12px 16px 0; max-width: 1440px; }
+  #toolbar button[aria-pressed="true"] { background: #2F2E2C; color: #F9F5EB; }
+  #marks-note { color: #6B5E4E; }
+  .empty { margin: 24px 16px; color: #6B5E4E; }
   #code .model { border-top: 1px solid #F9F5EB; padding-top: 8px; }
   .error { margin: 24px; padding: 16px; border: 2px solid #8A3B2E; white-space: pre-wrap; }
   .stale p { margin: 0 24px; color: #8A3B2E; }
@@ -24,10 +27,20 @@
     #code { width: auto; flex-basis: auto; max-height: none; }
   }
 </style>
+<p id="toolbar">
+  <button id="pipeline" hidden type="button">Only what this reaches</button>
+  <button id="whole" hidden type="button">Whole chart</button>
+  <button id="mark-all" type="button" aria-pressed="true">All</button>
+  <button type="button" data-mark="env">env</button>
+  <button type="button" data-mark="input">input</button>
+  <button type="button" data-mark="writes">writes</button>
+  <button type="button" data-mark="calls out">calls out</button>
+  <button type="button" data-mark="model">model</button>
+  <span id="marks-note"></span>
+</p>
 <div id="screen">
 <div id="chart"></div>
 <aside id="code" hidden>
-<p class="actions"><button id="pipeline" hidden type="button">Only what this reaches</button><button id="whole" hidden type="button">Whole chart</button></p>
 <div id="source"></div>
 </aside>
 </div>
