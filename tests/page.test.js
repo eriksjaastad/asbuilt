@@ -74,7 +74,7 @@ test("the repo-root chart draws all parsed boxes and arrows in a few layouts", {
     }));
     assert.deepEqual(drawn.boxes, boxes.sort());
     assert.deepEqual(drawn.arrows, arrows.sort());
-    assert.ok(drawn.calls <= 12, `${drawn.calls} layouts`);
+    assert.ok(drawn.calls <= 8, `${drawn.calls} layouts`);
     assert.ok(drawn.height <= leaves * 120, "at least 7.5 leaf boxes per 900px screen");
     assert.equal(drawn.overflow, 0);
   } finally {

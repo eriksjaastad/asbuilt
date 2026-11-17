@@ -87,7 +87,9 @@ const laidOut = (prepared, elk, hidden, options, finish = false) => {
   const graph = structuredClone(prepared);
   setOn(graph, options);
   if (finish) setOn(graph, FINISH);
-  return elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...options, ...(finish ? FINISH : {}) } });
+  // draw() already leaves a margin around the chart. The undrawn root needs no extra side padding when fitting.
+  const sides = options === COMPACT ? { "elk.padding": "[top=36,left=0,bottom=14,right=0]" } : {};
+  return elk.layout({ ...graph, edges: [...(graph.edges ?? []), ...hidden.values()], layoutOptions: { ...OPTIONS, ...options, ...sides, ...(finish ? FINISH : {}) } });
 };
 
 async function narrow(prepared, elk, hidden, options) {
