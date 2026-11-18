@@ -334,6 +334,43 @@ class SysPathTest(unittest.TestCase):
         self.assertEqual(boxes(result)["scripts/commands/common.py:f"], NO_PATH)
         self.assertEqual(boxes(result)["commands/common.py:f"], NO_PATH)
 
+    def test_parents_n_is_followed(self):
+        result = self.run_file("sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))")
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], "run")
+
+    def test_a_relative_string_is_not_followed(self):
+        result = self.run_file('sys.path.insert(0, ".")')
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], NO_PATH)
+        self.assertEqual(result["not_proven"], ['scripts/run.py:4: sys.path.insert(0, "."): the folder is known only when it runs'])
+
+    def test_a_root_reaches_the_files_its_imports_load_transitively(self):
+        files = {
+            **PKG,
+            "scripts/commands/tasks.py": "from commands.common import f\n\n\ndef t():\n    f()\n",
+            "scripts/run.py": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\n"
+            "from commands.tasks import t\n\n\ndef main():\n    t()\n\n\n" + MAIN,
+        }
+        self.assertEqual(boxes(found(files))["scripts/commands/common.py:f"], "run")
+
+    def test_a_root_is_not_used_by_a_file_the_inserting_file_does_not_load(self):
+        result = found(
+            {
+                "main.py": 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent / "lib"))\n',
+                "lib/helper.py": "def run():\n    pass\n",
+                "svc/other.py": "import helper\n\n\ndef serve():\n    helper.run()\n\n\n" + MAIN.replace("main()", "serve()"),
+            }
+        )
+        self.assertEqual(boxes(result)["lib/helper.py:run"], NO_PATH)
+        self.assertEqual(result["arrows"], [])
+
+    def test_other_sys_path_changes_are_listed_as_not_proven(self):
+        body = "sys.path[:0] = ['lib']\nsys.path.extend(['lib'])\nsys.path += ['lib']\nsys.path = []\ndel sys.path[0]\n"
+        body += "if 'lib' in sys.path:\n    print(sys.path.index('lib'), sys.path[0])\n"
+        result = found({"run.py": "import sys\n" + body})
+        why = "asBuilt follows only sys.path.insert and append"
+        stmts = ["sys.path[:0] = ['lib']", "sys.path.extend(['lib'])", "sys.path += ['lib']", "sys.path = []", "del sys.path[0]"]
+        self.assertEqual(result["not_proven"], [f"run.py:{i}: {s}: {why}" for i, s in enumerate(stmts, 2)])
+
     def test_a_module_only_the_extra_root_names_is_followed(self):
         run = "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent / 'lib'))\n"
         run += "from helpers import f\n\n\ndef main():\n    f()\n\n\n" + MAIN

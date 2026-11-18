@@ -4,9 +4,9 @@ python -m asbuilt.built PATH OUT writes one Python file, or a folder of Python f
 plan the page can draw. A file is one box, and each top-level function and class is a box inside
 it. A folder holds a box per file and a box per subfolder that has one. A nested file's id is
 its path (`sub/util.py:name`). An arrow crosses files only when an import proves the call. A
-folder the program puts on sys.path (insert or append), at a path the parser proves from
-__file__ or an absolute string, is one more import root for every file, as the program is
-taken to run all its files in one process; a module two files could be is not followed.
+folder a file puts on sys.path (insert or append), at a path the parser proves from __file__
+or an absolute string, is one more import root for that file and the files its imports reach
+(see links); a module two files could be is not followed.
 tests, __pycache__, venv, env, node_modules, build, dist, site-packages, and hidden
 directories are skipped. OUT is only written. A missing path, or OUT
 being the source or ending in .py, prints one line and writes nothing. A folder with nothing
@@ -603,21 +603,23 @@ def _under(rel, root, pkgs):
 
 
 def _def_index(boxes, folder_name, roots=()):
-    """{(module, name): box id}, {file: module, or None when only a sys.path folder names it} and
-    {name a sys.path folder gives: module, or None}. Two files for one module and name make it
-    None, so it is not used. A folder on sys.path (`roots`) names its files again; a name two
-    files could be is None, as which one Python loads depends on the order sys.path has when it
-    runs."""
+    """{(module, name): box id}, {file: module}, {file: the module its boxes are indexed under},
+    and {None, or a folder on sys.path (`roots`): {module: the files it names}}. Two files for
+    one module and name make it None, so it is not used. A file only a sys.path folder names is
+    indexed under ("sys.path", folder, *module), which no import writes, so only a file that
+    has that folder on sys.path reaches it."""
     pkgs = {rel[: -len("__init__.py")].rstrip("/") for rel in boxes if rel.endswith("__init__.py")}
-    index, own, names, alias = {}, {}, {}, {}
+    index, own, key, tables = {}, {}, {}, {r: {} for r in (None, *roots)}
     for rel, box in boxes.items():
         own[rel] = mod = _module(rel, pkgs, folder_name)
-        also = [m for m in dict.fromkeys(_under(rel, r, pkgs) for r in roots) if m and m != mod]
-        if mod is None and also:  # a module only a sys.path folder names is indexed by that name
-            mod = also[0]
-        for m in [mod, *also] if mod else ():
-            names.setdefault(m, set()).add(rel)
-        alias.update((m, mod) for m in also)
+        if mod:
+            tables[None].setdefault(mod, set()).add(rel)
+        for root in roots:
+            under = _under(rel, root, pkgs)
+            if under:
+                tables[root].setdefault(under, set()).add(rel)
+                mod = mod or ("sys.path", root, *under)
+        key[rel] = mod
         if not mod:
             continue
         prefix = rel + ":"
@@ -628,7 +630,36 @@ def _def_index(boxes, folder_name, roots=()):
                 continue
             ident = cid[len(prefix) :].rpartition(":")[0]
             slot[ident] = None if ident in slot and slot[ident] != cid else cid
-    return index, own, {m: mod if len(names[m]) == 1 else None for m, mod in alias.items()}
+    return index, own, key, tables
+
+
+def _imported(root, own, init):
+    """Every module this file's imports name, a parent package included; the ones that run,
+    which leaves out `if TYPE_CHECKING:`; and (module, name) for each from-import that runs,
+    as the name may be a submodule."""
+    named, run, subs, todo = set(), set(), [], [(root, True)]
+    while todo:
+        cur, runs = todo.pop()
+        if cur.type == "if_statement" and _typing(cur):
+            runs = False
+        if cur.type not in ("import_statement", "import_from_statement"):
+            todo.extend((c, runs) for c in cur.named_children)
+            continue
+        if cur.type == "import_statement":
+            items = [c if c.type == "dotted_name" else c.child_by_field_name("name") for c in cur.named_children]
+            mods = [_dots(c) for c in items if c is not None]
+        else:
+            mod = _from_mod(cur, own, init)
+            mods = [mod] if mod else []
+            for item in cur.named_children[1:] if mod and runs else ():
+                dotted = item if item.type == "dotted_name" else item.child_by_field_name("name")
+                if dotted is not None and dotted.type == "dotted_name":
+                    subs.append((mod, _dots(dotted)[0]))
+        for mod in mods:
+            prefixes = {mod[:i] for i in range(1, len(mod) + 1)}
+            named |= prefixes
+            run |= prefixes if runs else set()
+    return named, run, subs
 
 
 def tree(source):
@@ -640,12 +671,6 @@ def tree(source):
         return None
     root = PYTHON.parse(text).root_node
     return None if root.has_error else root
-
-
-def _top_scope(source, own, init):
-    """How this file binds each name at module level, or {} when it cannot be read."""
-    root = tree(source)
-    return {} if root is None else _scope(list(root.named_children), own, init)
 
 
 def _live(index, scopes, mod, name):
@@ -703,7 +728,7 @@ def local_names(own, init, canon=None):
     return local
 
 
-SYS_PATH = {("sys", "path", "insert"), ("sys", "path", "append")}
+READS = {"index", "count", "copy", "__contains__", "__getitem__", "__iter__", "__len__"}  # do not change sys.path
 SAME = {("pathlib", "Path"), ("os", "fspath"), ("os", "path", "abspath"), ("os", "path", "realpath"), ("os", "path", "normpath")}
 
 
@@ -792,15 +817,16 @@ def _joined(base, nodes, top):
 
 
 def sys_paths(rel, root, top):
-    """(line, call text, folder) for each sys.path.insert or append in this file. The folder is
-    relative to the charted folder `top` ("" for it), ".." when it is outside, or None when only
-    running the code would tell. Imports inside the functions around the call count."""
+    """(line, statement, folder, why) for each change this file makes to sys.path. A
+    sys.path.insert or append whose folder is proven has it relative to the charted folder
+    `top` ("" for it, ".." when outside) and why None. Any other change, by a method, an
+    assignment, += or del, has folder None and why saying what is not proven. Reading sys.path
+    is not a change. Imports inside the functions around it count."""
     file_scope, local, found, todo = _scope(list(root.named_children), None, False), local_names(None, False), [], [root]
     while todo:
         cur = todo.pop()
         todo.extend(reversed(cur.children))
-        fun = cur.child_by_field_name("function") if cur.type == "call" else None
-        if fun is None or fun.type != "attribute" or fun.child_by_field_name("attribute").text not in (b"insert", b"append"):
+        if cur.type != "attribute" or cur.child_by_field_name("attribute").text != b"path":
             continue
         scope, up, parent = dict(file_scope), [], cur.parent
         while parent is not None:
@@ -808,14 +834,23 @@ def sys_paths(rel, root, top):
             parent = parent.parent
         for fn in reversed(up):  # the innermost function's names win
             scope.update(local(fn))
-        what = resolve(fun, scope)
-        if what not in SYS_PATH:
+        if resolve(cur, scope) != ("sys", "path"):
             continue
-        args = cur.child_by_field_name("arguments").named_children
-        want = 2 if what[-1] == "insert" else 1
-        parts = _path_of(args[-1], rel, top, scope) if len(args) == want else None
-        folder = None if parts is None else ".." if parts[:1] == ("..",) else "/".join(parts)
-        found.append((cur.start_point[0] + 1, cur.text.decode(), folder))
+        outer = cur.parent
+        method = outer.child_by_field_name("attribute").text.decode() if outer.type == "attribute" else None
+        call = outer.parent if method and outer.parent.type == "call" else None
+        if call is not None and method in ("insert", "append"):
+            args = call.child_by_field_name("arguments").named_children
+            parts = _path_of(args[-1], rel, top, scope) if len(args) == (2 if method == "insert" else 1) else None
+            folder = None if parts is None else ".." if parts[:1] == ("..",) else "/".join(parts)
+            why = None if parts is not None else "the folder is known only when it runs"
+            found.append((call.start_point[0] + 1, call.text.decode(), folder, why))
+            continue
+        target = outer if outer.type == "subscript" and outer.child_by_field_name("value") == cur else cur
+        stmt = call if call is not None and method not in READS else target.parent
+        assigned = stmt.type in ("assignment", "augmented_assignment") and stmt.child_by_field_name("left") == target
+        if stmt is call or assigned or stmt.type == "delete_statement":
+            found.append((stmt.start_point[0] + 1, stmt.text.decode(), None, "asBuilt follows only sys.path.insert and append"))
     return found
 
 
@@ -870,36 +905,67 @@ def python_dir_links(folder):
         extra = f" Skipped {skipped}." if skipped else ""
         raise PlanError(f"{name} has no Python files to chart.{extra}")
     box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
-    top = folder.resolve()
-    roots = {}  # each folder in the charted one that a proven sys.path change adds
+    found, index, modules, scopes, canon, paths = links(box, files, name, folder.resolve())
     for rel, path in files:
-        root = tree(read_bytes(path))
-        for *_, folder_in in [] if root is None else sys_paths(rel, root, top):
-            if folder_in is not None and folder_in != "..":
-                roots[folder_in] = None
-    found, index, modules, scopes, canon = links(box, files, name, sorted(roots))
-    for rel, path in files:
-        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules, canon)
+        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules, canon.get(rel))
         if extra:
             found[rel].setdefault("edges", []).extend(extra)
-    return box, named, files, (found, index, modules, scopes, canon)
+    return box, named, files, (found, index, modules, scopes, canon, paths)
 
 
-def links(box, files, name, roots=()):
+def links(box, files, name, top):
     """What an arrow across files is proved from: each file's box by path, the index of
-    definitions, each file's module, how each file binds its top-level names, and the other
-    names a folder on sys.path (`roots`) gives modules."""
+    definitions, each file's module, how each file binds its top-level names, {file: {module
+    named by a folder on sys.path: the module it is, or None}}, and {file: its sys_paths()
+    against the charted folder `top`}.
+
+    A proven sys.path folder is an import root for the file that adds it and for each file its
+    imports reach, transitively, as those run in the same process; no other file uses it. Which
+    file a module name means there is decided by every root that file has; a name two files
+    could be is not followed, as which one Python loads depends on the order of sys.path."""
     found, todo = {}, [box]
     for cur in todo:
         todo += cur.get("children", [])
         if cur["id"].endswith(".py"):
             found[cur["id"]] = cur
-    index, modules, canon = _def_index(found, name, roots)
-    scopes = {
-        rel: _renamed(_top_scope(read_bytes(path), modules.get(rel), rel.endswith("__init__.py")), canon)
-        for rel, path in files
-    }
-    return found, index, modules, scopes, canon
+    trees = {rel: tree(read_bytes(path)) for rel, path in files}
+    paths = {rel: [] if root is None else sys_paths(rel, root, top) for rel, root in trees.items()}
+    on = {rel: {f for _, _, f, why in found_paths if why is None and f != ".."} for rel, found_paths in paths.items()}
+    index, modules, key, tables = _def_index(found, name, sorted(set().union(*on.values())))
+    init = {rel: rel.endswith("__init__.py") for rel in trees}
+    raw = {rel: {} if root is None else _scope(list(root.named_children), modules.get(rel), init[rel]) for rel, root in trees.items()}
+    imports = {rel: (set(), set(), []) if root is None else _imported(root, modules.get(rel), init[rel]) for rel, root in trees.items()}
+
+    def files_of(mod, rel):
+        return set().union(*(tables[r].get(mod, set()) for r in (None, *sorted(on[rel]))))
+
+    def reached(rel):
+        """The files this file's running imports load, each proven to be one file."""
+        _, run, subs = imports[rel]
+        found_files = [files_of(m, rel) for m in run]
+        for mod, sub in subs:  # `from pkg import sub` loads pkg/sub.py, unless pkg binds sub itself
+            pkg = files_of(mod, rel)
+            if len(pkg) == 1 and raw[next(iter(pkg))].get(sub, False) is False:
+                found_files.append(files_of((*mod, sub), rel))
+        return [next(iter(f)) for f in found_files if len(f) == 1]
+
+    todo = [rel for rel in on if on[rel]]
+    while todo:  # ends: each step adds a root to a file, and there are finitely many
+        rel = todo.pop()
+        for other in reached(rel):
+            if not on[rel] <= on[other]:
+                on[other] |= on[rel]
+                todo.append(other)
+    canon = {}
+    for rel in (r for r in on if on[r]):
+        for mod in imports[rel][0]:
+            if any(mod in tables[r] for r in on[rel]):
+                means = files_of(mod, rel)
+                means = key[next(iter(means))] if len(means) == 1 else None
+                if means != mod:
+                    canon.setdefault(rel, {})[mod] = means
+    scopes = {rel: _renamed(raw[rel], canon.get(rel)) for rel in trees}
+    return found, index, modules, scopes, canon, paths
 
 
 def _is_same(out, path):

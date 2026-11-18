@@ -20,8 +20,12 @@ variable, an argument or `or` is not followed. Each is in exactly one box. An ar
 boxes lists the calls, each with the annotations the called function declares, if any; they
 are its declared signature, not proof of what is passed. Argparse
 subcommands, scheduled jobs and routers added in a function are not looked for; a decorator
-that looks like a command or route but is not proven is listed as not proven, and so is a
-sys.path change whose folder is known only when the program runs."""
+that looks like a command or route but is not proven is listed as not proven.
+
+A folder a file puts on sys.path, with insert or append at a path the parser proves, is an
+import root for that file and every file its imports reach (asbuilt.built.links). A module name
+two files could then be is not followed. Any other sys.path change, or a folder known only when
+the program runs, is listed as not proven."""
 
 import argparse
 import json
@@ -31,7 +35,7 @@ from pathlib import Path
 
 from asbuilt import output
 from asbuilt.built import _clashes, _definitions, _direct_calls, _live, links
-from asbuilt.built import local_names, python_dir_links, python_file, sys_paths, targets, tree
+from asbuilt.built import local_names, python_dir_links, python_file, targets, tree
 from asbuilt.marks import resolve
 from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
@@ -87,11 +91,10 @@ def _entries(path):
     decorators that look like entry points but are not proven, {file: boxes its module-level
     code calls}, and each file not read with why."""
     if path.is_dir():
-        _, _, files, (found, index, modules, scopes, canon) = python_dir_links(path)
+        _, _, files, (found, index, modules, scopes, canon, paths) = python_dir_links(path)
     else:
         box, files = python_file(path.name, read_bytes(path)), [(path.name, path)]
-        found, index, modules, scopes, canon = links(box, files, box["id"])
-    top = (path if path.is_dir() else path.parent).resolve()
+        found, index, modules, scopes, canon, paths = links(box, files, box["id"], path.parent.resolve())
     by_module = {mod: rel for rel, mod in modules.items() if mod}
     names, edges, nodes, entries, apps, looks, included, adds = {}, [], {}, [], set(), [], {}, []
     loads, unread, moved = {}, [], []
@@ -106,12 +109,8 @@ def _entries(path):
         scope, mod, init = scopes[rel], modules.get(rel), rel.endswith("__init__.py")
         defs = {f"{rel}:{d[0]}:{d[2]}": d[4] for d in _definitions(root)}
         nodes.update(defs)
-        local = local_names(mod, init, canon)
-        moved += [
-            f"{rel}:{line}: {call}: the folder is known only when it runs"
-            for line, call, folder in sys_paths(rel, root, top)
-            if folder is None
-        ]
+        local = local_names(mod, init, canon.get(rel))
+        moved += [f"{rel}:{line}: {stmt}: {why}" for line, stmt, _, why in paths[rel] if why]
 
         def box_of(name, rel=rel, scope=scope, defs=defs):
             """The box a top-level name is: this file's one def of it, or a def an import proves."""
