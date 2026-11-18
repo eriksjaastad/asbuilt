@@ -50,7 +50,12 @@ def _walk(node, nested=False):
     while todo:
         cur = todo.pop()
         yield cur
-        if nested or cur.type not in FUNCTIONS | CLASSES:
+        if not nested and cur.type == "method_definition":
+            # Computing the key runs here; the method's parameters and body do not.
+            name = cur.child_by_field_name("name")
+            if name is not None and name.type == "computed_property_name":
+                todo.append(name)
+        elif nested or cur.type not in FUNCTIONS | CLASSES:
             todo.extend(reversed(cur.named_children))
 
 
@@ -129,6 +134,8 @@ def _definitions(root):
 
     for outer in root.named_children:
         exported = outer.type == "export_statement"
+        if exported and any(c.type == "type" for c in outer.children):
+            continue  # `export type {Model}` never exposes a runtime binding
         default = exported and any(c.type == "default" for c in outer.children)
         node = (
             (
@@ -213,13 +220,38 @@ def _imports(root):
     return found
 
 
+def _tree(suffix, source):
+    parser = PARSERS[suffix]
+    root = parser.parse(source).root_node
+    if root.has_error and b"&" in source and suffix != ".ts":
+        # These grammars require entities for JSX ampersands, although JSX allows
+        # literal '&'. A provisional parse locates literals; only those bytes are
+        # masked in the final parse. JS operators, expressions and source stay intact.
+        hint = parser.parse(source.replace(b"&", b"|")).root_node
+        if not hint.has_error:
+            masked = bytearray(source)
+            for node in _walk(hint, True):
+                if node.type == "jsx_text" or (
+                    node.type == "string" and node.parent.type == "jsx_attribute"
+                ):
+                    start, end = node.start_byte, node.end_byte
+                    masked[start:end] = source[start:end].replace(b"&", b"|")
+            root = parser.parse(bytes(masked)).root_node
+    return root
+
+
 def _file(name, source):
     try:
         text = source.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
     except UnicodeDecodeError:
         raise PlanError(f"{name}: source is not UTF-8") from None
-    root = PARSERS[Path(name).suffix].parse(text.encode()).root_node
-    if root.has_error:
+    root = _tree(Path(name).suffix, text.encode())
+    if root.has_error or any(
+        _word(n.child_by_field_name("open_tag").child_by_field_name("name"))
+        != _word(n.child_by_field_name("close_tag").child_by_field_name("name"))
+        for n in _walk(root, True)
+        if n.type == "jsx_element"
+    ):
         raise PlanError(f"{name}: JavaScript/TypeScript does not parse")
     definitions, exports = _definitions(root)
     imports = _imports(root)
@@ -269,10 +301,10 @@ def _own(path):
 
 
 def _files(path):
-    if any(p in SKIP for p in path.parts):
+    if path.is_symlink() or any(p in SKIP for p in path.resolve().parts):
         raise PlanError(f"{path.name}: a test or dependency folder is not own source")
     if path.is_file():
-        if not _own(path) or any(p in SKIP for p in path.parts):
+        if not _own(path):
             raise PlanError(
                 f"{path.name}: not an own-code JavaScript/TypeScript source file"
             )
@@ -307,6 +339,7 @@ def chart(path):
     files = {name: _file(name, read_bytes(file)) for name, file in _files(path)}
     edges = {}
     for name, (box, definitions, local, _, imports, counts, assigned) in files.items():
+        calls = {}
         scope = dict(local)
         for spec, bindings in imports:
             target = _module(name, spec, files)
@@ -354,7 +387,9 @@ def chart(path):
                 if target:
                     source = f"{name}:{ident}:{outer.start_point[0] + 1}"
                     key = f"{source}>{target}"
-                    edges[key] = {"id": key, "sources": [source], "targets": [target]}
+                    calls[key] = {"id": key, "sources": [source], "targets": [target]}
+        if calls:
+            box["edges"] = list(calls.values())
     boxes = [data[0] for data in files.values()]
     if path.is_dir():
         boxes = [

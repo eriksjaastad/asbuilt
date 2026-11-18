@@ -41,7 +41,8 @@ class JavaScript(unittest.TestCase):
     def calls(plan):
         return {
             (e["sources"][0], e["targets"][0])
-            for e in plan.get("edges", [])
+            for box in JavaScript.boxes(plan).values()
+            for e in box.get("edges", [])
             if not e.get("labels")
         }
 
@@ -83,6 +84,9 @@ class JavaScript(unittest.TestCase):
                     },
                 )
                 imports = [e for e in plan["edges"] if e.get("labels")]
+                # Components reads definition calls from each file, not the root.
+                self.assertEqual(len(boxes[f"app.{suffix}"]["edges"]), 3)
+                self.assertTrue(all(e.get("labels") for e in plan["edges"]))
                 self.assertEqual(
                     [(e["sources"], e["targets"], e["labels"]) for e in imports],
                     [([f"app.{suffix}"], [f"lib.{suffix}"], [{"text": "imports"}])],
@@ -156,6 +160,102 @@ class JavaScript(unittest.TestCase):
             self.calls(self.read()), "two possible extensions are ambiguous"
         )
 
+    def test_type_only_exports_never_establish_runtime_targets(self):
+        for suffix in ("ts", "tsx"):
+            for exported, present in (
+                ("export type {Model};", False),
+                ("export type {Model as Public};", False),
+                ("export {type Model};", False),
+                ("export {type Model as Public};", False),
+                ("export {Model};", True),
+                ("export {Model as Public};", True),
+                ("export default Model;", True),
+            ):
+                with self.subTest(suffix=suffix, exported=exported):
+                    folder = self.root / suffix
+                    self.put(f"{suffix}/lib.{suffix}", f"class Model {{}}\n{exported}")
+                    imported = (
+                        "Model"
+                        if "default" in exported
+                        else "{Public as Model}"
+                        if "Public" in exported
+                        else "{Model}"
+                    )
+                    self.put(
+                        f"{suffix}/app.{suffix}",
+                        f"import {imported} from './lib';\nfunction run() {{return new Model();}}",
+                    )
+                    plan = self.read(folder)
+                    self.assertIn(f"lib.{suffix}:Model:1", self.boxes(plan))
+                    expected = (
+                        {(f"app.{suffix}:run:2", f"lib.{suffix}:Model:1")}
+                        if present
+                        else set()
+                    )
+                    self.assertEqual(self.calls(plan), expected)
+
+    def test_object_methods_are_not_calls_by_the_enclosing_function(self):
+        for suffix in ("js", "jsx", "ts", "tsx"):
+            for method, outer, present in (
+                ("method(){read();}", "", False),
+                ("async method(){read();}", "", False),
+                ("*method(){read();}", "", False),
+                ("get value(){read();}", "", False),
+                ("set value(x){read();}", "", False),
+                ("method(read){read();}", "", False),
+                ("method(x=read()){return x;}", "", False),
+                ("method(){const read=other;}", "read();", True),
+                ("read(){}", "read();", True),
+                ("[read()](){}", "", True),
+            ):
+                with self.subTest(suffix=suffix, method=method, outer=outer):
+                    path = self.put(
+                        f"entry.{suffix}",
+                        f"function read(){{}}\nfunction run(){{{outer} return {{{method}}};}}",
+                    )
+                    expected = (
+                        {(f"entry.{suffix}:run:2", f"entry.{suffix}:read:1")}
+                        if present
+                        else set()
+                    )
+                    self.assertEqual(self.calls(self.read(path)), expected)
+
+    def test_jsx_literal_ampersands_preserve_source_and_reject_broken_expressions(self):
+        for suffix in ("js", "jsx", "tsx"):
+            path = self.root / f"app.{suffix}"
+            out = self.root / "chart.json"
+            for literal in ("B&O", "B & O", "B&amp;O", "B&", "é & résumé"):
+                source = (
+                    "function read(){}\nfunction App(){\n"
+                    f' const obj = <div title="{literal}">{literal}</div>;\n'
+                    " if (left && right) read(); return obj;\n}"
+                )
+                with self.subTest(suffix=suffix, literal=literal):
+                    path.write_text(source)
+                    plan = self.read(path)
+                    self.assertEqual(
+                        self.calls(plan),
+                        {(f"app.{suffix}:App:2", f"app.{suffix}:read:1")},
+                    )
+                    self.assertEqual(
+                        self.boxes(plan)[f"app.{suffix}:App:2"]["asbuilt"]["text"],
+                        source.split("\n", 1)[1],
+                    )
+                    self.assertEqual(main([str(path), str(out)]), 0)
+            good = out.read_bytes()
+            for jsx in (
+                "<div>B&O{foo &}</div>",
+                '<div title="B&O" broken={foo &}/>',
+                '<div title="B&O/>',
+                "<div>B&O</span>",
+                "<div>B&O",
+            ):
+                with self.subTest(suffix=suffix, broken=jsx):
+                    path.write_text(f"function App(){{return {jsx};}}")
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(main([str(path), str(out)]), 2)
+                    self.assertEqual(out.read_bytes(), good)
+
     def test_anonymous_default_function_and_class_methods(self):
         self.put(
             "lib.js",
@@ -195,6 +295,26 @@ class JavaScript(unittest.TestCase):
         for name in ("tests", "__tests__/x.ts", "src/app.test.tsx"):
             with self.subTest(name=name), self.assertRaises(PlanError):
                 self.read(self.root / name)
+
+    def test_relative_and_aliased_inputs_cannot_bypass_excluded_ancestors(self):
+        for folder in ("tests", "__tests__", "node_modules"):
+            excluded = self.put(f"{folder}/helper.ts", "function hidden(){}")
+            alias = self.root / f"alias-{folder}"
+            alias.symlink_to(excluded.parent, target_is_directory=True)
+            for path in (alias, alias / "helper.ts"):
+                with self.subTest(path=path), self.assertRaises(PlanError):
+                    self.read(path)
+            with contextlib.chdir(excluded.parent):
+                for path in (Path("."), Path("helper.ts")):
+                    with self.subTest(folder=folder, path=path):
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            self.assertEqual(
+                                main([str(path), str(self.root / "out.json")]), 2
+                            )
+        own = self.put("src/helper.ts", "function own(){}")
+        with contextlib.chdir(own.parent):
+            for path in (Path("."), Path("helper.ts")):
+                self.assertIn("helper.ts:own:1", self.boxes(self.read(path)))
 
     def test_command_is_atomic_repeatable_and_cannot_overwrite_source(self):
         source = self.put("own.ts", "export function run() { return 7; }\n")
