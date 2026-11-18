@@ -196,27 +196,28 @@ def _scoped(node, extra):
     return names
 
 
-def _direct_calls(node, local, attrs=None):
+def _direct_calls(node, local, attrs=None, body=None):
     """(name, spec) for each bare name called in `node`'s body, in the functions and classes
     nested there too, so a call in a method or an inner function belongs to this box.
     `local(scope)` maps the names a function or class binds to how: one import's spec, or None
     for any other binding, which is then not the call. spec is the innermost import that binds
     the name, or None when no enclosing scope binds it. A method does not see its class body's
     names, as in Python. A call on an attribute is recorded in `attrs` as (object, name, spec)
-    when the object is a bare name; a chain is not."""
+    when the object is a bare name; a chain is not. `body` given walks that block as
+    `node`'s body, for code outside any function, such as an `if __name__` block."""
     nested = ("function_definition", "class_definition")
     comps = ("list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression")
     found, todo = [], []
 
     def enter(scope, names, inherit):
         # The head (defaults, bases) runs where the def is; the body runs in its own scope.
-        body = scope.child_by_field_name("body")
+        block = body if scope is node and body is not None else scope.child_by_field_name("body")
         if scope is not node:
-            todo.extend((c, names, inherit) for c in reversed(scope.children) if c != body)
-        if body is not None:
+            todo.extend((c, names, inherit) for c in reversed(scope.children) if c != block)
+        if block is not None:
             inner = {**inherit, **local(scope)}
             keep = inner if scope.type == "function_definition" else inherit
-            todo.extend((c, inner, keep) for c in reversed(body.children))
+            todo.extend((c, inner, keep) for c in reversed(block.children))
 
     enter(node, {}, {})
     while todo:
@@ -603,17 +604,21 @@ def _def_index(boxes, folder_name):
     return index, own
 
 
-def _top_scope(source, own, init):
-    """How this file binds each name at module level, or {} when it cannot be read."""
+def tree(source):
+    """The tree-sitter root of bytes Python accepts as UTF-8 and tree-sitter reads, else None."""
     if _note(source):
-        return {}
+        return None
     text, note = _text(source)
     if note:
-        return {}
+        return None
     root = PYTHON.parse(text).root_node
-    if root.has_error:
-        return {}
-    return _scope(list(root.named_children), own, init)
+    return None if root.has_error else root
+
+
+def _top_scope(source, own, init):
+    """How this file binds each name at module level, or {} when it cannot be read."""
+    root = tree(source)
+    return {} if root is None else _scope(list(root.named_children), own, init)
 
 
 def _live(index, scopes, mod, name):
@@ -645,42 +650,45 @@ def _attr_mod(spec, scopes, modules):
     return sub if same else None
 
 
-def _cross(rel, source, index, own, scopes, modules):
-    """Arrows this file's top-level boxes draw to other files, proved by an import."""
-    note = _note(source)
-    if note:
-        return []
-    text, note = _text(source)
-    if note:
-        return []
-    root = PYTHON.parse(text).root_node
-    if root.has_error:
-        return []
-    init = rel.endswith("__init__.py")
-    file_scope = _scope(list(root.named_children), own, init)
-    defs = _definitions(root)
-    edges, seen = [], set()
+def local_names(own, init):
+    """`local` for _direct_calls in a file of module `own`: imports in a function or class body
+    resolve; any other binding hides the name."""
 
     def local(scope):
-        # Imports in this function or class body resolve; any other binding hides the name.
         body = scope.child_by_field_name("body")
         stmts = list(body.named_children) if body is not None else []
         inner = _scope(stmts, own, init, scope.type == "function_definition")
         return {**inner, **dict.fromkeys(bound(scope, imports=False))}
 
-    for ident, _, start, _, node in defs:
+    return local
+
+
+def targets(calls, attrs, file_scope, index, scopes, modules):
+    """Boxes in other files that these _direct_calls results reach, proved by an import."""
+    found = []
+    for callee, how in calls:
+        spec = how or file_scope.get(callee)
+        found.append(None if not spec or spec[0] != "from" else _live(index, scopes, spec[1], spec[2]))
+    for obj, attr, how in attrs:
+        found.append(_live(index, scopes, _attr_mod(how or file_scope.get(obj), scopes, modules), attr))
+    return [t for t in found if t]
+
+
+def _cross(rel, source, index, own, scopes, modules):
+    """Arrows this file's top-level boxes draw to other files, proved by an import."""
+    root = tree(source)
+    if root is None:
+        return []
+    init = rel.endswith("__init__.py")
+    file_scope = _scope(list(root.named_children), own, init)
+    local = local_names(own, init)
+    edges, seen = [], set()
+    for ident, _, start, _, node in _definitions(root):
         src = f"{rel}:{ident}:{start}"
         attrs = []
-        for callee, how in _direct_calls(node, local, attrs):
-            spec = how or file_scope.get(callee)
-            target = None if not spec or spec[0] != "from" else _live(index, scopes, spec[1], spec[2])
-            if target and (src, target) not in seen:
-                seen.add((src, target))
-                edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
-        for obj, attr, how in attrs:
-            mod = _attr_mod(how or file_scope.get(obj), scopes, modules)
-            target = _live(index, scopes, mod, attr)
-            if target and (src, target) not in seen:
+        calls = _direct_calls(node, local, attrs)
+        for target in targets(calls, attrs, file_scope, index, scopes, modules):
+            if (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
     return edges
@@ -689,6 +697,13 @@ def _cross(rel, source, index, own, scopes, modules):
 def python_dir(folder):
     """One box for the folder, named with its real name so `.` is not blank. A file in the folder
     is `load.py:load`. A nested file is `sub/util.py:name`, inside a box for each directory."""
+    box, named, _, _ = python_dir_links(folder)
+    return box, named
+
+
+def python_dir_links(folder):
+    """python_dir's box and skipped names, plus the files and links() it was built from, so a
+    caller that needs them does not walk and parse the folder again."""
     try:
         name = folder.resolve().name
     except OSError as exc:
@@ -700,6 +715,17 @@ def python_dir(folder):
         extra = f" Skipped {skipped}." if skipped else ""
         raise PlanError(f"{name} has no Python files to chart.{extra}")
     box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
+    found, index, modules, scopes = links(box, files, name)
+    for rel, path in files:
+        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules)
+        if extra:
+            found[rel].setdefault("edges", []).extend(extra)
+    return box, named, files, (found, index, modules, scopes)
+
+
+def links(box, files, name):
+    """What an arrow across files is proved from: each file's box by path, the index of
+    definitions, each file's module, and how each file binds its top-level names."""
     found, todo = {}, [box]
     for cur in todo:
         todo += cur.get("children", [])
@@ -710,11 +736,7 @@ def python_dir(folder):
         rel: _top_scope(read_bytes(path), modules.get(rel), rel.endswith("__init__.py"))
         for rel, path in files
     }
-    for rel, path in files:
-        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules)
-        if extra:
-            found[rel].setdefault("edges", []).extend(extra)
-    return box, named
+    return found, index, modules, scopes
 
 
 def _is_same(out, path):
