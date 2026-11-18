@@ -269,7 +269,7 @@ class JavaScript(unittest.TestCase):
             self.calls(self.read()), {("entry.js:run:2", "lib.js:default:1")}
         )
 
-    def test_source_only_even_when_a_test_folder_or_file_is_named_directly(self):
+    def test_source_only_below_chart_root_and_for_direct_test_filenames(self):
         own = self.put("src/app.ts", "export function run() {}")
         for name in (
             "tests/x.js",
@@ -287,34 +287,46 @@ class JavaScript(unittest.TestCase):
         ):
             self.put(name, "function mustNotAppear() {}")
         (self.root / "link.js").symlink_to(own)
+        (self.root / "alias").symlink_to(own.parent, target_is_directory=True)
         boxes = self.boxes(self.read())
         self.assertEqual(
             set(boxes),
             {"asbuilt:built", self.root.name, "src/app.ts", "src/app.ts:run:1"},
         )
-        for name in ("tests", "__tests__/x.ts", "src/app.test.tsx"):
+        for name in ("src/app.test.tsx", "src/app.spec.js", "link.js", "alias"):
             with self.subTest(name=name), self.assertRaises(PlanError):
                 self.read(self.root / name)
 
-    def test_relative_and_aliased_inputs_cannot_bypass_excluded_ancestors(self):
-        for folder in ("tests", "__tests__", "node_modules"):
-            excluded = self.put(f"{folder}/helper.ts", "function hidden(){}")
-            alias = self.root / f"alias-{folder}"
-            alias.symlink_to(excluded.parent, target_is_directory=True)
-            for path in (alias, alias / "helper.ts"):
-                with self.subTest(path=path), self.assertRaises(PlanError):
-                    self.read(path)
-            with contextlib.chdir(excluded.parent):
-                for path in (Path("."), Path("helper.ts")):
-                    with self.subTest(folder=folder, path=path):
-                        with contextlib.redirect_stderr(io.StringIO()):
-                            self.assertEqual(
-                                main([str(path), str(self.root / "out.json")]), 2
-                            )
-        own = self.put("src/helper.ts", "function own(){}")
-        with contextlib.chdir(own.parent):
-            for path in (Path("."), Path("helper.ts")):
-                self.assertIn("helper.ts:own:1", self.boxes(self.read(path)))
+    def test_excluded_ancestor_names_do_not_reject_a_project_or_its_file(self):
+        for ancestor in (
+            "build",
+            "test",
+            "dist",
+            "env",
+            "venv",
+            "vendor",
+            "coverage",
+            "tests",
+            "node_modules",
+        ):
+            own = self.put(f"{ancestor}/repo/src/app.ts", "function own(){}")
+            project = own.parent.parent
+            self.put(f"{ancestor}/repo/{ancestor}/hidden.ts", "function hidden(){}")
+            for path in (project, own):
+                with self.subTest(ancestor=ancestor, path=path):
+                    plan = self.read(path)
+                    self.assertEqual(
+                        [
+                            box["labels"][0]["text"]
+                            for box in self.boxes(plan).values()
+                            if "asbuilt" in box
+                        ],
+                        ["own()"],
+                    )
+            with contextlib.chdir(project):
+                for path in (".", "src/app.ts"):
+                    with self.subTest(ancestor=ancestor, relative=path):
+                        self.assertEqual(main([path, str(self.root / "out.json")]), 0)
 
     def test_command_is_atomic_repeatable_and_cannot_overwrite_source(self):
         source = self.put("own.ts", "export function run() { return 7; }\n")

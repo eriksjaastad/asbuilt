@@ -301,8 +301,9 @@ def _own(path):
 
 
 def _files(path):
-    if path.is_symlink() or any(p in SKIP for p in path.resolve().parts):
-        raise PlanError(f"{path.name}: a test or dependency folder is not own source")
+    # Like built._py_files, folder exclusions start below the selected chart root.
+    if path.is_symlink():
+        raise PlanError(f"{path.name}: a symlink is not own source")
     if path.is_file():
         if not _own(path):
             raise PlanError(

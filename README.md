@@ -72,10 +72,16 @@ unique local definitions, or exported definitions proved by named/default import
 extensionless import resolves only when exactly one matching source file exists. Shadowed,
 reassigned or ambiguous names do not get call arrows. A malformed or unreadable file reports
 an error and leaves the previous output untouched; OUT must end in `.json`.
+The pinned grammars can also reject valid syntax, including some TypeScript arrow functions
+with `<` inside an object literal. One rejected file stops the entire JS/TS chart; this slice
+does not skip and list unparseable files as the Python reader does. That is follow-up work.
 
 Tests (`test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, `test_*`, `*_test`), dependency
 and generated folders, hidden paths, symlinks and `.d.ts` declarations are skipped. External
 packages are not charted. Files remain directly inside the project box in this first slice.
+Folder exclusions apply below the selected chart root, regardless of its location (for
+example, `/build/repo`). A single-file input applies the filename exclusions, not exclusions
+based on its ancestors.
 Nested callbacks and methods, JSX render relationships, CommonJS, index resolution,
 re-exports, configured aliases, work badges and mixed Python/JS charts are not covered yet.
 JSX component functions are included, but a JSX use is not presented as a direct call.
