@@ -297,5 +297,54 @@ class MainTest(unittest.TestCase):
         self.assertIn("files not read: 1\n  bad.py: does not parse", summary(result))
 
 
+PKG = {"scripts/__init__.py": "", "scripts/commands/__init__.py": "", "scripts/commands/common.py": "def f():\n    pass\n"}
+
+
+class SysPathTest(unittest.TestCase):
+    """A folder the program puts on sys.path is an import root, when the parser proves it."""
+
+    def run_file(self, insert, imports="from commands.common import f"):
+        head = f"import os\nimport sys\nfrom pathlib import Path\n{insert}\n{imports}\n\n\ndef main():\n    f()\n\n\n"
+        return found({**PKG, "scripts/run.py": head + MAIN})
+
+    def test_a_path_from_file_is_followed(self):
+        result = self.run_file("sys.path.insert(0, str(Path(__file__).resolve().parent))")
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], "run")
+        self.assertEqual(result["not_proven"], [])
+
+    def test_a_dirname_chain_is_followed(self):
+        result = self.run_file("sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scripts'))")
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], "run")
+
+    def test_a_path_computed_when_it_runs_is_not_followed(self):
+        result = self.run_file('sys.path.insert(0, os.environ["ROOT"])')
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], NO_PATH)
+        self.assertEqual(result["not_proven"], ['scripts/run.py:4: sys.path.insert(0, os.environ["ROOT"]): the folder is known only when it runs'])
+
+    def test_a_module_two_roots_give_to_different_files_is_not_guessed(self):
+        result = found(
+            {
+                **PKG,
+                "commands/__init__.py": "",
+                "commands/common.py": "def f():\n    pass\n",
+                "scripts/run.py": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\n"
+                "from commands.common import f\n\n\ndef main():\n    f()\n\n\n" + MAIN,
+            }
+        )
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], NO_PATH)
+        self.assertEqual(boxes(result)["commands/common.py:f"], NO_PATH)
+
+    def test_a_module_only_the_extra_root_names_is_followed(self):
+        run = "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent / 'lib'))\n"
+        run += "from helpers import f\n\n\ndef main():\n    f()\n\n\n" + MAIN
+        result = found({"lib/helpers.py": "def f():\n    pass\n", "run.py": run})
+        self.assertEqual(boxes(result)["lib/helpers.py:f"], "run")
+        self.assertEqual(result["components"][0]["ways_in"], ["python -m run"])
+
+    def test_the_same_file_under_both_roots_is_one_box(self):
+        result = self.run_file("sys.path.insert(0, str(Path(__file__).parent.parent))", "from scripts.commands.common import f")
+        self.assertEqual(boxes(result)["scripts/commands/common.py:f"], "run")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,10 @@
 python -m asbuilt.built PATH OUT writes one Python file, or a folder of Python files, as a
 plan the page can draw. A file is one box, and each top-level function and class is a box inside
 it. A folder holds a box per file and a box per subfolder that has one. A nested file's id is
-its path (`sub/util.py:name`). An arrow crosses files only when an import proves the call.
+its path (`sub/util.py:name`). An arrow crosses files only when an import proves the call. A
+folder the program puts on sys.path (insert or append), at a path the parser proves from
+__file__ or an absolute string, is one more import root for every file, as the program is
+taken to run all its files in one process; a module two files could be is not followed.
 tests, __pycache__, venv, env, node_modules, build, dist, site-packages, and hidden
 directories are skipped. OUT is only written. A missing path, or OUT
 being the source or ending in .py, prints one line and writes nothing. A folder with nothing
@@ -26,6 +29,7 @@ import tree_sitter_python
 from asbuilt import output
 from asbuilt.compare import check
 from asbuilt.marks import of as _marks
+from asbuilt.marks import resolve
 from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
 
@@ -584,13 +588,36 @@ def _module(rel, pkgs, folder_name):
     return None
 
 
-def _def_index(boxes, folder_name):
-    """{(module, name): box id}. Two files for one module and name make it None, so it is not used."""
+def _under(rel, root, pkgs):
+    """The module this file is with folder `root` on sys.path, or None: each folder between
+    them must be a package."""
+    if root:
+        if not rel.startswith(root + "/"):
+            return None
+        rel = rel[len(root) + 1 :]
+    dirs, parts = rel.split("/")[:-1], rel[:-3].split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    inside = (f"{root}/{'/'.join(dirs[: i + 1])}".lstrip("/") for i in range(len(dirs)))
+    return tuple(parts) if parts and all(d in pkgs for d in inside) else None
+
+
+def _def_index(boxes, folder_name, roots=()):
+    """{(module, name): box id}, {file: module, or None when only a sys.path folder names it} and
+    {name a sys.path folder gives: module, or None}. Two files for one module and name make it
+    None, so it is not used. A folder on sys.path (`roots`) names its files again; a name two
+    files could be is None, as which one Python loads depends on the order sys.path has when it
+    runs."""
     pkgs = {rel[: -len("__init__.py")].rstrip("/") for rel in boxes if rel.endswith("__init__.py")}
-    index, own = {}, {}
+    index, own, names, alias = {}, {}, {}, {}
     for rel, box in boxes.items():
-        mod = _module(rel, pkgs, folder_name)
-        own[rel] = mod
+        own[rel] = mod = _module(rel, pkgs, folder_name)
+        also = [m for m in dict.fromkeys(_under(rel, r, pkgs) for r in roots) if m and m != mod]
+        if mod is None and also:  # a module only a sys.path folder names is indexed by that name
+            mod = also[0]
+        for m in [mod, *also] if mod else ():
+            names.setdefault(m, set()).add(rel)
+        alias.update((m, mod) for m in also)
         if not mod:
             continue
         prefix = rel + ":"
@@ -601,7 +628,7 @@ def _def_index(boxes, folder_name):
                 continue
             ident = cid[len(prefix) :].rpartition(":")[0]
             slot[ident] = None if ident in slot and slot[ident] != cid else cid
-    return index, own
+    return index, own, {m: mod if len(names[m]) == 1 else None for m, mod in alias.items()}
 
 
 def tree(source):
@@ -650,17 +677,146 @@ def _attr_mod(spec, scopes, modules):
     return sub if same else None
 
 
-def local_names(own, init):
+def _renamed(scope, canon):
+    """`scope` with each module a folder on sys.path names given as its file's module, or None
+    when two files could be that module."""
+    if not canon:
+        return scope
+    out = {}
+    for name, spec in scope.items():
+        if spec and spec[0] in ("from", "mod") and spec[1] in canon:
+            spec = None if canon[spec[1]] is None else (spec[0], canon[spec[1]], *spec[2:])
+        out[name] = spec
+    return out
+
+
+def local_names(own, init, canon=None):
     """`local` for _direct_calls in a file of module `own`: imports in a function or class body
     resolve; any other binding hides the name."""
 
     def local(scope):
         body = scope.child_by_field_name("body")
         stmts = list(body.named_children) if body is not None else []
-        inner = _scope(stmts, own, init, scope.type == "function_definition")
+        inner = _renamed(_scope(stmts, own, init, scope.type == "function_definition"), canon)
         return {**inner, **dict.fromkeys(bound(scope, imports=False))}
 
     return local
+
+
+SYS_PATH = {("sys", "path", "insert"), ("sys", "path", "append")}
+SAME = {("pathlib", "Path"), ("os", "fspath"), ("os", "path", "abspath"), ("os", "path", "realpath"), ("os", "path", "normpath")}
+
+
+def _step(parts, segment):
+    """The path `parts` (relative to the charted folder, ".." above it) after one more segment."""
+    if segment in ("", "."):
+        return parts
+    if segment == "..":
+        return parts[:-1] if parts and parts[-1] != ".." else (*parts, "..")
+    return (*parts, segment)
+
+
+def _string(node):
+    """The text of a plain string literal, or None: an f-string, bytes, an escape, anything else."""
+    kids = node.children if node.type == "string" else []
+    if not kids or any(c in kids[0].text.lower() for c in b"fb") or b"\\" in node.text:
+        return None
+    if any(k.type not in ("string_start", "string_content", "string_end") for k in kids):
+        return None
+    return "".join(k.text.decode() for k in kids if k.type == "string_content")
+
+
+def _literal(node, top):
+    """The path a plain string names, or None: a relative one is from wherever the program is
+    started, which the code does not say."""
+    text = _string(node)
+    if text is None or not text.startswith("/"):
+        return None
+    try:
+        return Path(text).relative_to(top).parts
+    except ValueError:
+        return ("..",)
+
+
+def _path_of(node, rel, top, scope):
+    """The path `node` names, as parts relative to the charted folder `top`, or None when only
+    running it would tell. Proven: __file__, a string starting with /, Path(), str(), .parent,
+    .parents[n], / or os.path.join with a string, os.path.dirname, and abspath, realpath,
+    .resolve() or .absolute(), which are taken to leave the path where it is."""
+    if node.type == "identifier":
+        return tuple(rel.split("/")) if node.text == b"__file__" and "__file__" not in scope else None
+    if node.type == "string":
+        return _literal(node, top)
+    if node.type == "attribute" and node.child_by_field_name("attribute").text == b"parent":
+        base = _path_of(node.child_by_field_name("object"), rel, top, scope)
+        return None if base is None else _step(base, "..")
+    if node.type == "subscript":  # Path(__file__).parents[1]
+        value, index = node.child_by_field_name("value"), node.child_by_field_name("subscript")
+        if value.type == "attribute" and value.child_by_field_name("attribute").text == b"parents" and index.type == "integer":
+            base = _path_of(value.child_by_field_name("object"), rel, top, scope)
+            for _ in range(int(index.text) + 1 if base is not None else 0):
+                base = _step(base, "..")
+            return base
+        return None
+    if node.type == "binary_operator" and node.child_by_field_name("operator").text == b"/":
+        base = _path_of(node.child_by_field_name("left"), rel, top, scope)
+        return _joined(base, [node.child_by_field_name("right")], top)
+    if node.type != "call":
+        return None
+    fun, args = node.child_by_field_name("function"), node.child_by_field_name("arguments").named_children
+    if any(a.type in ("keyword_argument", "list_splat", "dictionary_splat") for a in args):
+        return None
+    if fun.type == "attribute" and fun.child_by_field_name("attribute").text in (b"resolve", b"absolute") and not args:
+        return _path_of(fun.child_by_field_name("object"), rel, top, scope)
+    what = ("str",) if fun.type == "identifier" and fun.text == b"str" and "str" not in scope else resolve(fun, scope)
+    base = _path_of(args[0], rel, top, scope) if args else None
+    if what in SAME | {("str",)} and len(args) == 1:
+        return base
+    if what == ("os", "path", "dirname") and len(args) == 1:
+        return None if base is None else _step(base, "..")
+    return _joined(base, args[1:], top) if what == ("os", "path", "join") else None
+
+
+def _joined(base, nodes, top):
+    """`base` joined with strings, as / and os.path.join do: one starting with / starts over."""
+    for node in nodes:
+        text = _string(node)
+        if base is None or text is None:
+            return None
+        if text.startswith("/"):
+            base = _literal(node, top)
+            continue
+        for segment in text.split("/"):
+            base = _step(base, segment)
+    return base
+
+
+def sys_paths(rel, root, top):
+    """(line, call text, folder) for each sys.path.insert or append in this file. The folder is
+    relative to the charted folder `top` ("" for it), ".." when it is outside, or None when only
+    running the code would tell. Imports inside the functions around the call count."""
+    file_scope, local, found, todo = _scope(list(root.named_children), None, False), local_names(None, False), [], [root]
+    while todo:
+        cur = todo.pop()
+        todo.extend(reversed(cur.children))
+        fun = cur.child_by_field_name("function") if cur.type == "call" else None
+        if fun is None or fun.type != "attribute" or fun.child_by_field_name("attribute").text not in (b"insert", b"append"):
+            continue
+        scope, up, parent = dict(file_scope), [], cur.parent
+        while parent is not None:
+            up += [parent] if parent.type == "function_definition" else []
+            parent = parent.parent
+        for fn in reversed(up):  # the innermost function's names win
+            scope.update(local(fn))
+        what = resolve(fun, scope)
+        if what not in SYS_PATH:
+            continue
+        args = cur.child_by_field_name("arguments").named_children
+        want = 2 if what[-1] == "insert" else 1
+        parts = _path_of(args[-1], rel, top, scope) if len(args) == want else None
+        folder = None if parts is None else ".." if parts[:1] == ("..",) else "/".join(parts)
+        found.append((cur.start_point[0] + 1, cur.text.decode(), folder))
+    return found
 
 
 def targets(calls, attrs, file_scope, index, scopes, modules):
@@ -674,14 +830,13 @@ def targets(calls, attrs, file_scope, index, scopes, modules):
     return [t for t in found if t]
 
 
-def _cross(rel, source, index, own, scopes, modules):
+def _cross(rel, source, index, own, scopes, modules, canon):
     """Arrows this file's top-level boxes draw to other files, proved by an import."""
     root = tree(source)
     if root is None:
         return []
-    init = rel.endswith("__init__.py")
-    file_scope = _scope(list(root.named_children), own, init)
-    local = local_names(own, init)
+    file_scope = scopes[rel]
+    local = local_names(own, rel.endswith("__init__.py"), canon)
     edges, seen = [], set()
     for ident, _, start, _, node in _definitions(root):
         src = f"{rel}:{ident}:{start}"
@@ -715,28 +870,36 @@ def python_dir_links(folder):
         extra = f" Skipped {skipped}." if skipped else ""
         raise PlanError(f"{name} has no Python files to chart.{extra}")
     box = {"id": name, "labels": [{"text": name}], "children": _place(files)}
-    found, index, modules, scopes = links(box, files, name)
+    top = folder.resolve()
+    roots = {}  # each folder in the charted one that a proven sys.path change adds
     for rel, path in files:
-        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules)
+        root = tree(read_bytes(path))
+        for *_, folder_in in [] if root is None else sys_paths(rel, root, top):
+            if folder_in is not None and folder_in != "..":
+                roots[folder_in] = None
+    found, index, modules, scopes, canon = links(box, files, name, sorted(roots))
+    for rel, path in files:
+        extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules, canon)
         if extra:
             found[rel].setdefault("edges", []).extend(extra)
-    return box, named, files, (found, index, modules, scopes)
+    return box, named, files, (found, index, modules, scopes, canon)
 
 
-def links(box, files, name):
+def links(box, files, name, roots=()):
     """What an arrow across files is proved from: each file's box by path, the index of
-    definitions, each file's module, and how each file binds its top-level names."""
+    definitions, each file's module, how each file binds its top-level names, and the other
+    names a folder on sys.path (`roots`) gives modules."""
     found, todo = {}, [box]
     for cur in todo:
         todo += cur.get("children", [])
         if cur["id"].endswith(".py"):
             found[cur["id"]] = cur
-    index, modules = _def_index(found, name)
+    index, modules, canon = _def_index(found, name, roots)
     scopes = {
-        rel: _top_scope(read_bytes(path), modules.get(rel), rel.endswith("__init__.py"))
+        rel: _renamed(_top_scope(read_bytes(path), modules.get(rel), rel.endswith("__init__.py")), canon)
         for rel, path in files
     }
-    return found, index, modules, scopes
+    return found, index, modules, scopes, canon
 
 
 def _is_same(out, path):
