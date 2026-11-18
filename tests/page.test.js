@@ -2,7 +2,7 @@
 // save shows the error over the last good chart, dimmed, and fixing the file brings the chart back.
 // Only this test runs main.js, EventSource and the DOM; the others test the page's modules as functions.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +32,39 @@ function serve(file, signal) {
   });
   return { run, address };
 }
+
+test("a parsed TypeScript import and call draw, and clicking the function opens its source", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-typescript-"));
+  const file = join(dir, "plan.json");
+  writeFileSync(join(dir, "read.ts"), "export function read() { return 7; }\n");
+  writeFileSync(join(dir, "app.ts"), "import {read} from './read';\nexport function run() { return read(); }\n");
+  writeFileSync(join(dir, "app.test.ts"), "invalid syntax that must never be parsed");
+  let server, browser;
+  try {
+    execFileSync("uv", ["run", "--offline", "python", "-m", "asbuilt.javascript", dir, file], { timeout: 30_000 });
+    const serving = serve(file, t.signal);
+    server = serving.run;
+    serving.address.catch(() => {});
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(await serving.address);
+    await page.locator('[data-box="app.ts:run:2"]').waitFor();
+    assert.equal(await page.locator("[data-box]").count(), 5);
+    assert.equal(await page.locator("[data-arrow]").count(), 2);
+    await page.getByText("run()", { exact: true }).click();
+    assert.ok((await page.locator("#code").innerText()).includes("export function run() { return read(); }"));
+    await page.locator("#pipeline").click();
+    await page.locator('[data-box="read.ts:read:1"]').waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    server?.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // At the timeout the server is killed, so a server that never prints its address fails the run; Playwright's waits
 // end on their own timeouts. finally stops the server and the browser whatever fails.
