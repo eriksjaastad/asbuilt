@@ -371,6 +371,35 @@ class SysPathTest(unittest.TestCase):
         stmts = ["sys.path[:0] = ['lib']", "sys.path.extend(['lib'])", "sys.path += ['lib']", "sys.path = []", "del sys.path[0]"]
         self.assertEqual(result["not_proven"], [f"run.py:{i}: {s}: {why}" for i, s in enumerate(stmts, 2)])
 
+    def test_a_file_imported_above_the_insert_does_not_use_the_root(self):
+        result = found(
+            {
+                "m.py": 'import sys\nfrom pathlib import Path\nimport early\nsys.path.insert(0, str(Path(__file__).parent / "lib"))\n',
+                "early.py": "import helper\n\n\ndef e():\n    helper.go()\n\n\n" + MAIN.replace("main()", "e()"),
+                "lib/helper.py": "def go():\n    pass\n",
+            }
+        )
+        self.assertEqual(boxes(result)["lib/helper.py:go"], NO_PATH)
+        self.assertEqual(result["arrows"], [])
+
+    def test_an_insert_that_may_not_run_is_not_followed(self):
+        for insert, why in (
+            ("def setup():\n    sys.path.insert(0, str(Path(__file__).parent))", "it runs only when its function is called"),
+            ("if __name__ == '__main__':\n    sys.path.insert(0, str(Path(__file__).parent))", "it runs only under an if, try, loop or with"),
+        ):
+            result = self.run_file(insert)
+            self.assertEqual(boxes(result)["scripts/commands/common.py:f"], NO_PATH)
+            self.assertEqual(result["not_proven"], [f"scripts/run.py:5: sys.path.insert(0, str(Path(__file__).parent)): {why}"])
+
+    def test_a_folder_outside_the_charted_one_is_listed(self):
+        result = self.run_file("sys.path.insert(0, str(Path(__file__).parent.parent.parent))")
+        line = "scripts/run.py:4: sys.path.insert(0, str(Path(__file__).parent.parent.parent))"
+        self.assertEqual(result["not_proven"], [f"{line}: the folder is outside the charted folder"])
+
+    def test_naming_a_method_is_not_a_change_and_another_name_is_not_proven(self):
+        result = found({"run.py": "import sys\nprint(sys.path.append)\np = sys.path\n"})
+        self.assertEqual(result["not_proven"], ["run.py:3: p = sys.path: asBuilt does not follow sys.path under another name"])
+
     def test_a_module_only_the_extra_root_names_is_followed(self):
         run = "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent / 'lib'))\n"
         run += "from helpers import f\n\n\ndef main():\n    f()\n\n\n" + MAIN

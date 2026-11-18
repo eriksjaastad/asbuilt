@@ -634,10 +634,10 @@ def _def_index(boxes, folder_name, roots=()):
 
 
 def _imported(root, own, init):
-    """Every module this file's imports name, a parent package included; the ones that run,
-    which leaves out `if TYPE_CHECKING:`; and (module, name) for each from-import that runs,
-    as the name may be a submodule."""
-    named, run, subs, todo = set(), set(), [], [(root, True)]
+    """(line, runs, modules, from-names) for each import statement in this file: the modules it
+    names, a parent package included; whether it runs, which `if TYPE_CHECKING:` does not; and
+    (module, name) for each name a from-import takes, as the name may be a submodule."""
+    found, todo = [], [(root, True)]
     while todo:
         cur, runs = todo.pop()
         if cur.type == "if_statement" and _typing(cur):
@@ -645,21 +645,20 @@ def _imported(root, own, init):
         if cur.type not in ("import_statement", "import_from_statement"):
             todo.extend((c, runs) for c in cur.named_children)
             continue
+        subs = []
         if cur.type == "import_statement":
             items = [c if c.type == "dotted_name" else c.child_by_field_name("name") for c in cur.named_children]
             mods = [_dots(c) for c in items if c is not None]
         else:
             mod = _from_mod(cur, own, init)
             mods = [mod] if mod else []
-            for item in cur.named_children[1:] if mod and runs else ():
+            for item in cur.named_children[1:] if mod else ():
                 dotted = item if item.type == "dotted_name" else item.child_by_field_name("name")
                 if dotted is not None and dotted.type == "dotted_name":
                     subs.append((mod, _dots(dotted)[0]))
-        for mod in mods:
-            prefixes = {mod[:i] for i in range(1, len(mod) + 1)}
-            named |= prefixes
-            run |= prefixes if runs else set()
-    return named, run, subs
+        named = {mod[:i] for mod in mods for i in range(1, len(mod) + 1)}
+        found.append((cur.start_point[0] + 1, runs, named, subs))
+    return found
 
 
 def tree(source):
@@ -818,10 +817,12 @@ def _joined(base, nodes, top):
 
 def sys_paths(rel, root, top):
     """(line, statement, folder, why) for each change this file makes to sys.path. A
-    sys.path.insert or append whose folder is proven has it relative to the charted folder
-    `top` ("" for it, ".." when outside) and why None. Any other change, by a method, an
-    assignment, += or del, has folder None and why saying what is not proven. Reading sys.path
-    is not a change. Imports inside the functions around it count."""
+    sys.path.insert or append that is a statement of its own at module level, outside any if,
+    try, loop, with or `if __name__` block, at a folder the parser proves inside the charted
+    folder `top`, has that folder relative to it ("" for it) and why None. Any other change, by
+    a method, an assignment, += or del, or sys.path given another name, has folder None and why
+    saying what is not proven. Reading sys.path, or naming one of its methods without calling
+    it, is not a change. Imports inside the functions around it count."""
     file_scope, local, found, todo = _scope(list(root.named_children), None, False), local_names(None, False), [], [root]
     while todo:
         cur = todo.pop()
@@ -839,17 +840,28 @@ def sys_paths(rel, root, top):
         outer = cur.parent
         method = outer.child_by_field_name("attribute").text.decode() if outer.type == "attribute" else None
         call = outer.parent if method and outer.parent.type == "call" else None
+        call = call if call is not None and call.child_by_field_name("function") == outer else None
         if call is not None and method in ("insert", "append"):
             args = call.child_by_field_name("arguments").named_children
             parts = _path_of(args[-1], rel, top, scope) if len(args) == (2 if method == "insert" else 1) else None
-            folder = None if parts is None else ".." if parts[:1] == ("..",) else "/".join(parts)
-            why = None if parts is not None else "the folder is known only when it runs"
-            found.append((call.start_point[0] + 1, call.text.decode(), folder, why))
+            top_level = call.parent.type == "expression_statement" and call.parent.parent.type == "module"
+            why = (
+                "it runs only when its function is called" if up
+                else "it runs only under an if, try, loop or with" if not top_level
+                else "the folder is known only when it runs" if parts is None
+                else "the folder is outside the charted folder" if parts[:1] == ("..",)
+                else None
+            )
+            found.append((call.start_point[0] + 1, call.text.decode(), None if why else "/".join(parts), why))
             continue
+        if method and call is None:
+            continue  # sys.path.append named, not called
         target = outer if outer.type == "subscript" and outer.child_by_field_name("value") == cur else cur
         stmt = call if call is not None and method not in READS else target.parent
-        assigned = stmt.type in ("assignment", "augmented_assignment") and stmt.child_by_field_name("left") == target
-        if stmt is call or assigned or stmt.type == "delete_statement":
+        side = stmt.type in ("assignment", "augmented_assignment") and stmt.child_by_field_name("left") == target
+        if stmt.type == "assignment" and stmt.child_by_field_name("right") == cur:
+            found.append((stmt.start_point[0] + 1, stmt.text.decode(), None, "asBuilt does not follow sys.path under another name"))
+        elif stmt is call or side or stmt.type == "delete_statement":
             found.append((stmt.start_point[0] + 1, stmt.text.decode(), None, "asBuilt follows only sys.path.insert and append"))
     return found
 
@@ -919,10 +931,12 @@ def links(box, files, name, top):
     named by a folder on sys.path: the module it is, or None}}, and {file: its sys_paths()
     against the charted folder `top`}.
 
-    A proven sys.path folder is an import root for the file that adds it and for each file its
-    imports reach, transitively, as those run in the same process; no other file uses it. Which
-    file a module name means there is decided by every root that file has; a name two files
-    could be is not followed, as which one Python loads depends on the order of sys.path."""
+    A proven sys.path folder is an import root for the imports below the insert in the file
+    that adds it, and for every import in each file those load, transitively, as those load
+    after it in the same process; no other file or import uses it. Which file a module name
+    means is decided by every root in effect there; a name two files could be is not followed,
+    as which one Python loads depends on the order of sys.path, and neither is a module one
+    file imports both with and without a root."""
     found, todo = {}, [box]
     for cur in todo:
         todo += cur.get("children", [])
@@ -930,40 +944,52 @@ def links(box, files, name, top):
             found[cur["id"]] = cur
     trees = {rel: tree(read_bytes(path)) for rel, path in files}
     paths = {rel: [] if root is None else sys_paths(rel, root, top) for rel, root in trees.items()}
-    on = {rel: {f for _, _, f, why in found_paths if why is None and f != ".."} for rel, found_paths in paths.items()}
-    index, modules, key, tables = _def_index(found, name, sorted(set().union(*on.values())))
+    below = {rel: {} for rel in trees}  # {file: {root: the line of its first insert}}
+    for rel, changes in paths.items():
+        for line, _, folder, why in changes:
+            if why is None:
+                below[rel][folder] = min(line, below[rel].get(folder, line))
+    index, modules, key, tables = _def_index(found, name, sorted({r for at in below.values() for r in at}))
     init = {rel: rel.endswith("__init__.py") for rel in trees}
     raw = {rel: {} if root is None else _scope(list(root.named_children), modules.get(rel), init[rel]) for rel, root in trees.items()}
-    imports = {rel: (set(), set(), []) if root is None else _imported(root, modules.get(rel), init[rel]) for rel, root in trees.items()}
+    imports = {rel: [] if root is None else _imported(root, modules.get(rel), init[rel]) for rel, root in trees.items()}
+    on = {rel: set() for rel in trees}  # roots in effect in the whole file
 
-    def files_of(mod, rel):
-        return set().union(*(tables[r].get(mod, set()) for r in (None, *sorted(on[rel]))))
+    def at(rel, line):
+        return on[rel] | {r for r, after in below[rel].items() if line > after}
 
-    def reached(rel):
-        """The files this file's running imports load, each proven to be one file."""
-        _, run, subs = imports[rel]
-        found_files = [files_of(m, rel) for m in run]
-        for mod, sub in subs:  # `from pkg import sub` loads pkg/sub.py, unless pkg binds sub itself
-            pkg = files_of(mod, rel)
-            if len(pkg) == 1 and raw[next(iter(pkg))].get(sub, False) is False:
-                found_files.append(files_of((*mod, sub), rel))
-        return [next(iter(f)) for f in found_files if len(f) == 1]
+    def files_of(mod, here):
+        return set().union(*(tables[r].get(mod, set()) for r in (None, *sorted(here))))
 
-    todo = [rel for rel in on if on[rel]]
+    todo = [rel for rel in trees if below[rel]]
     while todo:  # ends: each step adds a root to a file, and there are finitely many
         rel = todo.pop()
-        for other in reached(rel):
-            if not on[rel] <= on[other]:
-                on[other] |= on[rel]
-                todo.append(other)
+        for line, runs, mods, subs in imports[rel]:
+            here = at(rel, line)
+            if not runs or not here:
+                continue
+            loads = [files_of(m, here) for m in mods]
+            for mod, sub in subs:  # `from pkg import sub` loads pkg/sub.py, unless pkg binds sub itself
+                pkg = files_of(mod, here)
+                if len(pkg) == 1 and raw[next(iter(pkg))].get(sub, False) is False:
+                    loads.append(files_of((*mod, sub), here))
+            for other in [next(iter(f)) for f in loads if len(f) == 1]:
+                if not here <= on[other]:
+                    on[other] |= here
+                    todo.append(other)
     canon = {}
-    for rel in (r for r in on if on[r]):
-        for mod in imports[rel][0]:
-            if any(mod in tables[r] for r in on[rel]):
-                means = files_of(mod, rel)
-                means = key[next(iter(means))] if len(means) == 1 else None
-                if means != mod:
-                    canon.setdefault(rel, {})[mod] = means
+    for rel in trees:
+        means = {}
+        for line, _, mods, _ in imports[rel]:
+            here = at(rel, line)
+            for mod in mods:
+                rels = files_of(mod, here) if any(mod in tables[r] for r in here) else None
+                one = mod if rels is None else key[next(iter(rels))] if len(rels) == 1 else None
+                means.setdefault(mod, set()).add(one)
+        renamed = {mod: next(iter(m)) if len(m) == 1 else None for mod, m in means.items()}
+        renamed = {mod: m for mod, m in renamed.items() if m != mod}
+        if renamed:
+            canon[rel] = renamed
     scopes = {rel: _renamed(raw[rel], canon.get(rel)) for rel in trees}
     return found, index, modules, scopes, canon, paths
 
