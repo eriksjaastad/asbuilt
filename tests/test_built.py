@@ -226,7 +226,12 @@ class CallArrowTest(unittest.TestCase):
         box = python_file("shop.py", ("\n".join(lines) + "\n").encode())
         self.assertEqual(
             [(e["sources"][0], e["targets"][0]) for e in box["edges"]],
-            [("shop.py:main:8", "shop.py:load:1"), ("shop.py:main:8", "shop.py:Box:4"), ("shop.py:holder:15", "shop.py:load:1")],
+            [
+                ("shop.py:Box:4", "shop.py:load:1"),  # the call in a method is the class's
+                ("shop.py:main:8", "shop.py:load:1"),
+                ("shop.py:main:8", "shop.py:Box:4"),
+                ("shop.py:holder:15", "shop.py:load:1"),
+            ],
         )
 
 
@@ -335,6 +340,100 @@ def _ends(root_name, files):
         todo += box.get("children", [])
         ends += [edge["sources"] + edge["targets"] for edge in box.get("edges", [])]
     return ends
+
+
+class NestedCallTest(unittest.TestCase):
+    """A call in a method or an inner function is the enclosing top-level box's."""
+
+    def test_a_method_calling_a_module_function_is_the_class_arrow(self):
+        source = "def load():\n    return 1\nclass C:\n    def m(self):\n        return load()\n"
+        self.assertEqual(called(source), ["load"])
+
+    def test_an_inner_function_call_is_the_outer_box_arrow(self):
+        source = "def load():\n    return 1\ndef outer():\n    def inner():\n        return load()\n    return inner\n"
+        self.assertEqual(called(source), ["load"])
+
+    def test_a_class_body_name_does_not_hide_the_name_in_a_method(self):
+        source = "def load():\n    return 1\nclass C:\n    load = 1\n    def m(self):\n        return load()\n"
+        self.assertEqual(called(source), ["load"])
+
+    def test_an_inner_parameter_or_local_or_outer_local_hides_the_name(self):
+        for body in (
+            "    def inner(load):\n        return load()\n",
+            "    def inner():\n        load = 2\n        return load()\n",
+            "    load = 2\n    def inner():\n        return load()\n",
+            "    class K:\n        def m(self, load):\n            return load()\n",
+        ):
+            source = "def load():\n    return 1\ndef outer():\n" + body
+            self.assertEqual(called(source), [], body)
+
+    def test_a_class_attribute_call_is_the_class_arrow_and_self_is_not(self):
+        source = "class Box:\n    def make():\n        return 1\ndef main():\n    return Box.make()\n"
+        self.assertEqual(called(source), ["Box"])
+        source = "def load():\n    return 1\nclass Box:\n    def m(self):\n        return self.load()\n"
+        self.assertEqual(called(source), [])
+        source = "class Box:\n    pass\ndef main(Box):\n    return Box.make()\n"
+        self.assertEqual(called(source), [])
+
+    def test_a_callback_or_getattr_is_not_a_call(self):
+        source = (
+            "import threading\ndef load():\n    return 1\ndef main():\n"
+            "    threading.Thread(target=load).start()\n    getattr(main, 'load')()\n    map(load, [1])\n"
+        )
+        self.assertEqual(called(source), [])
+
+
+class InFunctionImportTest(unittest.TestCase):
+    def test_an_import_under_if_in_a_function_is_the_call(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "def main(x):\n    if x:\n        from other import load\n    if x:\n        return load()\n",
+        })
+        self.assertIn(["app.py:main:1", "other.py:load:1"], ends)
+
+    def test_two_imports_of_one_name_are_not_the_call(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "third.py": "def load():\n    return 2\n",
+            "app.py": (
+                "def main():\n    try:\n        from other import load\n"
+                "    except ImportError:\n        from third import load\n    return load()\n"
+            ),
+        })
+        self.assertEqual(ends, [])
+
+    def test_a_method_reaches_an_imported_module_function(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "import other\nclass C:\n    def m(self):\n        return other.load()\n",
+        })
+        self.assertEqual(ends, [["app.py:C:2", "other.py:load:1"]])
+
+    def test_an_inner_import_wins_over_the_file_import(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "third.py": "def load():\n    return 2\n",
+            "app.py": (
+                "from other import load\ndef main():\n    def inner():\n"
+                "        from third import load\n        return load()\n    return inner\n"
+            ),
+        })
+        self.assertEqual(ends, [["app.py:main:2", "third.py:load:1"]])
+
+    def test_an_inner_parameter_hides_the_file_import(self):
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from other import load\ndef main():\n    def inner(load):\n        return load()\n    return inner\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_an_import_under_if_in_a_class_body_is_not_the_call(self):
+        # A class body falls back to the module's name when the import did not run.
+        ends = _ends("shop", {
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "class C:\n    if X:\n        from other import load\n    y = load()\n",
+        })
+        self.assertEqual(ends, [])
 
 
 class BuiltCommandTest(unittest.TestCase):
