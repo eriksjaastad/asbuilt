@@ -8,10 +8,47 @@ is not a kind.
 """
 
 _ORDER = ("env", "input", "writes", "calls out", "model")
-_MODEL = {("openai",), ("anthropic",)}
-_OUT = {("requests",), ("httpx",)}
+# Each module path below marks a call or name at it or under it. These tuples are the checks,
+# and LOOKS_FOR is read from them, so the page never lists a call that is not checked.
+_ENV = (("os", "environ"), ("os", "getenv"))
+_MODEL = (("openai",), ("anthropic",))
 _RUN = ("run", "Popen", "call", "check_call", "check_output")
 _SOCKET = ("socket", "create_connection", "create_server")
+_OUT = (
+    ("requests",),
+    ("httpx",),
+    ("urllib", "request"),
+    ("http", "client"),
+    ("os", "system"),
+    *(("subprocess", name) for name in _RUN),
+    *(("socket", name) for name in _SOCKET),
+)
+_WRITE_METHODS = ("write_text", "write_bytes")
+_INPUT = "input"
+
+
+def _dotted(paths):
+    return [".".join(path) for path in paths]
+
+
+# What each mark looks for, in the words the page shows. Nothing else is looked for, so a box
+# without a mark proves only that none of these is in its own code.
+LOOKS_FOR = {
+    "env": _dotted(_ENV),
+    "input": [f"{_INPUT}()"],
+    "writes": [
+        "open() with a write mode",
+        "os.fdopen() with a write mode",
+        "a .open() method with a write mode",
+        *(f".{name}()" for name in _WRITE_METHODS),
+    ],
+    "calls out": _dotted(_OUT),
+    "model": _dotted(_MODEL),
+}
+
+
+def _under(path, prefixes):
+    return any(path[: len(prefix)] == prefix for prefix in prefixes)
 
 
 def _chain(node):
@@ -106,16 +143,11 @@ def layer(fn, scope):
 
 
 def _env(path):
-    return path[:2] == ("os", "environ") or path[:2] == ("os", "getenv")
+    return _under(path, _ENV)
 
 
 def _calls_out(path):
-    return (
-        path[:1] in _OUT
-        or path[:2] in {("urllib", "request"), ("http", "client"), ("os", "system")}
-        or path[:1] == ("subprocess",) and len(path) > 1 and path[1] in _RUN
-        or path[:1] == ("socket",) and len(path) > 1 and path[1] in _SOCKET
-    )
+    return _under(path, _OUT)
 
 
 def _imported(node, scope):
@@ -129,7 +161,7 @@ def _imported(node, scope):
 def _on_call(node, scope, add):
     fun = next(iter(node.named_children), None)
     _root, attrs = _chain(fun)
-    if attrs and attrs[-1] in ("write_text", "write_bytes"):
+    if attrs and attrs[-1] in _WRITE_METHODS:
         add("writes")
     # Path.open("w") takes the mode first. gzip.open(path, "wt") takes it second.
     if attrs and attrs[-1] == "open" and _open_writes(node, first=not _imported(fun, scope)):
@@ -138,14 +170,14 @@ def _on_call(node, scope, add):
     if path is None:
         return
     if path[0] == "builtin":
-        if path[1] == "input":
+        if path[1] == _INPUT:
             add("input")
         elif path[1] == "open" and _open_writes(node):
             add("writes")
         return
     if _env(path):
         add("env")
-    if path[:1] in _MODEL:
+    if _under(path, _MODEL):
         add("model")
     elif _calls_out(path):
         add("calls out")

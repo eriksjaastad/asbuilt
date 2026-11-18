@@ -3,6 +3,7 @@ import io
 import json
 import unittest
 
+from asbuilt.marks import LOOKS_FOR
 from asbuilt.state import FALLBACK, NOT_SENDABLE, PlanError, build
 
 
@@ -33,7 +34,7 @@ def raising(error):
 class StateTest(unittest.TestCase):
     def test_a_plan_becomes_an_ok_message_with_the_plan_unchanged(self):
         plan = {"id": "root", "children": [{"id": "a", "label": "caf\u00e9"}]}
-        self.assertEqual(parsed(lambda: plan), {"ok": True, "plan": plan})
+        self.assertEqual(parsed(lambda: plan), {"ok": True, "plan": plan, "looks": LOOKS_FOR})
 
     def test_a_plan_error_shows_its_own_text(self):
         self.assertEqual(

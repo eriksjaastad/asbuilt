@@ -303,7 +303,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     id: "app",
     children: [{
       id: "a.py",
-      children: [badge("read", ["env"]), badge("post", ["calls out"]), { id: "local", labels: [{ text: "local()" }] }],
+      children: [badge("read", ["env"]), badge("post", ["calls out"]), { id: "local", labels: [{ text: "local()" }], asbuilt: { text: "def local():\n    pass\n" } }],
       edges: [
         { id: "uses", sources: ["read"], targets: ["post"] },
         { id: "aside", sources: ["read"], targets: ["local"] },
@@ -321,9 +321,16 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='local']").waitFor();
     await page.locator("[data-arrow='aside']").waitFor();
     assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
-    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 2");
-    assert.equal(await page.locator("[data-mark='input']").innerText(), "input 0");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (2)");
+    assert.equal(await page.locator("[data-mark='input']").innerText(), "asks a person to type (0)");
+    assert.equal(await page.locator("[data-mark='input']").getAttribute("aria-disabled"), "true");
+    await page.locator("[data-mark='input']").click({ force: true });
+    assert.equal(await page.locator("[data-mark='input']").getAttribute("aria-pressed"), null);
+    assert.equal(await page.locator("#mark-all").getAttribute("aria-pressed"), "true");
+    assert.match(await page.locator("[data-mark='input']").getAttribute("title"), /asBuilt found none in this view\. It looks only in functions and classes, for: input\(\)\./);
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-disabled"), "false");
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("title"), "");
     await page.locator("[data-mark='env']").click();
     await page.locator("[data-box='local']").waitFor({ state: "detached" });
     assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-pressed"), "true");
@@ -342,7 +349,7 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor();
     await page.locator("[data-box='a.py']").waitFor();
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: env, calls out. Hiding 3 boxes and 3 arrows.");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 3 functions and classes where asBuilt found none of it: local(), ask(), far(). It looks only in functions and classes, for: os.environ, os.getenv; requests, httpx, urllib.request, http.client, os.system, subprocess.run, subprocess.Popen, subprocess.call, subprocess.check_call, subprocess.check_output, socket.socket, socket.create_connection, socket.create_server. Also hiding 3 arrows that do not join two shown functions or classes.");
     await page.locator("#mark-all").click();
     await page.locator("[data-box='local']").waitFor();
     await page.locator("[data-arrow='aside']").waitFor();
@@ -350,8 +357,8 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.getByText("read()", { exact: true }).click();
     await page.locator("#pipeline").click();
     await page.locator("[data-box='far']").waitFor({ state: "detached" });
-    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 1");
-    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (1)");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
     await page.locator("[data-mark='calls out']").click();
     await page.locator("[data-mark='model']").click();
     await page.locator("[data-box='local']").waitFor({ state: "detached" });
@@ -361,9 +368,9 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
     await page.locator("[data-box='post']").waitFor();
     await page.locator("[data-arrow='out']").waitFor();
     await page.locator("[data-arrow='uses']").waitFor({ state: "detached" });
-    assert.equal(await page.locator("#marks-note").innerText(), "Showing boxes with any of: calls out, model. Hiding 2 boxes and 2 arrows.");
-    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 1");
-    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    assert.equal(await page.locator("#marks-note").innerText(), "Showing functions and classes whose own code talks to the network or runs programs or uses the OpenAI or Anthropic library, and the boxes that hold them. Hiding 2 functions and classes where asBuilt found none of it: read(), local(). It looks only in functions and classes, for: requests, httpx, urllib.request, http.client, os.system, subprocess.run, subprocess.Popen, subprocess.call, subprocess.check_call, subprocess.check_output, socket.socket, socket.create_connection, socket.create_server; openai, anthropic. Also hiding 2 arrows that do not join two shown functions or classes.");
+    assert.equal(await page.locator("[data-mark='model']").innerText(), "uses the OpenAI or Anthropic library (1)");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
   } finally {
     server.kill();
     await browser?.close();
@@ -374,11 +381,12 @@ test("choosing marks keeps those boxes and the arrows between them, and all brin
 test("a mark no box carries is a plain empty chart, not an error over the old one", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
   const file = join(dir, "plan.json");
-  writeFileSync(file, JSON.stringify({
+  const plan = {
     id: "app",
-    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"], text: "def read():\n    pass\n" } }, { id: "local", labels: [{ text: "local()" }] }],
+    children: [{ id: "read", labels: [{ text: "read()" }], asbuilt: { badges: ["env"], text: "def read():\n    pass\n" } }, { id: "local", labels: [{ text: "local()" }], asbuilt: { text: "def local():\n    pass\n" } }],
     edges: [{ id: "e", sources: ["read"], targets: ["local"] }],
-  }));
+  };
+  writeFileSync(file, JSON.stringify(plan));
   const { run: server, address } = serve(file, t.signal);
   address.catch(() => {});
   let browser;
@@ -387,24 +395,30 @@ test("a mark no box carries is a plain empty chart, not an error over the old on
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto(await address);
     await page.locator("[data-box='local']").waitFor();
-    assert.equal(await page.locator("[data-mark='input']").innerText(), "input 0");
-    assert.equal(await page.locator("[data-mark='model']").innerText(), "model 0");
-    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
-    await page.locator("[data-mark='input']").click();
+    assert.equal(await page.locator("[data-mark='input']").innerText(), "asks a person to type (0)");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (1)");
+    await page.locator("[data-mark='env']").click();
+    await page.locator("[data-box='local']").waitFor({ state: "detached" });
+    writeFileSync(file, JSON.stringify({ id: "app", children: [{ id: "local", labels: [{ text: "local()" }] }] }));
     await page.locator(".empty").waitFor();
-    assert.equal(await page.locator(".empty").innerText(), "No box here carries input.");
+    assert.equal(await page.locator(".empty").innerText(), "asBuilt found no function or class here whose own code uses environment settings. It looks only in functions and classes, for: os.environ, os.getenv.");
     assert.equal(await page.locator("#marks-note").innerText(), "");
     assert.equal(await page.locator(".error").count(), 0);
     assert.equal(await page.locator(".stale").count(), 0);
     assert.equal(await page.locator("[data-box]").count(), 0);
-    assert.equal(await page.locator("[data-mark='env']").innerText(), "env 1");
+    assert.equal(await page.locator("[data-mark='env']").innerText(), "uses environment settings (0)");
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-disabled"), "false");
     await page.locator("#mark-all").click();
+    await page.locator("[data-box='local']").waitFor();
+    assert.equal(await page.locator("[data-mark='env']").getAttribute("aria-disabled"), "true");
+    await page.getByText("local()", { exact: true }).click();
+    await page.locator("#pipeline").waitFor();
+    writeFileSync(file, JSON.stringify(plan));
     await page.locator("[data-box='read']").waitFor();
-    await page.getByText("read()", { exact: true }).click();
+    await page.locator("[data-mark='env']").click();
     await page.locator("#pipeline").click();
-    await page.locator("[data-mark='model']").click();
     await page.locator(".empty").waitFor();
-    assert.equal(await page.locator(".empty").innerText(), "No box in what read() reaches carries model.");
+    assert.equal(await page.locator(".empty").innerText(), "asBuilt found no function or class in what local() reaches whose own code uses environment settings. It looks only in functions and classes, for: os.environ, os.getenv.");
     assert.equal(await page.locator("#marks-note").innerText(), "");
     assert.equal(await page.locator(".error").count(), 0);
   } finally {
@@ -429,7 +443,8 @@ test("a bad plan still shows the error while an empty mark is on", { timeout: 60
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto(await address);
     await page.locator("[data-box='read']").waitFor();
-    await page.locator("[data-mark='input']").click();
+    await page.locator("[data-mark='env']").click();
+    writeFileSync(file, JSON.stringify({ id: "app", children: [{ id: "read", labels: [{ text: "read()" }] }] }));
     await page.locator("#chart > .empty").waitFor();
     writeFileSync(file, "{ not json");
     await page.locator("#chart > .error").waitFor();
@@ -457,7 +472,8 @@ test("a dropped server still says the connection was lost while an empty mark is
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto(await address);
     await page.locator("[data-box='read']").waitFor();
-    await page.locator("[data-mark='input']").click();
+    await page.locator("[data-mark='env']").click();
+    writeFileSync(file, JSON.stringify({ id: "app", children: [{ id: "read", labels: [{ text: "read()" }] }] }));
     await page.locator("#chart > .empty").waitFor();
     server.kill();
     await page.locator("#chart > .error").waitFor();
@@ -484,7 +500,7 @@ test("opening a box shows the everyday note and both security sentences", { time
       asbuilt: {
         text: "def read():\n    return os.environ.get(KEY_NAME)\n",
         plain: [note],
-        security: [{ plain, expert }],
+        security: [{ fact: { kind: "env", how: "read", name: "OPENROUTER_API_KEY" }, plain, expert }],
       },
     }],
   }));
@@ -504,6 +520,8 @@ test("opening a box shows the everyday note and both security sentences", { time
     assert.ok(at < panel.indexOf("Expert"));
     assert.ok(panel.includes(plain));
     assert.ok(panel.includes(expert));
+    assert.equal(await page.locator("#code .security-head").innerText(), "Security: 1 thing to know");
+    assert.equal(await page.locator("#code .fact").innerText(), "1. Reads an environment setting");
   } finally {
     server.kill();
     await browser?.close();

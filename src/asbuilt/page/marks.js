@@ -61,7 +61,7 @@ export function shown(plan, focus, kinds) {
 }
 
 // How many boxes in this view prove each mark. The count is the view before a mark is chosen,
-// so a button can read "model 0" before anyone clicks it.
+// so a button can show 0, and be disabled, before anyone clicks it.
 export function markCounts(plan) {
   const tally = Object.fromEntries(KINDS.map((kind) => [kind, 0]));
   const walk = (box) => {
@@ -72,22 +72,72 @@ export function markCounts(plan) {
   return tally;
 }
 
-const what = (kinds) => {
-  const list = names(kinds);
-  return list.length > 1 ? `any of: ${list.join(", ")}` : list[0];
+// What each mark means in everyday words, as the end of "a function whose own code ...". A marked
+// box really does it, so these phrases are only ever used for what asBuilt found.
+export const SAYS = {
+  env: "uses environment settings",
+  input: "asks a person to type",
+  writes: "writes files",
+  "calls out": "talks to the network or runs programs",
+  model: "uses the OpenAI or Anthropic library",
 };
 
-// A view with no matching box. `reached` is the label of the pipeline's start, when one is on.
-export function carries(kinds, reached) {
-  const where = reached ? `in what ${reached} reaches` : "here";
-  return `No box ${where} carries ${what(kinds)}.`;
+const what = (kinds) => names(kinds).map((kind) => SAYS[kind]).join(" or ");
+
+// A negative is only ever what asBuilt found: it says where it looks and, from `looks` (marks.py's
+// LOOKS_FOR, sent with the plan), what for. Without that list it names nothing it looks for.
+export function looked(kinds, looks) {
+  const lists = names(kinds).map((kind) => looks?.[kind]);
+  if (!lists.length || !lists.every(Array.isArray)) return "It looks only in functions and classes.";
+  return `It looks only in functions and classes, for: ${lists.map((list) => list.join(", ")).join("; ")}.`;
 }
 
-const bit = (count, one, many) => (count ? `${count} ${count === 1 ? one : many}` : "");
+// A view with no matching box. `reached` is the label of the pipeline's start, when one is on.
+export function carries(kinds, reached, looks) {
+  const where = reached ? `in what ${reached} reaches` : "here";
+  return `asBuilt found no function or class ${where} whose own code ${what(kinds)}. ${looked(kinds, looks)}`;
+}
 
-// Several marks mean any of them. The rest of the line is how many boxes and arrows that hides.
-export function showing(kinds, boxes, arrows) {
-  const hidden = [bit(boxes, "box", "boxes"), bit(arrows, "arrow", "arrows")].filter(Boolean);
-  const rest = hidden.length ? `Hiding ${hidden.join(" and ")}.` : "Hiding nothing.";
-  return `Showing boxes with ${what(kinds)}. ${rest}`;
+// The boxes in `plan` whose ids are not in `kept`, as { name, checked }. checked means a function
+// or class box, whose own code was read: it carries that code or marks proven from it. A label two hidden boxes share gets its holder's label.
+export function hiddenBoxes(plan, kept) {
+  const [all, boxes, parent] = [new Map(), new Map(), index(plan)];
+  const walk = (box, top) => {
+    all.set(box.id, box);
+    if (!top && box.id !== undefined && !kept.includes(box.id)) boxes.set(box.id, box);
+    for (const child of childrenOf(box)) walk(child, false);
+  };
+  walk(plan, true);
+  const label = (box) => box?.labels?.[0]?.text ?? box?.id;
+  const seen = new Map();
+  for (const box of boxes.values()) seen.set(label(box), (seen.get(label(box)) ?? 0) + 1);
+  return [...boxes.values()].map((box) => {
+    const holder = parent.get(box.id);
+    const name = seen.get(label(box)) > 1 && holder !== undefined && holder !== plan.id ? `${label(box)} in ${label(all.get(holder))}` : label(box);
+    return { name, checked: typeof box.asbuilt?.text === "string" || Array.isArray(box.asbuilt?.badges) };
+  });
+}
+
+const SHOWN = 6;
+const count = (n, one, many) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+// Names that are still the same after the holder is added are one entry with a count.
+const list = (items) => {
+  const tally = new Map();
+  for (const item of items) tally.set(item.name, (tally.get(item.name) ?? 0) + 1);
+  const shown = [...tally].map(([name, n]) => (n > 1 ? `${name} (${n})` : name));
+  return shown.slice(0, SHOWN).join(", ") + (shown.length > SHOWN ? `, and ${shown.length - SHOWN} more` : "");
+};
+
+// Several marks mean any of them. Then which boxes that hides and why, and how many arrows.
+// A function calling another that does it is hidden too: a mark comes from a box's own code.
+export function showing(kinds, hidden, arrows, looks) {
+  const head = `Showing functions and classes whose own code ${what(kinds)}, and the boxes that hold them.`;
+  if (!hidden.length && !arrows) return `${head} Hiding nothing.`;
+  const [checked, other] = [hidden.filter((h) => h.checked), hidden.filter((h) => !h.checked)];
+  const parts = [head];
+  if (checked.length) parts.push(`Hiding ${count(checked.length, "function or class", "functions and classes")} where asBuilt found none of it: ${list(checked)}.`);
+  if (other.length) parts.push(`Hiding ${count(other.length, "other box", "other boxes")} with no such function or class inside: ${list(other)}.`);
+  if (checked.length || other.length) parts.push(looked(kinds, looks));
+  if (arrows) parts.push(`Also hiding ${count(arrows, "arrow that does", "arrows that do")} not join two shown functions or classes.`);
+  return parts.join(" ");
 }

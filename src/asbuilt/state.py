@@ -2,6 +2,8 @@ import contextlib
 import json
 import traceback
 
+from asbuilt.marks import LOOKS_FOR
+
 FALLBACK = "The plan could not be read."
 NOT_SENDABLE = "The plan could not be sent to the page. Look for NaN, Infinity or a number too large to hold."
 
@@ -20,7 +22,8 @@ def _message(source):
     except PlanError as exc:
         return _error(str(exc))
     try:
-        return json.dumps({"ok": True, "plan": plan}, allow_nan=False)
+        # looks: what each mark is checked for, so the page can say what a missing mark means.
+        return json.dumps({"ok": True, "plan": plan, "looks": LOOKS_FOR}, allow_nan=False)
     except Exception:  # NaN, Infinity or an overflowed number (the one place they are refused), or not JSON at all
         return _error(NOT_SENDABLE)
 

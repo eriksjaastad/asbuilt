@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from asbuilt.built import python_dir, python_file
+from asbuilt.marks import LOOKS_FOR
 
 
 def _badges(source, label):
@@ -184,3 +185,42 @@ class MarkTest(unittest.TestCase):
         self.assertIn("env", found["ask()"])
         self.assertNotIn("calls out", found["ask()"])
         self.assertIn("writes", found["write_atomic()"])
+
+
+# One function body per listed write, since a write is a call shape, not a module path.
+_WRITE_SAMPLES = {
+    "open() with a write mode": "open('p', 'w')",
+    "os.fdopen() with a write mode": "os.fdopen(3, 'w')",
+    "a .open() method with a write mode": "p.open('w')",
+    ".write_text()": "p.write_text('hi')",
+    ".write_bytes()": "p.write_bytes(b'hi')",
+}
+
+
+def _calling(name):
+    """A function whose body calls the dotted name, with its top module imported."""
+    return f"import {name.split('.')[0]}\nimport os\ndef f(p):\n    return {name}()\n"
+
+
+class LooksForTest(unittest.TestCase):
+    """What the page says asBuilt looks for is exactly what marks.py marks."""
+
+    def test_every_listed_name_is_marked(self):
+        self.assertEqual(sorted(_WRITE_SAMPLES), sorted(LOOKS_FOR["writes"]))
+        for kind, listed in LOOKS_FOR.items():
+            for name in listed:
+                with self.subTest(kind=kind, name=name):
+                    if kind == "writes":
+                        source = f"import os\ndef f(p):\n    return {_WRITE_SAMPLES[name]}\n"
+                    elif kind == "input":
+                        source = f"def f(p):\n    return {name}\n"
+                    else:
+                        source = _calling(name)
+                    self.assertIn(kind, _badges(source, "f()"))
+
+    def test_calls_that_are_not_checked_are_not_marked_and_not_listed(self):
+        for name in ("subprocess.getoutput", "os.popen", "socket.gethostbyname", "shutil.copy", "urllib3.PoolManager"):
+            with self.subTest(name=name):
+                self.assertEqual(_badges(_calling(name), "f()"), [])
+                listed = [item for items in LOOKS_FOR.values() for item in items]
+                self.assertFalse(any(name == item or name.startswith(item + ".") for item in listed))

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { byMarks, carries, markCounts, showing, shown } from "../src/asbuilt/page/marks.js";
+import { byMarks, carries, hiddenBoxes, looked, markCounts, showing, shown } from "../src/asbuilt/page/marks.js";
 import { pipeline } from "../src/asbuilt/page/pipeline.js";
+
+// The shape marks.py LOOKS_FOR sends. Its names are checked against marks.py in test_marks.py.
+const looks = {
+  env: ["os.environ", "os.getenv"],
+  input: ["input()"],
+  writes: ["open() with a write mode", "os.fdopen() with a write mode", "a .open() method with a write mode", ".write_text()", ".write_bytes()"],
+  "calls out": ["requests", "httpx", "urllib.request", "http.client", "os.system", "subprocess.run"],
+  model: ["openai", "anthropic"],
+};
 
 const badge = (id, badges) => ({ id, asbuilt: { badges } });
 const plan = {
@@ -68,13 +77,59 @@ test("marks and the pipeline both apply: a box has to be reached and carry a cho
   assert.equal(ids(both).includes("local"), false);
 });
 
-test("the line names every chosen mark, and says any of them when there are several", () => {
-  assert.equal(showing(["env"], 2, 1), "Showing boxes with env. Hiding 2 boxes and 1 arrow.");
-  assert.equal(showing(["calls out", "env"], 2, 2), "Showing boxes with any of: env, calls out. Hiding 2 boxes and 2 arrows.");
-  assert.equal(showing(["env"], 0, 0), "Showing boxes with env. Hiding nothing.");
-  assert.equal(carries(["input"]), "No box here carries input.");
-  assert.equal(carries(["env", "calls out"]), "No box here carries any of: env, calls out.");
-  assert.equal(carries(["model"], "main()"), "No box in what main() reaches carries model.");
+test("the line says in plain words what is shown, which boxes are hidden and why", () => {
+  const fn = (name) => ({ name, checked: true });
+  assert.equal(showing(["env"], [fn("a()"), fn("b()")], 1, looks), "Showing functions and classes whose own code uses environment settings, and the boxes that hold them. Hiding 2 functions and classes where asBuilt found none of it: a(), b(). It looks only in functions and classes, for: os.environ, os.getenv. Also hiding 1 arrow that does not join two shown functions or classes.");
+  assert.equal(showing(["calls out", "env"], [fn("a()")], 0, looks), "Showing functions and classes whose own code uses environment settings or talks to the network or runs programs, and the boxes that hold them. Hiding 1 function or class where asBuilt found none of it: a(). It looks only in functions and classes, for: os.environ, os.getenv; requests, httpx, urllib.request, http.client, os.system, subprocess.run.");
+  assert.equal(showing(["env"], [], 0, looks), "Showing functions and classes whose own code uses environment settings, and the boxes that hold them. Hiding nothing.");
+  assert.equal(showing(["writes"], ["a", "b", "c", "d", "e", "f", "g", "h"].map(fn), 2, looks), "Showing functions and classes whose own code writes files, and the boxes that hold them. Hiding 8 functions and classes where asBuilt found none of it: a, b, c, d, e, f, and 2 more. It looks only in functions and classes, for: open() with a write mode, os.fdopen() with a write mode, a .open() method with a write mode, .write_text(), .write_bytes(). Also hiding 2 arrows that do not join two shown functions or classes.");
+  assert.equal(carries(["input"], null, looks), "asBuilt found no function or class here whose own code asks a person to type. It looks only in functions and classes, for: input().");
+  assert.equal(carries(["env", "calls out"], null, looks), "asBuilt found no function or class here whose own code uses environment settings or talks to the network or runs programs. It looks only in functions and classes, for: os.environ, os.getenv; requests, httpx, urllib.request, http.client, os.system, subprocess.run.");
+  assert.equal(carries(["model"], "main()", looks), "asBuilt found no function or class in what main() reaches whose own code uses the OpenAI or Anthropic library. It looks only in functions and classes, for: openai, anthropic.");
+});
+
+test("a file whose top-level code was never checked is not said to lack the mark", () => {
+  // top.py has KEY = os.environ["K"] at top level: no box carries that code, so no mark is proven for it.
+  const files = {
+    id: "app",
+    children: [
+      { id: "top.py", labels: [{ text: "top.py" }], children: [{ id: "f", labels: [{ text: "f()" }], asbuilt: { text: "def f():\n    pass\n" } }] },
+      { id: "env.py", labels: [{ text: "env.py" }], children: [{ id: "g", labels: [{ text: "g()" }], asbuilt: { text: "def g():\n    os.environ['K']\n", badges: ["env"] } }] },
+    ],
+  };
+  const hidden = hiddenBoxes(files, ["env.py", "g"]);
+  assert.deepEqual(hidden, [{ name: "top.py", checked: false }, { name: "f()", checked: true }]);
+  const line = showing(["env"], hidden, 0, looks);
+  assert.equal(line, "Showing functions and classes whose own code uses environment settings, and the boxes that hold them. Hiding 1 function or class where asBuilt found none of it: f(). Hiding 1 other box with no such function or class inside: top.py. It looks only in functions and classes, for: os.environ, os.getenv.");
+  assert.equal(line.includes("does not"), false);
+});
+
+test("hidden boxes that share a label are told apart by the box that holds them", () => {
+  const run = (id) => ({ id, labels: [{ text: "run()" }], asbuilt: { text: "def run():\n    pass\n" } });
+  const files = { id: "app", children: [{ id: "a.py", children: [run("a")] }, { id: "b.py", children: [run("b"), { id: "solo", labels: [{ text: "solo()" }], asbuilt: { text: "" } }] }] };
+  assert.deepEqual(hiddenBoxes(files, ["a.py", "b.py"]).map((h) => h.name), ["run() in a.py", "run() in b.py", "solo()"]);
+  files.children[1].children.push(run("b2"));
+  assert.match(showing(["env"], hiddenBoxes(files, ["a.py", "b.py"]), 0, looks), /where asBuilt found none of it: run\(\) in a\.py, run\(\) in b\.py \(2\), solo\(\)\./);
+});
+
+test("what asBuilt does not look for is never said to be absent from the code", () => {
+  // The shape asbuilt.built gives this probe: os.popen, aiohttp, f.write, shutil.copy and urllib3
+  // are not looked for, so a() to e() carry no mark; g() reads os.getenv.
+  const fn = (id, body, badges) => ({ id, labels: [{ text: `${id}()` }], asbuilt: { text: `def ${id}():\n    ${body}\n`, ...(badges ? { badges } : {}) } });
+  const probe = { id: "app", children: [{ id: "probe.py", labels: [{ text: "probe.py" }], children: [
+    fn("a", 'os.popen("ls")'), fn("b", "aiohttp.ClientSession()"), fn("c", 'f.write("hi")'),
+    fn("d", 'shutil.copy("x", "y")'), fn("e", "urllib3.PoolManager()"), fn("g", 'os.getenv("K")', ["env"]),
+  ] }] };
+  assert.deepEqual(markCounts(probe), { env: 1, input: 0, writes: 0, "calls out": 0, model: 0 });
+  const texts = [
+    showing(["env"], hiddenBoxes(probe, ["probe.py", "g"]), 0, looks),
+    carries(["calls out"], null, looks), carries(["writes"], null, looks), looked(["calls out"], looks), looked(["writes"], looks),
+  ];
+  for (const text of texts) assert.doesNotMatch(text, /does not|doesn't|do not|does this|has no/, text);
+  assert.match(texts[0], /where asBuilt found none of it: a\(\), b\(\), c\(\), d\(\), e\(\)\./);
+  assert.match(texts[1], /^asBuilt found no function or class here/);
+  assert.equal(looked(["calls out"], {}), "It looks only in functions and classes.");
+  assert.ok(texts[3].includes("requests, httpx, urllib.request, http.client, os.system, subprocess.run"));
 });
 
 test("a mark button's count is how many boxes in this view prove it", () => {
