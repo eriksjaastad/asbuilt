@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from asbuilt.components import find, main
+from asbuilt.components import NO_PATH, find, main, summary
 
 MAIN = 'if __name__ == "__main__":\n    main()\n'
 
@@ -32,7 +32,7 @@ def boxes(result):
     seen = {}
     places = [(c["name"], c["members"]) for c in result["components"]]
     places += [(s["name"], s["members"]) for s in result["shared"]]
-    places += [("unreached", result["unreached"])]
+    places += [(NO_PATH, result["no_path_found"])]
     for box, members in places:
         for m in members:
             assert m["id"] not in seen, m
@@ -65,7 +65,7 @@ class EntryPointTest(unittest.TestCase):
         )
         self.assertEqual([(c["name"], c["ways_in"]) for c in result["components"]], [("tool", ["python -m tool"])])
         self.assertEqual(result["entries_reaching_nothing"], ["python -m other"])
-        self.assertEqual(boxes(result)["not.py:f"], "unreached")
+        self.assertEqual(boxes(result)["not.py:f"], NO_PATH)
 
     def test_a_click_group_its_subgroups_and_the_main_block_calling_it_are_one_component(self):
         result = found(
@@ -83,7 +83,7 @@ class EntryPointTest(unittest.TestCase):
         for name in ("cli", "add", "sub", "deep", "main"):
             self.assertEqual(where[f"cli.py:{name}"], "cli", name)
         self.assertEqual(where["more.py:extra"], "cli")  # added with add_command
-        self.assertEqual(where["cli.py:odd"], "unreached")
+        self.assertEqual(where["cli.py:odd"], NO_PATH)
         self.assertEqual(
             result["not_proven"], ["@thing.command on odd() in cli.py: thing is not proven to be a click group"]
         )
@@ -117,16 +117,24 @@ class MembershipTest(unittest.TestCase):
         "mine.py": "def own(x):\n    pass\n",
     }
 
-    def test_a_file_one_component_reaches_is_in_it_and_one_two_reach_is_a_shared_box(self):
+    def test_code_one_component_reaches_is_in_it_and_code_two_reach_is_a_shared_box_by_file(self):
         result = found(self.FILES)
         one = next(c for c in result["components"] if c["name"] == "one")
         why = {m["name"]: m["why"] for m in one["members"]}
-        self.assertEqual(why, {"main()": "entry point", "run()": "reached from main()", "own()": "reached from main() via run()"})
+        self.assertEqual(
+            why,
+            {
+                "main()": "entry point",
+                "run()": "reached from main()",
+                "solo()": "reached from main() via run()",  # its file is shared, but only one reaches it
+                "own()": "reached from main() via run()",
+            },
+        )
         (lib,) = result["shared"]
         self.assertEqual((lib["name"], lib["used_by"]), ("lib.py, used by one, two", ["one", "two"]))
-        # solo() is reached by one alone but lives in a shared file, so it is in the file's box.
-        self.assertEqual({m["name"]: sorted(m["used_by"]) for m in lib["members"]}, {"helper()": ["one", "two"], "solo()": ["one"]})
-        self.assertEqual([m["name"] for m in result["unreached"]], ["dead()"])
+        # helper() is reached by two components, so it stays shared.
+        self.assertEqual({m["name"]: sorted(m["used_by"]) for m in lib["members"]}, {"helper()": ["one", "two"]})
+        self.assertEqual([m["name"] for m in result["no_path_found"]], ["dead()"])
 
     def test_an_entry_function_stays_in_its_component_when_its_file_is_shared(self):
         result = found(
@@ -139,15 +147,45 @@ class MembershipTest(unittest.TestCase):
         self.assertEqual((where["a.py:main"], where["b.py:main"]), ("a", "b"))
         self.assertEqual(where["a.py:helper"], "a.py, used by a, b")
 
-    def test_arrows_run_between_boxes_and_name_data_only_from_annotations(self):
+    def test_arrows_run_between_boxes_and_give_only_what_the_callee_declares(self):
         result = found(self.FILES)
         arrows = {(a["from"], a["to"]): a["calls"] for a in result["arrows"]}
+        self.assertEqual(arrows[("one", "lib.py, used by one, two")], [{"from": "run()", "to": "helper()", "callee_declares": "-> int"}])
         self.assertEqual(
-            arrows[("one", "lib.py, used by one, two")],
-            [{"from": "run()", "to": "helper()", "data": "-> int"}, {"from": "run()", "to": "solo()", "data": "x: int"}],
+            arrows[("two", "lib.py, used by one, two")], [{"from": "main()", "to": "helper()", "callee_declares": "-> int"}]
         )
-        self.assertEqual(arrows[("two", "lib.py, used by one, two")], [{"from": "main()", "to": "helper()", "data": "-> int"}])
-        self.assertEqual(len(arrows), 2)  # run() -> own() stays inside one
+        self.assertEqual(len(arrows), 2)  # run() -> solo() and run() -> own() stay inside one
+        text = summary(result)
+        self.assertIn("run() -> helper() [callee declares -> int]", text)
+        self.assertNotIn("data", text)
+
+    def test_a_call_in_module_level_code_counts_once_its_file_is_reached(self):
+        result = found(
+            {
+                "tool.py": "from lib import use\ndef main():\n    use()\n" + MAIN,
+                "lib.py": "def _dotted(x):\n    return x\nTABLE = _dotted(1)\ndef use():\n    pass\n",
+                "lone.py": "def made():\n    pass\nTHING = made()\n",
+            }
+        )
+        (tool,) = result["components"]
+        why = {m["name"]: m["why"] for m in tool["members"]}
+        self.assertEqual(why["_dotted()"], "reached from main() via use(), loading lib.py")
+        # lone.py is loaded by nothing found, so made() has no path, though a call to it exists.
+        self.assertEqual([m["name"] for m in result["no_path_found"]], ["made()"])
+
+    def test_code_with_no_found_path_is_never_called_unreached_or_unused(self):
+        result = found(
+            {
+                "tool.py": "def _open(u):\n    pass\nclass Opener:\n    opener = None\n"
+                "    def go(self):\n        return (self.opener or _open)(1)\n"
+                "def main():\n    Opener().go()\n" + MAIN,
+            }
+        )
+        self.assertEqual([m["name"] for m in result["no_path_found"]], ["_open()"])
+        text = summary(result)
+        self.assertIn(f"{NO_PATH}: 1\n  tool.py: _open()", text)
+        self.assertNotIn("unreached", text)
+        self.assertNotIn("unused", text)
 
     def test_every_box_lands_in_exactly_one_box_on_random_call_graphs(self):
         rand = random.Random(9089)
@@ -162,7 +200,7 @@ class MembershipTest(unittest.TestCase):
             files["k.py"] = "class K:\n    pass\n"
             result = found(files)
             self.assertEqual(len(boxes(result)), n + 1)
-            self.assertEqual(boxes(result)["k.py:K"], "unreached")
+            self.assertEqual(boxes(result)["k.py:K"], NO_PATH)
 
 
 class MainTest(unittest.TestCase):
@@ -174,10 +212,26 @@ class MainTest(unittest.TestCase):
                 code = main([str(root), str(Path(tmp.name) / "c.json")])
             self.assertEqual(code, 0, err.getvalue())
             self.assertEqual(len(json.loads((Path(tmp.name) / "c.json").read_text())["components"]), 2)
-            self.assertTrue(out.getvalue().startswith("2 components, 1 shared files, unreached 1\n"))
+            self.assertTrue(out.getvalue().startswith(f"2 components, 1 shared files, {NO_PATH} 1\n"))
             with contextlib.redirect_stderr(err):
                 self.assertEqual(main([str(root), str(Path(tmp.name) / "c.py")]), 2)
             self.assertFalse((Path(tmp.name) / "c.py").exists())
+
+    def test_a_missing_path_exits_2_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = main([str(Path(tmp) / "nope"), str(Path(tmp) / "c.json")])
+            self.assertEqual(code, 2)
+            self.assertIn("nope: no such file or folder", err.getvalue())
+            self.assertFalse((Path(tmp) / "c.json").exists())
+
+    def test_a_file_that_does_not_parse_is_named_not_dropped(self):
+        result = found({"bad.py": "def f(:\n", "good.py": "def main():\n    pass\n" + MAIN})
+        self.assertEqual([c["name"] for c in result["components"]], ["good"])
+        (note,) = result["files_not_read"]
+        self.assertTrue(note.startswith("bad.py: does not parse: line 1"), note)
+        self.assertIn("files not read: 1\n  bad.py: does not parse", summary(result))
 
 
 if __name__ == "__main__":

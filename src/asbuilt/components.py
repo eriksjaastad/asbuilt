@@ -10,11 +10,15 @@ click group with every command and group under it, a web app with every router i
 module level, and entry points that share a function, or whose code calls a click group's own
 function, are one component listing each way in.
 
-A component holds what its entry functions reach along the arrows asbuilt.built proves. Code is
-grouped by file: a file reached by one component is in it, and a file reached by two or more is
-a shared box named by the file, except that an entry function stays in its component. A function
-or class reached by none is unreached. Each is in exactly one box. An arrow between boxes lists
-the calls, and names the data only as the callee's annotations say it, else none. Argparse
+A component holds what its entry functions reach along the arrows asbuilt.built proves, plus
+what a file's module-level code calls once a component reaches anything in that file, since
+loading the file runs that code. A function or class reached from exactly one component is in
+that component. One reached from two or more is in a shared box, one per file, named by the file
+and the components that reach its code. One no component reaches is listed as having no path
+from an entry point that asBuilt found, which does not mean it is never run: a call through a
+variable, an argument or `or` is not followed. Each is in exactly one box. An arrow between
+boxes lists the calls, each with the annotations the called function declares, if any; they
+are its declared signature, not proof of what is passed. Argparse
 subcommands, scheduled jobs and routers added in a function are not looked for; a decorator
 that looks like a command or route but is not proven is listed as not proven."""
 
@@ -36,6 +40,7 @@ APPS = {("fastapi", "FastAPI"), ("fastapi", "APIRouter"), ("flask", "Flask"), ("
 VERBS = {"get", "post", "put", "patch", "delete", "route", "api_route", "websocket"}
 HOOKS = {"exception_handler", "middleware", "on_event", "errorhandler", "before_request", "after_request"}
 INCLUDE = {"include_router", "register_blueprint"}
+NO_PATH = "no path from an entry point found by asBuilt"
 
 
 def _scripts(folder):
@@ -44,7 +49,8 @@ def _scripts(folder):
         file = parent / "pyproject.toml"
         if file.is_file():
             try:
-                scripts = tomllib.loads(file.read_text()).get("project", {}).get("scripts", {})
+                with file.open("rb") as fh:
+                    scripts = tomllib.load(fh).get("project", {}).get("scripts", {})
             except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
                 raise PlanError(f"{file} cannot be read: {exc}") from None
             return [(name, *spec.partition(":")[::2]) for name, spec in scripts.items()]
@@ -61,8 +67,9 @@ def _is_main(node):
     return sides == ['"__main__"', "__name__"] and ops == ["=="]
 
 
-def _data(node):
-    """A function's annotations as written ("plan: Path -> dict"), or None when it has none."""
+def _declared(node):
+    """A function's annotations as written ("plan: Path -> dict"), or None when it has none:
+    its declared signature, not proof of what a caller passes."""
     params = node.child_by_field_name("parameters")
     typed = [c.text.decode() for c in params.named_children if c.type.startswith("typed")]
     ret = node.child_by_field_name("return_type")
@@ -72,8 +79,9 @@ def _data(node):
 
 def _entries(path):
     """The charted boxes, arrows and nodes; each entry point as (key, way in, roots, name hint);
-    the click groups (child -> parent), the routers an app includes (router -> app), and the
-    decorators that look like entry points but are not proven."""
+    the click groups (child -> parent), the routers an app includes (router -> app), the
+    decorators that look like entry points but are not proven, {file: boxes its module-level
+    code calls}, and each file not read with why."""
     if path.is_dir():
         box, _ = python_dir(path)
         files = _py_files(path)[0]
@@ -82,12 +90,14 @@ def _entries(path):
     found, index, modules, scopes = links(box, files, box["id"])
     by_module = {mod: rel for rel, mod in modules.items() if mod}
     names, edges, nodes, entries, apps, looks, included, adds = {}, [], {}, [], set(), [], {}, []
+    loads, unread = {}, []
     for rel, file in files:
         root = tree(read_bytes(file))
         fbox = found[rel]
         names.update((c["id"], c["labels"][0]["text"]) for c in fbox.get("children", []))
         edges += [(e["sources"][0], e["targets"][0]) for e in fbox.get("edges", [])]
         if root is None:
+            unread.append(f"{rel}: {fbox['labels'][-1]['text']}")
             continue
         scope, mod, init = scopes[rel], modules.get(rel), rel.endswith("__init__.py")
         defs = {f"{rel}:{d[0]}:{d[2]}": d[4] for d in _definitions(root)}
@@ -119,6 +129,9 @@ def _entries(path):
 
         run = f"python -m {'.'.join(mod)}" if mod else f"python {rel}"
         hint = mod[-2] if mod and len(mod) > 1 and rel.endswith("__main__.py") else mod[-1] if mod else Path(rel).stem
+        top = ("function_definition", "class_definition", "decorated_definition")
+        code = [n for n in root.named_children if n.type not in top and not (n.type == "if_statement" and _is_main(n))]
+        loads[rel] = [r for n in code for r in reach(n)]  # what loading the file calls
         if rel.endswith("__main__.py"):  # its top-level defs are boxes of their own, not this entry
             code = [n for n in root.named_children if n.type not in ("function_definition", "class_definition", "decorated_definition")]
             entries.append((("main", rel), run.removesuffix(".__main__"), [r for n in code for r in reach(n)], (1, hint)))
@@ -190,15 +203,22 @@ def _entries(path):
         return f"@{name}.{kind} on {names[cid]} in {rel}: {name} is not proven to be {what}"
 
     unproven = [why_not(*m) for m in looks if m not in proven]
-    return names, edges, nodes, entries, parent, {k: v for k, v in included.items() if k in apps}, unproven
+    included = {k: v for k, v in included.items() if k in apps}
+    return names, edges, nodes, entries, parent, included, unproven, loads, unread
 
 
 def find(path):
     """The component list of a folder or file, as a dict ready to write as JSON."""
-    names, edges, nodes, entries, parent, included, unproven = _entries(path)
+    names, edges, nodes, entries, parent, included, unproven, loads, unread = _entries(path)
+    file_of = lambda box: box.rsplit(":", 2)[0]  # noqa: E731
     after = {}
     for a, b in edges:
         after.setdefault(a, []).append(b)
+    for box in names:  # reaching a box loads its file, which runs the file's module-level code
+        if loads.get(file_of(box)):
+            after.setdefault(box, []).append(f"loading {file_of(box)}")
+    for rel, called in loads.items():
+        after[f"loading {rel}"] = called
 
     def walk(roots):
         """{box: path from a root} for every box the roots reach along the arrows."""
@@ -259,25 +279,21 @@ def find(path):
             why.setdefault(box, {})[name] = chain
 
     def because(chain):
-        via = f" via {', '.join(names[p] for p in chain[1:-1])}" if len(chain) > 2 else ""
+        via = f" via {', '.join(names.get(p, p) for p in chain[1:-1])}" if len(chain) > 2 else ""
         return "entry point" if len(chain) == 1 else f"reached from {names[chain[0]]}{via}"
 
-    file_of = lambda box: box.rsplit(":", 2)[0]  # noqa: E731
-    users = {}
+    users = {}  # file -> the components reaching code of it that two or more reach
     for box, held in why.items():
-        users.setdefault(file_of(box), set()).update(held)
-    roots = {r: c["name"] for c in comps for r in c["roots"] if len(why[r]) == 1}
-    libs = [f for f, used in users.items() if len(used) > 1]
-    short = {f: f.rsplit("/", 1)[-1] for f in libs}  # the file's name, or its path when two share it
+        if box in names and len(held) > 1:
+            users.setdefault(file_of(box), set()).update(held)
+    short = {f: f.rsplit("/", 1)[-1] for f in users}  # the file's name, or its path when two share it
     short = {f: n if list(short.values()).count(n) == 1 else f for f, n in short.items()}
 
     def place(box):
-        if box not in why:
-            return "unreached"
-        if box in roots:
-            return roots[box]
-        used = users[file_of(box)]
-        return next(iter(used)) if len(used) == 1 else f"{short[file_of(box)]}, used by {', '.join(sorted(used))}"
+        held = why.get(box, {})
+        if len(held) < 2:
+            return next(iter(held), NO_PATH)
+        return f"{short[file_of(box)]}, used by {', '.join(sorted(users[file_of(box)]))}"
 
     group = {box: place(box) for box in names}
     for comp in comps:
@@ -286,35 +302,36 @@ def find(path):
         ]
     shared = {}
     for b in names:
-        if group[b] not in [c["name"] for c in comps] and group[b] != "unreached":
+        if group[b] not in [c["name"] for c in comps] and group[b] != NO_PATH:
             box = shared.setdefault(group[b], {"name": group[b], "file": file_of(b), "used_by": sorted(users[file_of(b)]), "members": []})
             box["members"].append({"id": b, "name": names[b], "used_by": {c: because(p) for c, p in why[b].items()}})
     arrows = {}
     for a, b in edges:
         if group[a] != group[b]:
             call = {"from": names[a], "to": names[b]}
-            data = _data(nodes[b]) if nodes[b].type == "function_definition" else None
-            if data:
-                call["data"] = data
+            declared = _declared(nodes[b]) if nodes[b].type == "function_definition" else None
+            if declared:
+                call["callee_declares"] = declared
             arrows.setdefault((group[a], group[b]), []).append(call)
     return {
         "components": comps,
         "shared": list(shared.values()),
-        "unreached": [{"id": b, "name": names[b]} for b in names if group[b] == "unreached"],
+        "no_path_found": [{"id": b, "name": names[b]} for b in names if group[b] == NO_PATH],
         "arrows": [{"from": a, "to": b, "calls": calls} for (a, b), calls in arrows.items()],
         "entries_reaching_nothing": nothing,
         "not_proven": unproven,
+        "files_not_read": unread,
     }
 
 
 def summary(found):
     """The component list as short text, for a person to judge the boxes."""
     file = lambda m: m["id"].rsplit(":", 2)[0]  # noqa: E731
-    comps, shared, unreached = found["components"], found["shared"], found["unreached"]
-    lines = [f"{len(comps)} components, {len(shared)} shared files, unreached {len(unreached)}", ""]
+    comps, shared, none = found["components"], found["shared"], found["no_path_found"]
+    lines = [f"{len(comps)} components, {len(shared)} shared files, {NO_PATH} {len(none)}", ""]
     lines += [f"  {c['name']}: {len(c['members'])}" for c in comps]
     lines += [f"  {s['name']}: {len(s['members'])}" for s in shared]
-    lines += [f"  unreached: {len(unreached)}", "", f"arrows between boxes: {len(found['arrows'])}"]
+    lines += [f"  {NO_PATH}: {len(none)}", "", f"arrows between boxes: {len(found['arrows'])}"]
     lines += [f"  {a['from']} -> {a['to']}: {len(a['calls'])} calls" for a in found["arrows"]]
     for comp in comps:
         lines += ["", f"{comp['name']}: {len(comp['members'])} members", "  ways in:"]
@@ -325,14 +342,18 @@ def summary(found):
         for m in box["members"]:
             lines.append(f"  {m['name']}: " + "; ".join(f"{c} {w}" for c, w in m["used_by"].items()))
     by_file = {}
-    for m in unreached:
+    for m in none:
         by_file.setdefault(file(m), []).append(m["name"])
-    lines += ["", f"unreached: {len(unreached)}"] + [f"  {f}: {', '.join(n)}" for f, n in by_file.items()]
+    lines += ["", f"{NO_PATH}: {len(none)}"] + [f"  {f}: {', '.join(n)}" for f, n in by_file.items()]
     lines += ["", "calls between boxes:"]
     for arrow in found["arrows"]:
-        calls = ", ".join(f"{c['from']} -> {c['to']}" + (f" [{c['data']}]" if "data" in c else "") for c in arrow["calls"])
+        calls = ", ".join(f"{c['from']} -> {c['to']}" + (f" [callee declares {c['callee_declares']}]" if "callee_declares" in c else "") for c in arrow["calls"])
         lines.append(f"  {arrow['from']} -> {arrow['to']}: {calls}")
-    for title, items in (("entry points reaching no charted function", found["entries_reaching_nothing"]), ("not proven", found["not_proven"])):
+    for title, items in (
+        ("entry points reaching no charted function", found["entries_reaching_nothing"]),
+        ("not proven", found["not_proven"]),
+        ("files not read", found["files_not_read"]),
+    ):
         if items:
             lines += ["", f"{title}: {len(items)}"] + [f"  {i}" for i in items]
     return "\n".join(lines)
