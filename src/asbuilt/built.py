@@ -182,44 +182,66 @@ def pattern(node):
 
 def _scoped(node, extra):
     """Names a lambda or a comprehension binds, added to the names already bound outside it."""
-    names = set(extra)
+    names = dict(extra)
     if node.type == "lambda":
         params = next((c for c in node.named_children if c.type == "lambda_parameters"), None)
         for child in params.named_children if params is not None else ():
             name = one_name(child)
             if name is not None:
-                names.add(name)
+                names[name] = None
     else:
         for clause in node.named_children:
             if clause.type == "for_in_clause":
-                names.update(pattern(next(iter(clause.named_children), None)))
+                names.update(dict.fromkeys(pattern(next(iter(clause.named_children), None))))
     return names
 
 
-def _direct_calls(node, scope, attrs=None):
-    """Bare names called in `node`'s body, ignoring names bound there. A call on an attribute
-    is recorded in `attrs` as (object, name) when the object is a bare name; a chain is not.
-    A call inside a nested function or class is skipped."""
-    body = node.child_by_field_name("body")
-    found, todo = [], [(c, scope) for c in reversed(body.children)] if body is not None else []
-    nested = ("function_definition", "class_definition", "decorated_definition")
+def _direct_calls(node, local, attrs=None):
+    """(name, spec) for each bare name called in `node`'s body, in the functions and classes
+    nested there too, so a call in a method or an inner function belongs to this box.
+    `local(scope)` maps the names a function or class binds to how: one import's spec, or None
+    for any other binding, which is then not the call. spec is the innermost import that binds
+    the name, or None when no enclosing scope binds it. A method does not see its class body's
+    names, as in Python. A call on an attribute is recorded in `attrs` as (object, name, spec)
+    when the object is a bare name; a chain is not."""
+    nested = ("function_definition", "class_definition")
     comps = ("list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression")
+    found, todo = [], []
+
+    def enter(scope, names, inherit):
+        # The head (defaults, bases) runs where the def is; the body runs in its own scope.
+        body = scope.child_by_field_name("body")
+        if scope is not node:
+            todo.extend((c, names, inherit) for c in reversed(scope.children) if c != body)
+        if body is not None:
+            inner = {**inherit, **local(scope)}
+            keep = inner if scope.type == "function_definition" else inherit
+            todo.extend((c, inner, keep) for c in reversed(body.children))
+
+    enter(node, {}, {})
     while todo:
-        cur, names = todo.pop()
+        cur, names, inherit = todo.pop()
         if cur.type in nested:
+            enter(cur, names, inherit)
             continue
         if cur.type == "lambda" or cur.type in comps:
-            todo.extend((c, _scoped(cur, names)) for c in reversed(cur.children))
+            todo.extend((c, _scoped(cur, names), inherit) for c in reversed(cur.children))
             continue
         if cur.type == "call":
+            # A name no enclosing scope binds is the module's (spec None). One bound by a single
+            # import there is that import. One bound any other way is not the call.
             fun = next(iter(cur.named_children), None)
-            if fun is not None and fun.type == "identifier" and fun.text.decode() not in names:
-                found.append(fun.text.decode())
+            if fun is not None and fun.type == "identifier":
+                how = names.get(fun.text.decode(), False)
+                if how is not None:
+                    found.append((fun.text.decode(), how or None))
             elif attrs is not None and fun is not None and fun.type == "attribute":
                 obj, attr = fun.child_by_field_name("object"), fun.child_by_field_name("attribute")
-                if obj is not None and obj.type == "identifier" and attr is not None and obj.text.decode() not in names:
-                    attrs.append((obj.text.decode(), attr.text.decode()))
-        todo.extend((c, names) for c in reversed(cur.children))
+                if obj is not None and obj.type == "identifier" and attr is not None:
+                    how = names.get(obj.text.decode(), False)
+                    if how is not None:
+                        attrs.append((obj.text.decode(), attr.text.decode(), how or None))
+        todo.extend((c, names, inherit) for c in reversed(cur.children))
     return found
 
 
@@ -256,7 +278,8 @@ def python_file(name, source):
     """The box for the Python file called `name` with these bytes, and its note if any: why
     Python does not accept them, else that they are not UTF-8 so not read, else that
     tree-sitter misreads code Python accepts. A file that reads cleanly holds a child box for
-    each top-level function and class, and an arrow for a direct call of one of those names.
+    each top-level function and class, and an arrow for a direct call of one of those names,
+    or `Cls.attr()` of a class among them, made in its body, a method, or an inner function.
     A parameter, local, import, with or except name, comprehension variable, or lambda
     parameter of that name is not the call. A default value is not a parameter, and global
     keeps the call. A name defined twice points at the last one, which is the one Python runs."""
@@ -302,8 +325,15 @@ def python_file(name, source):
                 }
             )
         edges, seen = [], set()
+        classes = {ident for ident, is_class, *_ in definitions if is_class} - {
+            ident for ident, is_class, *_ in definitions if not is_class
+        }
         for ident, _, start, _, node in definitions:
-            for callee in _direct_calls(node, bound(node)):
+            attrs = []
+            called = [c for c, how in _direct_calls(node, lambda d: dict.fromkeys(bound(d)), attrs) if how is None]
+            # `Cls.make()` uses the class box when Cls is only ever a class in this file.
+            called += [obj for obj, _, how in attrs if how is None and obj in classes]
+            for callee in called:
                 pair = (f"{ident}:{start}", callee)
                 if callee not in at or pair in seen:
                     continue  # a local, not a top-level box, or already drawn
@@ -448,10 +478,12 @@ def _client_spec(node, decided):
     return None if module is None else ("mod", module)
 
 
-def _scope(nodes, own, init):
+def _scope(nodes, own, init, local=False):
     """name -> ("from", module, original) or ("mod", module), or None when it is not one import.
 
     None means the name is bound some other way too, or only inside if/try, so it gets no arrow.
+    `local` is a function body: a name bound there only by one import, even inside if/try, can
+    only be called once that import ran, so the import is what it calls.
     One assignment of a marked constructor is that module; a second binding is not.
     Defs and classes count as bindings and are not entered."""
     decided = {}
@@ -480,9 +512,9 @@ def _scope(nodes, own, init):
         if kind in ("import_from_statement", "import_statement"):
             calls, mods = _imports([node], own, init)
             for name, pair in calls.items():
-                bind(name, None if conditional else ("from", pair[0], pair[1]))
+                bind(name, None if conditional and not local else ("from", pair[0], pair[1]))
             for name, mod in mods.items():
-                bind(name, None if conditional else ("mod", mod))
+                bind(name, None if conditional and not local else ("mod", mod))
             return
         if kind == "assignment":
             # One assignment of OpenAI(), Anthropic(), or requests.Session() is that module.
@@ -629,23 +661,24 @@ def _cross(rel, source, index, own, scopes, modules):
     defs = _definitions(root)
     edges, seen = [], set()
 
-    def use(fn_scope, name):
-        return fn_scope[name] if name in fn_scope else file_scope.get(name)
+    def local(scope):
+        # Imports in this function or class body resolve; any other binding hides the name.
+        body = scope.child_by_field_name("body")
+        stmts = list(body.named_children) if body is not None else []
+        inner = _scope(stmts, own, init, scope.type == "function_definition")
+        return {**inner, **dict.fromkeys(bound(scope, imports=False))}
 
     for ident, _, start, _, node in defs:
         src = f"{rel}:{ident}:{start}"
-        body = node.child_by_field_name("body")
-        stmts = list(body.named_children) if body is not None else []
-        fn_scope = _scope(stmts, own, init)
         attrs = []
-        for callee in _direct_calls(node, bound(node, imports=False), attrs):
-            spec = use(fn_scope, callee)
+        for callee, how in _direct_calls(node, local, attrs):
+            spec = how or file_scope.get(callee)
             target = None if not spec or spec[0] != "from" else _live(index, scopes, spec[1], spec[2])
             if target and (src, target) not in seen:
                 seen.add((src, target))
                 edges.append({"id": f"{src}>{target}", "sources": [src], "targets": [target]})
-        for obj, attr in attrs:
-            mod = _attr_mod(use(fn_scope, obj), scopes, modules)
+        for obj, attr, how in attrs:
+            mod = _attr_mod(how or file_scope.get(obj), scopes, modules)
             target = _live(index, scopes, mod, attr)
             if target and (src, target) not in seen:
                 seen.add((src, target))
