@@ -17,6 +17,7 @@ Status: the first view works. `asbuilt` draws a plan file as a hand-inked flowch
 browser and redraws it each time you save the file, and it can draw a planned chart and a built one
 as one chart, marked. It can also chart one Python file, or the Python files in one folder, and open a function's code
 beside the chart.
+JavaScript and TypeScript have a separate first-slice reader, described below.
 An agent drafting the plan and the note on why each part changed come later.
 
 ## Use it
@@ -53,6 +54,31 @@ A box you write before the code exists can be named `shop.py:load`: the file, th
 or class. The built chart uses that same id with the line number on the end (`shop.py:load:12`),
 which is how the code panel finds the lines. Compare matches the two, and the line number is
 not a difference.
+
+## Read JavaScript or TypeScript
+
+```
+uv run python -m asbuilt.javascript path/to/project built.json
+uv run asbuilt built.json
+```
+
+This first slice reads `.js`, `.jsx`, `.ts` and `.tsx`. Each file is a box, labelled with its
+relative path, and its top-level functions, classes and function-valued variables (including
+component functions) are boxes inside it. Clicking one opens its source using the same
+line-number IDs and code panel as Python. It never runs the project or calls a model.
+
+Arrows labelled “imports” connect files for relative ES-module imports. Call arrows connect
+unique local definitions, or exported definitions proved by named/default imports. An
+extensionless import resolves only when exactly one matching source file exists. Shadowed,
+reassigned or ambiguous names do not get call arrows. A malformed or unreadable file reports
+an error and leaves the previous output untouched; OUT must end in `.json`.
+
+Tests (`test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, `test_*`, `*_test`), dependency
+and generated folders, hidden paths, symlinks and `.d.ts` declarations are skipped. External
+packages are not charted. Files remain directly inside the project box in this first slice.
+Nested callbacks and methods, JSX render relationships, CommonJS, index resolution,
+re-exports, configured aliases, work badges and mixed Python/JS charts are not covered yet.
+JSX component functions are included, but a JSX use is not presented as a direct call.
 
 ## Read one Python file
 
@@ -123,5 +149,4 @@ uv run asbuilt noted.json
 
 Any other value, or leaving it unset, does not call out and adds no model notes. A reply that
 is not the notes asked for is thrown away and the output file is left unchanged. The model
-cannot add boxes. A function or class nested inside another is not its own box yet, and neither
-is a JavaScript file.
+cannot add boxes. A function or class nested inside another is not its own box yet.
