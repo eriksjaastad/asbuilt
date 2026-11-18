@@ -697,6 +697,13 @@ def _cross(rel, source, index, own, scopes, modules):
 def python_dir(folder):
     """One box for the folder, named with its real name so `.` is not blank. A file in the folder
     is `load.py:load`. A nested file is `sub/util.py:name`, inside a box for each directory."""
+    box, named, _, _ = python_dir_links(folder)
+    return box, named
+
+
+def python_dir_links(folder):
+    """python_dir's box and skipped names, plus the files and links() it was built from, so a
+    caller that needs them does not walk and parse the folder again."""
     try:
         name = folder.resolve().name
     except OSError as exc:
@@ -713,7 +720,7 @@ def python_dir(folder):
         extra = _cross(rel, read_bytes(path), index, modules.get(rel), scopes, modules)
         if extra:
             found[rel].setdefault("edges", []).extend(extra)
-    return box, named
+    return box, named, files, (found, index, modules, scopes)
 
 
 def links(box, files, name):

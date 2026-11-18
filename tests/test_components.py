@@ -107,6 +107,55 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(len(comps), 2)  # alone.py's router is included by nothing
         self.assertIn("other is not proven to be an app or router made in this file", result["not_proven"][0])
 
+    def test_bare_click_decorators_are_entry_points_and_a_bare_one_on_an_unknown_name_is_not_proven(self):
+        result = found(
+            {
+                "cli.py": "import click\n\n@click.group\ndef cli():\n    pass\n\n@cli.command\ndef add():\n    pass\n\n"
+                "@thing.command\ndef odd():\n    pass\n",
+            }
+        )
+        (comp,) = result["components"]
+        self.assertEqual(sorted(comp["ways_in"]), ["click command add() under cli() in cli.py", "click group cli() in cli.py"])
+        self.assertEqual(result["not_proven"], ["@thing.command on odd() in cli.py: thing is not proven to be a click group"])
+
+    def test_flask_blueprint_hooks_and_a_router_named_through_its_module(self):
+        result = found(
+            {
+                "web.py": "from flask import Flask\nimport views\napp = Flask(__name__)\n"
+                "app.register_blueprint(views.bp)\n\n@app.before_request\ndef check():\n    pass\n\n"
+                "@app.errorhandler(404)\ndef missing(e):\n    pass\n",
+                "views.py": 'from flask import Blueprint\nbp = Blueprint("v", __name__)\n\n@bp.route("/v")\ndef v():\n    pass\n',
+            }
+        )
+        (comp,) = result["components"]
+        self.assertEqual(
+            sorted(comp["ways_in"]),
+            [
+                'ROUTE "/v" on bp in views.py: v()',
+                "before_request on app in web.py: check()",
+                "errorhandler on app in web.py: missing()",
+            ],
+        )
+
+    def test_a_route_like_decorator_on_something_not_an_app_is_not_proven(self):
+        result = found({"x.py": 'import cache\n\n@cache.get("/a")\ndef a():\n    pass\n'})
+        self.assertEqual(result["components"], [])
+        self.assertEqual(
+            result["not_proven"], ["@cache.get on a() in x.py: cache is not proven to be an app or router made in this file"]
+        )
+        self.assertEqual(boxes(result)["x.py:a"], NO_PATH)
+
+    def test_a_console_script_pointing_nowhere_is_not_proven_and_starts_nothing(self):
+        result = found(
+            {
+                "pyproject.toml": '[project]\nname = "app"\n[project.scripts]\ngone = "app.missing:main"\n',
+                "app/__init__.py": "",
+                "app/cli.py": "def main():\n    pass\n",
+            }
+        )
+        self.assertEqual(result["components"], [])
+        self.assertEqual(result["not_proven"], ["console script gone = app.missing:main: not a function charted here"])
+
 
 class MembershipTest(unittest.TestCase):
     FILES = {
@@ -131,10 +180,24 @@ class MembershipTest(unittest.TestCase):
             },
         )
         (lib,) = result["shared"]
-        self.assertEqual((lib["name"], lib["used_by"]), ("lib.py, used by one, two", ["one", "two"]))
+        self.assertEqual((lib["name"], lib["used_by"]), ("lib.py", ["one", "two"]))
         # helper() is reached by two components, so it stays shared.
         self.assertEqual({m["name"]: sorted(m["used_by"]) for m in lib["members"]}, {"helper()": ["one", "two"]})
         self.assertEqual([m["name"] for m in result["no_path_found"]], ["dead()"])
+
+    def test_a_shared_box_is_named_by_its_file_and_each_member_lists_only_who_reaches_it(self):
+        result = found(
+            {
+                "one.py": "from lib import both, only\ndef main():\n    both()\n    only()\n" + MAIN,
+                "two.py": "from lib import both, also\ndef main():\n    both()\n    also()\n" + MAIN,
+                "lib.py": "def both():\n    inner()\ndef inner():\n    pass\ndef only():\n    pass\ndef also():\n    pass\n",
+            }
+        )
+        (lib,) = result["shared"]
+        self.assertEqual(lib["name"], "lib.py")
+        self.assertEqual({m["name"]: sorted(m["used_by"]) for m in lib["members"]}, {"both()": ["one", "two"], "inner()": ["one", "two"]})
+        where = boxes(result)
+        self.assertEqual((where["lib.py:only"], where["lib.py:also"]), ("one", "two"))
 
     def test_an_entry_function_stays_in_its_component_when_its_file_is_shared(self):
         result = found(
@@ -145,14 +208,14 @@ class MembershipTest(unittest.TestCase):
         )
         where = boxes(result)
         self.assertEqual((where["a.py:main"], where["b.py:main"]), ("a", "b"))
-        self.assertEqual(where["a.py:helper"], "a.py, used by a, b")
+        self.assertEqual(where["a.py:helper"], "a.py")
 
     def test_arrows_run_between_boxes_and_give_only_what_the_callee_declares(self):
         result = found(self.FILES)
         arrows = {(a["from"], a["to"]): a["calls"] for a in result["arrows"]}
-        self.assertEqual(arrows[("one", "lib.py, used by one, two")], [{"from": "run()", "to": "helper()", "callee_declares": "-> int"}])
+        self.assertEqual(arrows[("one", "lib.py")], [{"from": "run()", "to": "helper()", "callee_declares": "-> int"}])
         self.assertEqual(
-            arrows[("two", "lib.py, used by one, two")], [{"from": "main()", "to": "helper()", "callee_declares": "-> int"}]
+            arrows[("two", "lib.py")], [{"from": "main()", "to": "helper()", "callee_declares": "-> int"}]
         )
         self.assertEqual(len(arrows), 2)  # run() -> solo() and run() -> own() stay inside one
         text = summary(result)

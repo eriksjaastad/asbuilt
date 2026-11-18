@@ -13,8 +13,8 @@ function, are one component listing each way in.
 A component holds what its entry functions reach along the arrows asbuilt.built proves, plus
 what a file's module-level code calls once a component reaches anything in that file, since
 loading the file runs that code. A function or class reached from exactly one component is in
-that component. One reached from two or more is in a shared box, one per file, named by the file
-and the components that reach its code. One no component reaches is listed as having no path
+that component. One reached from two or more is in a shared box, one per file, named by the file;
+each member lists the components that reach it. One no component reaches is listed as having no path
 from an entry point that asBuilt found, which does not mean it is never run: a call through a
 variable, an argument or `or` is not followed. Each is in exactly one box. An arrow between
 boxes lists the calls, each with the annotations the called function declares, if any; they
@@ -29,8 +29,8 @@ import tomllib
 from pathlib import Path
 
 from asbuilt import output
-from asbuilt.built import _clashes, _definitions, _direct_calls, _live, _py_files, links
-from asbuilt.built import local_names, python_dir, python_file, targets, tree
+from asbuilt.built import _clashes, _definitions, _direct_calls, _live, links
+from asbuilt.built import local_names, python_dir_links, python_file, targets, tree
 from asbuilt.marks import resolve
 from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
@@ -41,6 +41,9 @@ VERBS = {"get", "post", "put", "patch", "delete", "route", "api_route", "websock
 HOOKS = {"exception_handler", "middleware", "on_event", "errorhandler", "before_request", "after_request"}
 INCLUDE = {"include_router", "register_blueprint"}
 NO_PATH = "no path from an entry point found by asBuilt"
+# A component is named after its way in that comes first here: a console script, a run file, a
+# top-level click group, a web app, then a click subgroup.
+SCRIPT, RUN, CLICK_TOP, WEB_APP, CLICK_SUB = range(5)
 
 
 def _scripts(folder):
@@ -83,11 +86,10 @@ def _entries(path):
     decorators that look like entry points but are not proven, {file: boxes its module-level
     code calls}, and each file not read with why."""
     if path.is_dir():
-        box, _ = python_dir(path)
-        files = _py_files(path)[0]
+        _, _, files, (found, index, modules, scopes) = python_dir_links(path)
     else:
         box, files = python_file(path.name, read_bytes(path)), [(path.name, path)]
-    found, index, modules, scopes = links(box, files, box["id"])
+        found, index, modules, scopes = links(box, files, box["id"])
     by_module = {mod: rel for rel, mod in modules.items() if mod}
     names, edges, nodes, entries, apps, looks, included, adds = {}, [], {}, [], set(), [], {}, []
     loads, unread = {}, []
@@ -130,14 +132,14 @@ def _entries(path):
         run = f"python -m {'.'.join(mod)}" if mod else f"python {rel}"
         hint = mod[-2] if mod and len(mod) > 1 and rel.endswith("__main__.py") else mod[-1] if mod else Path(rel).stem
         top = ("function_definition", "class_definition", "decorated_definition")
-        code = [n for n in root.named_children if n.type not in top and not (n.type == "if_statement" and _is_main(n))]
-        loads[rel] = [r for n in code for r in reach(n)]  # what loading the file calls
-        if rel.endswith("__main__.py"):  # its top-level defs are boxes of their own, not this entry
-            code = [n for n in root.named_children if n.type not in ("function_definition", "class_definition", "decorated_definition")]
-            entries.append((("main", rel), run.removesuffix(".__main__"), [r for n in code for r in reach(n)], (1, hint)))
+        code = [n for n in root.named_children if n.type not in top]  # defs are boxes of their own
+        loaded = [n for n in code if not (n.type == "if_statement" and _is_main(n))]
+        loads[rel] = [r for n in loaded for r in reach(n)]  # what loading the file calls
+        if rel.endswith("__main__.py"):
+            entries.append((("main", rel), run.removesuffix(".__main__"), [r for n in code for r in reach(n)], (RUN, hint)))
         for node in root.named_children:
             if node.type == "if_statement" and _is_main(node) and not rel.endswith("__main__.py"):
-                entries.append((("main", rel), run, reach(node.child_by_field_name("consequence")), (1, hint)))
+                entries.append((("main", rel), run, reach(node.child_by_field_name("consequence")), (RUN, hint)))
             stmt = node.named_children[0] if node.type == "expression_statement" else None
             if stmt is not None and stmt.type == "assignment":
                 right = stmt.child_by_field_name("right")
@@ -157,18 +159,19 @@ def _entries(path):
         for cid, node in defs.items():
             outer = node.parent
             for dec in outer.named_children if outer.type == "decorated_definition" else ():
-                call = dec.named_children[0]
-                fun = call.child_by_field_name("function") if call.type == "call" else None
+                call = dec.named_children[0]  # `@x.get("/a")`, or bare `@click.command`, with no arguments
+                bare = call.type in ("attribute", "identifier")
+                fun = call if bare else call.child_by_field_name("function") if call.type == "call" else None
                 if fun is not None and resolve(fun, scope) in CLICK:
                     looks.append((None, cid, fun.text.decode().split(".")[-1], rel))
                 elif fun is not None and fun.type == "attribute" and fun.child_by_field_name("object").type == "identifier":
                     obj = fun.child_by_field_name("object").text.decode()
                     verb = fun.child_by_field_name("attribute").text.decode()
-                    args = call.child_by_field_name("arguments").named_children
+                    args = [] if bare else call.child_by_field_name("arguments").named_children
                     at = f" {args[0].text.decode()}" if args and args[0].type == "string" else ""
                     if verb in VERBS | HOOKS and (rel, obj) in apps:
                         way = f"{verb.upper() if verb in VERBS else verb}{at} on {obj} in {rel}: {names[cid]}"
-                        entries.append((("routes", rel, obj), way, [cid], (3, f"web app {obj} in {rel}")))
+                        entries.append((("routes", rel, obj), way, [cid], (WEB_APP, f"web app {obj} in {rel}")))
                     elif verb in VERBS or verb in ("command", "group"):
                         looks.append((box_of(obj) or obj, cid, verb, rel))
     # A decorator on a group is a click one only once that group is proven; groups nest.
@@ -182,7 +185,7 @@ def _entries(path):
     proven = {m for m in looks if m[1] in parent and parent[m[1]] == m[0] and m[2] in ("command", "group")}
     for group, cid, kind, rel in sorted(proven, key=lambda m: m[1]):
         under = "" if group is None else f" under {names[group]}"
-        hint = (2 if group is None else 5, names[cid][:-2])  # a component is named by its outer group
+        hint = (CLICK_TOP if group is None else CLICK_SUB, names[cid][:-2])  # named by its outer group
         entries.append((("click", cid), f"click {kind} {names[cid]}{under} in {rel}", [cid], hint))
     for group, cid in adds:  # `cli.add_command(sub)` puts a proven command under a proven group
         if group in groups and cid != group and cid in parent and parent[cid] is None:
@@ -191,7 +194,7 @@ def _entries(path):
         for script, module, fn in _scripts(path):
             cid = _live(index, scopes, tuple(module.split(".")), fn)
             if cid:
-                entries.append((("script", cid), f"console script {script} = {module}:{fn}", [cid], (0, script)))
+                entries.append((("script", cid), f"console script {script} = {module}:{fn}", [cid], (SCRIPT, script)))
             else:
                 looks.append((f"{module}:{fn}", script, "script", "pyproject.toml"))
 
@@ -293,7 +296,7 @@ def find(path):
         held = why.get(box, {})
         if len(held) < 2:
             return next(iter(held), NO_PATH)
-        return f"{short[file_of(box)]}, used by {', '.join(sorted(users[file_of(box)]))}"
+        return short[file_of(box)]  # by file alone: each member lists the components reaching it
 
     group = {box: place(box) for box in names}
     for comp in comps:
