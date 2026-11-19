@@ -79,9 +79,11 @@ does not skip and list unparseable files as the Python reader does. That is foll
 Tests (`test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, `test_*`, `*_test`), dependency
 and generated folders, hidden paths, symlinks and `.d.ts` declarations are skipped. External
 packages are not charted. Files remain directly inside the project box in this first slice.
-Folder exclusions apply below the selected chart root, regardless of its location (for
-example, `/build/repo`). A single-file input applies the filename exclusions, not exclusions
-based on its ancestors.
+Directly naming a test/dependency folder or one of its files is refused too. An unrelated
+ancestor above the project root, such as `/build` in `/build/repo`, does not exclude the project.
+For a single file, the nearest Git checkout or otherwise the outermost enclosing `package.json`
+outside `node_modules` defines that root. Without either, folder checks include all ancestors; chart
+the project folder to set an explicit boundary.
 Nested callbacks and methods, JSX render relationships, CommonJS, index resolution,
 re-exports, configured aliases, work badges and mixed Python/JS charts are not covered yet.
 JSX component functions are included, but a JSX use is not presented as a direct call.

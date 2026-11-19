@@ -300,12 +300,32 @@ def _own(path):
     )
 
 
+def _excluded_file_folder(path):
+    # File input has no selected directory: Git, then the outermost package,
+    # bounds its project. A dependency's own package.json cannot erase its host.
+    file = path.resolve()
+    parents = list(file.parents)
+    root = next((p for p in parents if (p / ".git").exists()), None)
+    if root is None:
+        if "node_modules" in file.parts:
+            return True  # a dependency's package.json is not a project boundary
+        root = next(
+            (p for p in reversed(parents) if (p / "package.json").is_file()),
+            parents[-1],
+        )
+    return any(
+        part in SKIP or part.startswith(".")
+        for part in (root.name, *file.relative_to(root).parts[:-1])
+    )
+
+
 def _files(path):
-    # Like built._py_files, folder exclusions start below the selected chart root.
     if path.is_symlink():
         raise PlanError(f"{path.name}: a symlink is not own source")
+    if path.resolve().name in SKIP or path.resolve().name.startswith("."):
+        raise PlanError(f"{path.name}: a test or dependency folder is not own source")
     if path.is_file():
-        if not _own(path):
+        if not _own(path) or _excluded_file_folder(path):
             raise PlanError(
                 f"{path.name}: not an own-code JavaScript/TypeScript source file"
             )

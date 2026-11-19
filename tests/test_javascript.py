@@ -297,6 +297,20 @@ class JavaScript(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(PlanError):
                 self.read(self.root / name)
 
+    def test_direct_test_and_dependency_inputs_are_refused(self):
+        test_file = self.put("proj/tests/t.js", "function testHelper(){}")
+        dependency = self.put("proj/node_modules/x/c.js", "function dependency(){}")
+        self.put("proj/node_modules/x/package.json", "{}")
+        for marker in (None, "package.json", ".git"):
+            if marker:
+                self.put(f"proj/{marker}", "{}")
+            for path in (test_file, dependency, test_file.parent):
+                with (
+                    self.subTest(path=path, marker=marker),
+                    self.assertRaises(PlanError),
+                ):
+                    self.read(path)
+
     def test_excluded_ancestor_names_do_not_reject_a_project_or_its_file(self):
         for ancestor in (
             "build",
@@ -311,6 +325,9 @@ class JavaScript(unittest.TestCase):
         ):
             own = self.put(f"{ancestor}/repo/src/app.ts", "function own(){}")
             project = own.parent.parent
+            self.put(f"{ancestor}/repo/package.json", "{}")
+            if ancestor == "node_modules":
+                self.put(f"{ancestor}/repo/.git", "gitdir: own-checkout")
             self.put(f"{ancestor}/repo/{ancestor}/hidden.ts", "function hidden(){}")
             for path in (project, own):
                 with self.subTest(ancestor=ancestor, path=path):
