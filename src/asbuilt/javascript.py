@@ -944,6 +944,31 @@ def _on_mark_assign(node, scope, dynamic, add):
         add("writes")
 
 
+# process.stdin.<these> configure, inspect or close the stream and read nothing. A chain made only of
+# them (`process.stdin.setRawMode(false).pause()`) is not input; a chain that ends in anything else
+# (`.setEncoding('utf8').on('data', cb)`, `.toArray()`, `.fd`) is, and so is the stream handed on whole.
+_STDIN_SETTINGS = {
+    "setRawMode", "isTTY", "isRaw", "isPaused", "pause", "resume", "setEncoding", "unref", "ref",
+    "removeListener", "removeAllListeners", "off", "setMaxListeners", "destroy", "unpipe",
+}
+
+
+def _reads_stdin(node):
+    """False only when every link chained onto this `process.stdin` is a setting from _STDIN_SETTINGS."""
+    cur = node
+    while True:
+        parent = cur.parent
+        if parent is None or parent.type != "member_expression" or parent.child_by_field_name("object") != cur:
+            return cur is node  # the stream itself handed on reads; a settings chain ending here does not
+        prop = parent.child_by_field_name("property")
+        if prop is None or prop.text.decode() not in _STDIN_SETTINGS:
+            return True
+        cur = parent
+        call = cur.parent
+        if call is not None and call.type == "call_expression" and call.child_by_field_name("function") == cur:
+            cur = call  # follow the call's result to whatever is chained onto it
+
+
 def _on_mark_ref(node, scope, dynamic, add, details=None):
     path = _resolve_mark_path(node, scope, dynamic)
     if path in _ENV_BASES:
@@ -954,6 +979,8 @@ def _on_mark_ref(node, scope, dynamic, add, details=None):
         ("global", "process", "stdin"),
         ("module", "process", "stdin"),
     }:
+        if path[-1] == "stdin" and not _reads_stdin(node):
+            return
         add("input")
         if details is not None and path[-1] == "argv":
             details.add("argv")
