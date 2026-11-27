@@ -20,6 +20,26 @@ beside the chart.
 JavaScript and TypeScript have a separate first-slice reader, described below.
 An agent drafting the plan and the note on why each part changed come later.
 
+## Install and open your project (one line)
+
+On a Mac, paste this into Terminal, with your project's folder at the end (you can drag the
+folder onto the Terminal window to fill in its path):
+
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uvx --from git+https://github.com/eriksjaastad/asbuilt asbuilt --open ~/path/to/your/project
+```
+
+The first part installs [uv](https://docs.astral.sh/uv/), the tool that runs asBuilt, using
+uv's own installer; running it again is harmless. The second part fetches asBuilt, reads your
+project on your machine, and opens its overview in your browser. Nothing is uploaded. Stop it
+with Ctrl-C. If you already have uv, the second part alone is enough:
+
+```
+uvx --from git+https://github.com/eriksjaastad/asbuilt asbuilt --open ~/path/to/your/project
+```
+
+Without `--open` it only prints the page's address.
+
 ## Use it
 
 You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). You don't need Node: the page's

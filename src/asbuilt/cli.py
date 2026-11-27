@@ -4,6 +4,7 @@ import errno
 import sys
 import threading
 import traceback
+import webbrowser
 from pathlib import Path
 
 from asbuilt import overview, plan
@@ -46,7 +47,13 @@ def _report_bind_error(port, exc):
     return 2
 
 
-def _serve_overview(project_dir, port):
+def _show(url, open_it):
+    """Open the page in the person's browser when they asked for it with --open; never by default."""
+    if open_it:
+        webbrowser.open(url)
+
+
+def _serve_overview(project_dir, port, open_it=False):
     """Serve the folder's overview at the printed address, as a plan is served, until interrupted."""
     try:
         payload = overview.build(project_dir)
@@ -59,10 +66,9 @@ def _serve_overview(project_dir, port):
         server = OverviewServer(port, payload)
     except (OSError, OverflowError) as exc:
         return _report_bind_error(port, exc)
-    print(
-        f"asbuilt: showing {project_dir} at http://127.0.0.1:{server.server_port}/",
-        flush=True,
-    )
+    url = f"http://127.0.0.1:{server.server_port}/"
+    print(f"asbuilt: showing {project_dir} at {url}", flush=True)
+    _show(url, open_it)
     with server, contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()
     return 0
@@ -84,9 +90,10 @@ def main(argv=None):
         help="a plan file, or a project folder for its component overview (default %(default)s)",
     )
     parser.add_argument("--port", type=int, default=8765, help="default %(default)s")
+    parser.add_argument("--open", action="store_true", help="also open the page in your browser")
     args = parser.parse_args(argv)
     if args.plan.is_dir():
-        return _serve_overview(args.plan, args.port)
+        return _serve_overview(args.plan, args.port, args.open)
     # The page is drawn from the snapshot the watch settled on, never from a reread.
     shown = [snapshot(args.plan)]
     hub = Hub(lambda: build(lambda: plan.parse_snapshot(shown[0], args.plan.name)))
@@ -109,10 +116,9 @@ def main(argv=None):
 
     threading.Thread(target=watching, daemon=True).start()
     # flush: piped or captured output is block-buffered, and the address must show before serving starts.
-    print(
-        f"asbuilt: drawing {args.plan} at http://127.0.0.1:{server.server_port}/",
-        flush=True,
-    )
+    url = f"http://127.0.0.1:{server.server_port}/"
+    print(f"asbuilt: drawing {args.plan} at {url}", flush=True)
+    _show(url, args.open)
     with server, contextlib.suppress(KeyboardInterrupt):  # leaving closes the socket
         server.serve_forever()
     stop.set()
