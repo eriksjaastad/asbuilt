@@ -18,7 +18,8 @@ _OUT = (
     ("requests",),
     ("httpx",),
     ("urllib", "request"),
-    ("http", "client"),
+    ("http", "client", "HTTPConnection"),
+    ("http", "client", "HTTPSConnection"),
     ("os", "system"),
     ("os", "popen"),
     *(("subprocess", name) for name in _RUN),
@@ -308,6 +309,11 @@ def _env(path):
 
 
 def _calls_out(path):
+    # Building an exception (`raise http.client.LineTooLong(...)`, `requests.exceptions.HTTPError`)
+    # contacts nothing, so a name that reads as an exception class is never a call out.
+    last = path[-1] if path else ""
+    if last.endswith(("Error", "Exception", "Warning")) or "exceptions" in path:
+        return False
     return _under(path, _OUT)
 
 

@@ -1003,6 +1003,32 @@ class JavaScript(unittest.TestCase):
             {"readFake()": None},
         )
 
+    def test_configuring_stdin_is_not_input_but_reading_it_is(self):
+        path = self.put(
+            "stdin.js",
+            "function cleanup() { process.stdin.setRawMode(false); }\n"
+            "function quiet() { if (process.stdin.isTTY) { process.stdin.pause(); } }\n"
+            "function onData() { process.stdin.on('data', (d) => d); }\n"
+            "function piped(out) { process.stdin.pipe(out); }\n"
+            "function handed(rl) { return rl.createInterface({ input: process.stdin }); }\n"
+            "async function iterated() { for await (const c of process.stdin) { return c; } }\n"
+            "function encoded(cb) { process.stdin.setEncoding('utf8').on('data', cb); }\n"
+            "function listed() { return process.stdin.toArray(); }\n"
+            "function byFd(fs) { return fs.readFileSync(process.stdin.fd, 'utf8'); }\n"
+            "async function stepped() { return process.stdin.iterator().next(); }\n"
+            "function flowing() { process.stdin.resume(); }\n"
+            "function raw() { process.stdin.setRawMode(false).pause(); }\n"
+            "function enc() { process.stdin.setEncoding('utf8').pause(); }\n"
+            "function done() { if (!process.stdin.isPaused()) { process.stdin.destroy(); } process.stdin.unpipe(); }\n",
+        )
+        boxes = {b["labels"][0]["text"]: b.get("asbuilt", {}).get("badges", []) for b in self.read(path)["children"][0]["children"]}
+        self.assertEqual(boxes["cleanup()"], [])
+        self.assertEqual(boxes["quiet()"], [])
+        for name in ("flowing()", "raw()", "enc()", "done()"):
+            self.assertEqual(boxes[name], [], name)
+        for name in ("onData()", "piped()", "handed()", "iterated()", "encoded()", "listed()", "byFd()", "stepped()"):
+            self.assertEqual(boxes[name], ["input"], name)
+
     def test_work_marks_input_detection_and_shadowing(self):
         path = self.put(
             "input.ts",
@@ -1010,7 +1036,7 @@ class JavaScript(unittest.TestCase):
             "import { createInterface as makeRl } from 'readline';\n"
             "const rlCjs = require('readline');\n"
             "export function readArgv() { return process.argv.slice(2); }\n"
-            "export function readStdin() { process.stdin.resume(); }\n"
+            "export function readStdin() { process.stdin.on('data', (d) => d); }\n"
             "export function useRl() { return readline.createInterface({}); }\n"
             "export function useNamedRl() { return makeRl({}); }\n"
             "export function useCjsRl() { return rlCjs.createInterface({}); }\n"

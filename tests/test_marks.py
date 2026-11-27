@@ -125,6 +125,16 @@ class MarkTest(unittest.TestCase):
         self.assertEqual(_badges("import os\ndef go():\n    os.system('echo')\n", "go()"), ["calls out"])
         self.assertEqual(_badges("import os\ndef go():\n    os.popen('echo')\n", "go()"), ["calls out"])
 
+    def test_building_an_exception_from_a_network_module_is_not_calls_out(self):
+        for src in (
+            "import http.client\ndef check(n):\n    raise http.client.LineTooLong('header')\n",
+            "import requests\ndef check(r):\n    raise requests.exceptions.HTTPError(r)\n",
+            "import httpx\ndef check(r):\n    raise httpx.HTTPStatusError('bad', request=r, response=r)\n",
+            "import http.client\ndef parse(fp):\n    return http.client.parse_headers(fp)\n",
+        ):
+            with self.subTest(src=src):
+                self.assertEqual(_badges(src, "check()" if "check" in src else "parse()"), [])
+
     def test_http_client_is_calls_out(self):
         self.assertEqual(_badges("import http.client\ndef fetch():\n    http.client.HTTPSConnection('example.test')\n", "fetch()"), ["calls out"])
 
