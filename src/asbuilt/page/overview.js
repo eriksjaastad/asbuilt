@@ -137,14 +137,24 @@ export function renderHeader(data) {
       <p class="ov-summary">${esc(summary.join(" · "))}</p>
       ${jsError}
       ${notice("Files asBuilt could not read", list(data?.not_read), "alert")}
+      ${found
+        .map(
+          (s) =>
+            notice(`${s.label}: entry points that reach no charted function`, list(s.info.entries_reaching_nothing)) +
+            notice(`${s.label}: entry points asBuilt could not prove`, list(s.info.not_proven))
+        )
+        .join("")}
       ${notice("Skipped", list(data?.skipped))}
     </header>
   `;
 }
 
-export function renderPackages(packages, unreadable = []) {
+export function renderPackages(packages, unreadable = [], read = [], notRead = []) {
   const items = list(packages);
   const missed = list(unreadable);
+  const from = list(read).length
+    ? `<p class="ov-card-meta">From ${esc(list(read).join(", "))} in the project folder only.</p>`
+    : `<p class="ov-card-meta">No pyproject.toml, requirements.txt or package.json found.</p>`;
   const body = items.length
     ? `<ul class="ov-pkg-list">${items
         .map((pkg) => {
@@ -173,7 +183,9 @@ export function renderPackages(packages, unreadable = []) {
         .join("")}</ul>`
     : missed.length
       ? ""
-      : `<p class="ov-card-meta">No packages declared in pyproject.toml, requirements.txt or package.json.</p>`;
+      : list(read).length
+        ? `<p class="ov-card-meta">No packages declared there.</p>`
+        : "";
   const missedHtml = missed.length
     ? `<div class="ov-notice" role="alert"><strong>Could not read:</strong> ${esc(
         missed.join(", ")
@@ -182,7 +194,9 @@ export function renderPackages(packages, unreadable = []) {
   return `
     <aside class="ov-sidebar" aria-label="${esc(PACKAGES_TITLE)}">
       <h2>${esc(PACKAGES_TITLE)} <span class="ov-count">${items.length}</span></h2>
+      ${from}
       ${missedHtml}
+      ${notice("Declared there but not read", list(notRead))}
       ${body}
     </aside>
   `;
@@ -284,31 +298,63 @@ function back(trail) {
   `;
 }
 
-function renderTabs(found, section, state) {
-  const switcher =
-    found.length > 1
-      ? `<nav class="ov-tabs" aria-label="Languages">${found
-          .map(
-            (s) =>
-              `<button type="button" class="ov-tab" data-action="select-section" data-section="${esc(s.key)}" aria-pressed="${
-                s.key === section.key ? "true" : "false"
-              }">${esc(s.label)} <span class="ov-count">${list(s.info.components).length}</span></button>`
-          )
-          .join("")}</nav>`
-      : "";
-  const info = section.info;
-  const tabs = [
+function tabsOf(info) {
+  return [
     ...list(info.groups).map((g) => ({
       id: `group:${g.kind}`,
       label: KIND_LABELS[g.kind] || g.kind,
       count: list(g.components).length,
+      unit: ["component", "components"],
     })),
-    { id: "shared", label: "Shared helpers", count: list(info.shared).length },
-    { id: "no_path_found", label: NO_PATH_LABEL, count: list(info.no_path_found).length },
+    { id: "shared", label: "Shared helpers", count: list(info.shared).length, unit: ["file", "files"] },
+    {
+      id: "no_path_found",
+      label: NO_PATH_LABEL,
+      count: list(info.no_path_found).length,
+      unit: ["function / class", "functions / classes"],
+    },
   ];
-  return `${switcher}
+}
+
+function tabLabel(tab) {
+  if (tab === "shared") return "Shared helpers";
+  if (tab === "no_path_found") return NO_PATH_LABEL;
+  const kind = String(tab).replace(/^group:/, "");
+  return KIND_LABELS[kind] || kind;
+}
+
+function renderSwitcher(found, section) {
+  return found.length > 1
+    ? `<nav class="ov-tabs" aria-label="Languages">${found
+        .map(
+          (s) =>
+            `<button type="button" class="ov-tab" data-action="select-section" data-section="${esc(s.key)}" aria-pressed="${
+              s.key === section.key ? "true" : "false"
+            }">${esc(s.label)} <span class="ov-count">${list(s.info.components).length}</span></button>`
+        )
+        .join("")}</nav>`
+    : "";
+}
+
+// The first screen: one card per group, so a big project opens as a handful of groups.
+function renderGroups(found, section) {
+  const cards = tabsOf(section.info)
+    .map(
+      (tab) => `
+        <button type="button" class="ov-card" data-action="select-tab" data-tab="${esc(tab.id)}">
+          <div class="ov-card-head"><span class="ov-card-title">${esc(tab.label)}</span></div>
+          <div class="ov-card-meta">${esc(plural(tab.count, ...tab.unit))}</div>
+        </button>
+      `
+    )
+    .join("");
+  return `${renderSwitcher(found, section)}<div class="ov-grid">${cards}</div>`;
+}
+
+function renderTabs(found, section, state) {
+  return `${renderSwitcher(found, section)}
     <nav class="ov-tabs" aria-label="Component groups">
-      ${tabs
+      ${tabsOf(section.info)
         .map(
           (tab) =>
             `<button type="button" class="ov-tab" data-action="select-tab" data-tab="${esc(tab.id)}" aria-pressed="${
@@ -368,8 +414,9 @@ function renderComponent(comp, boxes, state) {
 function renderShared(item, boxes) {
   const cards = list(item.members)
     .map((member) => {
-      const reasons =
-        member.used_by && typeof member.used_by === "object"
+      const reasons = Array.isArray(member.used_by)
+        ? `used by ${member.used_by.join(", ")}`
+        : member.used_by && typeof member.used_by === "object"
           ? Object.entries(member.used_by)
               .map(([c, why]) => `${c}: ${why}`)
               .join("; ")
@@ -463,7 +510,8 @@ function renderMain(data, state) {
   if (comp) return renderComponent(comp, boxes, state);
   const shared = state.shared && list(info.shared).find((s) => (s.file || s.name) === state.shared);
   if (shared) return renderShared(shared, boxes);
-  const tabs = renderTabs(found, section, state);
+  if (!state.tab) return renderGroups(found, section);
+  const tabs = `${back(`<strong>${esc(tabLabel(state.tab))}</strong>`)}${renderTabs(found, section, state)}`;
   if (state.tab === "shared") {
     const items = list(info.shared);
     const body = items.length
@@ -488,15 +536,8 @@ function renderMain(data, state) {
   return `${tabs}${renderGroup(info, boxes, String(state.tab).replace(/^group:/, ""))}`;
 }
 
-function firstTab(info) {
-  const groups = list(info?.groups);
-  if (groups.length) return `group:${groups[0].kind}`;
-  return list(info?.shared).length ? "shared" : "no_path_found";
-}
-
 export function initialState(data, section = sections(data)[0]?.key ?? null) {
-  const found = sections(data).find((s) => s.key === section);
-  return { section, tab: firstTab(found?.info), component: null, shared: null, file: null };
+  return { section, tab: null, component: null, shared: null, file: null };
 }
 
 export function renderOverview(data, state = initialState(data)) {
@@ -504,7 +545,7 @@ export function renderOverview(data, state = initialState(data)) {
     ${renderHeader(data)}
     <div class="ov-layout">
       <main class="ov-main">${renderMain(data, state)}</main>
-      ${renderPackages(data?.packages, data?.packages_unreadable)}
+      ${renderPackages(data?.packages, data?.packages_unreadable, data?.packages_read, data?.packages_not_read)}
     </div>
   `;
 }
@@ -532,8 +573,10 @@ export function createApp(root, data) {
     } else if (action === "open-file") {
       state = { ...state, file: value("data-file") };
     } else if (action === "back") {
-      // One level up: a component's file goes back to the component, anything else to its tab.
-      state = state.file ? { ...state, file: null } : { ...state, component: null, shared: null };
+      // One level up: file -> component -> group -> the groups.
+      if (state.file) state = { ...state, file: null };
+      else if (state.component || state.shared) state = { ...state, component: null, shared: null };
+      else state = { ...state, tab: null };
     } else {
       return;
     }

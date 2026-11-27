@@ -234,6 +234,47 @@ class OverviewTest(unittest.TestCase):
                 self.assertEqual(main([str(root)]), 0)
             self.assertIn("could not read package.json", err.getvalue())
 
+    def test_an_unreadable_or_mistyped_pyproject_is_named_and_the_rest_still_charts(self):
+        for name, text, unreadable in (
+            ("bad-toml", "[project\n", ["pyproject.toml"]),
+            ("bad-utf8", b"\xff\xfe[project]\n", ["pyproject.toml"]),
+            ("bad-scripts", '[project]\nname = "x"\n[project.scripts]\napp = 1\n', []),
+        ):
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp, name)
+                write(root, {"server.py": SERVER_PY, "web/api.ts": API_TS})
+                if isinstance(text, bytes):
+                    (root / "pyproject.toml").write_bytes(text)
+                else:
+                    (root / "pyproject.toml").write_text(text, encoding="utf-8")
+                result = build(root)
+                self.assertEqual(result["packages_unreadable"], unreadable)
+                self.assertEqual([c["name"] for c in result["components"]["components"]], ["server"])
+                self.assertIsNotNone(result["js_components"])
+                self.assertTrue(
+                    any("console scripts are not looked for" in e for e in result["components"]["not_proven"]),
+                    result["components"]["not_proven"],
+                )
+
+    def test_entry_points_the_reader_could_not_follow_reach_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "setup-only")
+            write(root, {"run.py": 'import os\n\nif __name__ == "__main__":\n    os.getcwd()\n', "lib.py": "def f():\n    return 1\n"})
+            result = build(root)
+            self.assertTrue(result["components"]["entries_reaching_nothing"])
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(main([str(root)]), 0)
+            self.assertIn("Python entry point reaching no charted function", err.getvalue())
+
+    def test_the_payload_names_the_manifests_read_and_what_they_hold_that_is_not_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "proj")
+            write(root, {"requirements.txt": "flask\n-r base.txt\n", "app.py": "def run():\n    return 1\n"})
+            result = build(root)
+            self.assertEqual(result["packages_read"], ["requirements.txt"])
+            self.assertEqual(result["packages_not_read"], ["requirements.txt: -r base.txt"])
+
     def test_missing_unsupported_and_empty_paths_raise_plan_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(PlanError):

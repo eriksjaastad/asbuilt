@@ -241,8 +241,13 @@ test("a Python component opens to its files, and a file to that component's func
   const data = samplePythonData();
   const { root, click } = fakeRoot();
   createApp(root, data);
-  assert.ok(root.innerHTML.includes('data-action="open-component" data-component="demo"'));
+  // The first screen is the groups, not any group's components.
+  assert.ok(root.innerHTML.includes('data-action="select-tab" data-tab="group:commands"'));
+  assert.ok(root.innerHTML.includes("1 component"));
+  assert.equal(root.innerHTML.includes('data-action="open-component"'), false);
   assert.ok(root.innerHTML.includes("Skipped (2):"));
+  click({ "data-action": "select-tab", "data-tab": "group:commands" });
+  assert.ok(root.innerHTML.includes('data-action="open-component" data-component="demo"'));
 
   click({ "data-action": "open-component", "data-component": "demo" });
   assert.ok(root.innerHTML.includes("console script demo = cli:run"));
@@ -261,6 +266,8 @@ test("a Python component opens to its files, and a file to that component's func
   assert.ok(root.innerHTML.includes('data-file="cli.py"'), "back from a file is the component");
   click({ "data-action": "back" });
   assert.ok(root.innerHTML.includes('data-component="demo"'), "back from a component is its group");
+  click({ "data-action": "back" });
+  assert.equal(root.innerHTML.includes('data-component="demo"'), false, "back from a group is the groups");
 
   click({ "data-action": "select-tab", "data-tab": "group:scripts" });
   assert.ok(root.innerHTML.includes('data-component="worker"'));
@@ -289,12 +296,23 @@ test("a JavaScript project opens on its components, with the same component, fil
   const { root, click } = fakeRoot();
   createApp(root, data);
   assert.ok(root.innerHTML.includes("JavaScript / TypeScript"));
+  click({ "data-action": "select-tab", "data-tab": "group:web pages" });
   assert.ok(root.innerHTML.includes('data-component="App"'));
   click({ "data-action": "open-component", "data-component": "App" });
   assert.ok(root.innerHTML.includes('data-file="src/util.ts"'));
   click({ "data-action": "open-file", "data-file": "src/util.ts" });
   assert.ok(root.innerHTML.includes("reached from greet()"));
   assert.equal(root.innerHTML.includes('data-box-id="src/app.tsx:greet:3"'), false);
+});
+
+test("a JavaScript shared helper names the components that use it", () => {
+  const data = sampleJsData();
+  data.js_components.shared = [
+    { name: "util.ts", file: "src/util.ts", used_by: ["App", "Cli"], members: [{ id: "src/util.ts:formatName:1", name: "formatName()", used_by: ["App", "Cli"] }] },
+  ];
+  const html = renderOverview(data, { ...initialState(data), tab: "shared", shared: "src/util.ts" });
+  assert.ok(html.includes("used by App, Cli"));
+  assert.equal(/\b0: /.test(html), false);
 });
 
 test("a mixed project switches between its Python and JavaScript components", () => {
@@ -304,10 +322,12 @@ test("a mixed project switches between its Python and JavaScript components", ()
   createApp(root, data);
   assert.ok(root.innerHTML.includes("Python + JavaScript / TypeScript"));
   assert.ok(root.innerHTML.includes('data-action="select-section" data-section="js"'));
-  assert.ok(root.innerHTML.includes('data-component="demo"'));
+  assert.ok(root.innerHTML.includes('data-tab="group:commands"'));
   click({ "data-action": "select-section", "data-section": "js" });
+  assert.ok(root.innerHTML.includes('data-tab="group:web pages"'));
+  assert.equal(root.innerHTML.includes('data-tab="group:commands"'), false);
+  click({ "data-action": "select-tab", "data-tab": "group:web pages" });
   assert.ok(root.innerHTML.includes('data-component="App"'));
-  assert.equal(root.innerHTML.includes('data-component="demo"'), false);
 });
 
 test("what was not read is shown: unparsed files, a JavaScript reader failure, unreadable manifests", () => {
@@ -321,6 +341,12 @@ test("what was not read is shown: unparsed files, a JavaScript reader failure, u
   assert.ok(html.includes("JavaScript / TypeScript was not charted:"));
   assert.ok(html.includes("web: no parseable JavaScript/TypeScript files to chart"));
   assert.ok(html.includes("<strong>Could not read:</strong> package.json"));
+  data.components.entries_reaching_nothing = ["python setup.py"];
+  data.components.not_proven = ["app.get route in web.py: an app or router made in this file"];
+  const diag = renderOverview(data);
+  assert.ok(diag.includes("Python: entry points that reach no charted function (1):"));
+  assert.ok(diag.includes("python setup.py"));
+  assert.ok(diag.includes("Python: entry points asBuilt could not prove (1):"));
   const clean = renderHeader({ ...samplePythonData(), skipped: [] });
   assert.equal(/Skipped|could not read|not charted/i.test(clean), false);
 });
@@ -336,10 +362,15 @@ test("the packages panel says what it lists, links each package, and tags its se
   assert.ok(html.includes('href="https://pypi.org/project/click/" target="_blank" rel="noopener noreferrer"'));
   assert.ok(html.includes('<span class="ov-tag-dev">dev</span>'));
   assert.ok(html.includes('<span class="ov-tag-reg">optional</span>'));
-  assert.ok(renderPackages([], []).includes("No packages declared"));
+  assert.ok(renderPackages([], [], []).includes("No pyproject.toml, requirements.txt or package.json found."));
+  assert.ok(renderPackages([], [], ["package.json"]).includes("No packages declared there."));
+  assert.equal(renderPackages([], ["pyproject.toml"], []).includes("No packages declared"), false);
+  const named = renderPackages([], [], ["pyproject.toml", "package.json"], ["requirements.txt: -r base.txt"]);
+  assert.ok(named.includes("From pyproject.toml, package.json in the project folder only."));
+  assert.ok(named.includes("Declared there but not read (1):"));
+  assert.ok(named.includes("requirements.txt: -r base.txt"));
   const bare = renderPackages([{ name: "left-pad", spec: "1", registry: "npm", url: "https://www.npmjs.com/package/left-pad", dev: false }]);
   assert.equal(/undefined|null|pkg-summary/.test(bare), false, "a package with no summary shows none");
-  assert.equal(renderPackages([], ["pyproject.toml"]).includes("No packages declared"), false);
 });
 
 // The whole path a person takes: `asbuilt DIR` prints an address, the page opens on the components,
@@ -372,6 +403,7 @@ test("asbuilt DIR serves the overview, and a click walks component, file, functi
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(await address);
+    await page.locator('[data-tab="group:scripts"]').click();
     await page.locator('[data-component="run"]').click();
     await page.locator('[data-file="pkg/util.py"]').click();
     await page.locator('[data-box-id="pkg/util.py:helper:1"]').waitFor();

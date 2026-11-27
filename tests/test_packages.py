@@ -237,7 +237,7 @@ dev = ["fastapi>=0.111", "pytest>=8"]
         with tempfile.TemporaryDirectory() as tmp:
             empty = Path(tmp, "empty-proj")
             (empty / ".git").mkdir(parents=True)
-            self.assertEqual(find(empty), {"project": "empty-proj", "packages": []})
+            self.assertEqual(find(empty), {"project": "empty-proj", "packages": [], "read": [], "not_read": []})
             missing = Path(tmp, "does-not-exist")
             with self.assertRaisesRegex(PlanError, "does-not-exist: no such file or folder"):
                 find(missing)
@@ -265,6 +265,86 @@ dev = ["fastapi>=0.111", "pytest>=8"]
             self.assertEqual(by_name["react-dom"]["tags"], ["peer"])
             self.assertEqual(by_name["react"]["tags"], ["peer"])
             self.assertFalse(any(p["dev"] for p in by_name.values()))
+
+    def test_poetry_and_dependency_groups_are_read_and_the_rest_is_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                """
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "^2.31"
+local-lib = {path = "../lib"}
+httpx = {version = "^0.27", extras = ["http2"]}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+
+[dependency-groups]
+lint = ["ruff>=0.5", {include-group = "test"}]
+test = ["coverage"]
+
+[tool.uv]
+dev-dependencies = ["mypy"]
+""",
+                encoding="utf-8",
+            )
+            (root / "requirements.txt").write_text(
+                "\ufeffflask>=3\n-r requirements/base.txt\n-e git+https://x.example/p.git#egg=p\nweird @ https://x.example/w.whl\n",
+                encoding="utf-8",
+            )
+            result = find(root)
+            by_name = {p["name"]: p for p in result["packages"]}
+            self.assertEqual(result["read"], ["pyproject.toml", "requirements.txt"])
+            self.assertNotIn("python", by_name)
+            self.assertEqual(by_name["requests"]["tags"], ["poetry"])
+            self.assertEqual(by_name["httpx"]["spec"], "^0.27")
+            self.assertIsNone(by_name["local-lib"]["url"])
+            self.assertTrue(by_name["pytest"]["dev"])
+            self.assertEqual(by_name["pytest"]["tags"], ["poetry group dev"])
+            self.assertEqual(by_name["ruff"]["tags"], ["group lint"])
+            self.assertIn("coverage", by_name)
+            self.assertIn("flask", by_name)  # a BOM does not hide the first line
+            self.assertIsNone(by_name["weird"]["url"])  # a direct reference has no PyPI page
+            self.assertEqual(
+                result["not_read"],
+                [
+                    "pyproject.toml [tool.uv.dev-dependencies] is not read",
+                    "requirements.txt: -r requirements/base.txt",
+                    "requirements.txt: -e git+https://x.example/p.git#egg=p",
+                ],
+            )
+
+    def test_non_registry_npm_dependencies_get_no_link_and_an_alias_links_its_real_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps(
+                    {
+                        "dependencies": {
+                            "react": "^18",
+                            "react-v17": "npm:react@^17",
+                            "scoped-alias": "npm:@scope/pkg@^1",
+                            "local": "file:../local",
+                            "ws-pkg": "workspace:*",
+                            "gitdep": "git+https://x.example/r.git",
+                            "gh": "user/repo",
+                            "tarball": "https://x.example/t.tgz",
+                        },
+                        "workspaces": ["packages/*"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = find(root)
+            urls = {p["name"]: p["url"] for p in result["packages"]}
+            self.assertEqual(urls["react"], "https://www.npmjs.com/package/react")
+            self.assertEqual(urls["react-v17"], "https://www.npmjs.com/package/react")
+            self.assertEqual(urls["scoped-alias"], "https://www.npmjs.com/package/@scope/pkg")
+            for name in ("local", "ws-pkg", "gitdep", "gh", "tarball"):
+                self.assertIsNone(urls[name], name)
+            self.assertEqual(result["read"], ["package.json"])
+            self.assertEqual(result["not_read"], ["package.json workspaces: each workspace's own package.json is not read"])
 
     def test_a_name_that_is_not_a_plain_package_name_never_reads_outside_the_project(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,6 +376,8 @@ dev = ["fastapi>=0.111", "pytest>=8"]
                 {
                     "project": "broken",
                     "packages": [],
+                    "read": [],
+                    "not_read": [],
                     "unreadable": ["package.json", "pyproject.toml", "requirements.txt"],
                 },
             )

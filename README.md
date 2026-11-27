@@ -176,18 +176,22 @@ uv run asbuilt path/to/project
 ```
 
 - **Components, then files, then functions.** Entry points are grouped by kind (commands, web
-  pages, scripts, other) and traced through proven calls. Click a component to see its files,
+  pages, scripts, other) and traced through proven calls. The page opens on the groups; click
+  one to see its components, a component to see its files,
   and a file to see that component's functions in it. Code two or more components reach is
   under **Shared helpers**; definitions with no proven path from an entry point are listed as
   such, which does not mean they never run.
 - **Python and JavaScript/TypeScript together.** A folder with both shows each language's
   components; if the JavaScript/TypeScript half cannot be charted, the page and stderr say why.
-- **Nothing hidden.** Files that could not be parsed, skipped folders, and manifests that could
-  not be read are listed on the page and on stderr. Test files are not charted.
-- **Packages this project declares.** Direct dependencies from `pyproject.toml`,
-  `requirements.txt` and `package.json` (including optional and peer dependencies, tagged),
-  with runtime or dev tags and a link to PyPI or npm. This is what the manifests declare, not
-  what is installed.
+- **Nothing hidden.** Files that could not be parsed, skipped folders, entry points that reach no
+  charted function or could not be proven, and manifests that could not be read are listed on
+  the page and on stderr. Test files are not charted.
+- **Packages this project declares.** Direct dependencies from the `pyproject.toml`
+  (`[project]`, `[dependency-groups]` and Poetry's tables), `requirements.txt` and
+  `package.json` (including optional and peer dependencies) in the project's own folder, each
+  tagged with where it was declared, with a link to PyPI or npm when it comes from one. The
+  panel names the files it read and anything in them it did not read (an `-r` include,
+  workspaces). This is what the manifests declare, not what is installed.
 - **JSON.** Print the overview payload or the package list:
 
 ```

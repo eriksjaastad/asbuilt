@@ -127,26 +127,21 @@ def _resolve_summary(manifest_dir: Path, registry: str, name: str) -> str:
 
 
 def _parse_pep508(line: str) -> tuple[str, str] | None:
-    """Return (package_name, version_spec) from a PEP 508 line, or None if ignored."""
-    text = line.split("#", 1)[0].strip()
+    """(name, spec) from a PEP 508 requirement, or None when it is not one (an option, URL or path)."""
+    text = line.split(" #", 1)[0].strip() if not line.lstrip().startswith("#") else ""
     if not text or text.startswith(_SKIP_PREFIXES):
         return None
     text = text.split(";", 1)[0].strip()
-    if not text:
-        return None
-    match = _PEP508_RE.match(text)
+    match = _PEP508_RE.match(text) if text else None
     if not match:
         return None
-    name, spec = match.group(1), match.group(2).strip()
-    if spec.startswith("://"):
-        return None
-    return name, spec
+    return match.group(1), match.group(2).strip()
 
 
 def _read_toml(path: Path) -> dict | None:
     parsed: object = None
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")  # a BOM is not part of the text
         parsed = tomllib.loads(raw)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         parsed = None
@@ -156,7 +151,7 @@ def _read_toml(path: Path) -> dict | None:
 def _read_json(path: Path) -> dict | None:
     parsed: object = None
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")  # a BOM is not part of the text
         parsed = json.loads(raw)
     except (OSError, UnicodeDecodeError, ValueError):
         parsed = None
@@ -167,7 +162,7 @@ def _read_lines(path: Path) -> list[str] | None:
     """The file's lines, or None when it cannot be read as UTF-8 text."""
     raw = None
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")  # a BOM is not part of the text
     except (OSError, UnicodeDecodeError):
         raw = None
     return None if raw is None else raw.splitlines()
@@ -187,125 +182,126 @@ def _locate_manifest_dir(folder: Path) -> Path | None:
     return None
 
 
-def _parse_pyproject(path: Path) -> tuple[str | None, list[dict]]:
-    data = _read_toml(path)
-    if data is None:
-        return None, []
-    project = data.get("project")
-    project_name: str | None = None
+def _pypi(name: str, spec: str, dev: bool, tags=(), direct: bool = False) -> dict:
+    """A PyPI entry; a direct reference (`name @ url`, a git or path source) gets no registry link."""
+    direct = direct or spec.startswith("@")
+    return {"name": name, "spec": spec, "registry": "pypi", "url": None if direct else _pypi_url(name), "dev": dev, "tags": list(tags)}
+
+
+def _pep508_list(items, dev: bool, tags, where: str, entries: list, not_read: list) -> None:
+    """Add each PEP 508 string of a list; anything else is named in not_read."""
+    for item in items:
+        parsed = _parse_pep508(item) if isinstance(item, str) else None
+        if parsed:
+            entries.append(_pypi(*parsed, dev, tags))
+        elif not (isinstance(item, dict) and "include-group" in item):  # PEP 735: its group is read on its own
+            not_read.append(f"pyproject.toml {where}: {item!r}")
+
+
+def _poetry_table(deps, dev: bool, tags, where: str, entries: list, not_read: list) -> None:
+    """Add each Poetry dependency ("^1.2" or {version = ...}; git, path and url sources get no link)."""
+    for name, spec in deps.items():
+        if name.lower() == "python":  # the interpreter version, not a package
+            continue
+        if isinstance(spec, str) and is_plain_name("pypi", name):
+            entries.append(_pypi(name, spec, dev, tags))
+        elif isinstance(spec, dict) and is_plain_name("pypi", name):
+            version = spec.get("version") if isinstance(spec.get("version"), str) else ""
+            direct = any(key in spec for key in ("git", "path", "url"))
+            entries.append(_pypi(name, version, dev, tags, direct=direct))
+        else:
+            not_read.append(f"pyproject.toml {where}: {name} = {spec!r}")
+
+
+def _parse_pyproject(data: dict, not_read: list) -> tuple[str | None, list[dict]]:
+    """[project] dependencies and optional-dependencies, PEP 735 [dependency-groups], and Poetry's
+    tables. A dependency table another tool keeps that is not read here is named in not_read."""
     entries: list[dict] = []
-
-    if isinstance(project, dict):
-        raw_name = project.get("name")
-        if isinstance(raw_name, str) and raw_name.strip():
-            project_name = raw_name.strip()
-
-        deps = project.get("dependencies")
-        if isinstance(deps, list):
-            for item in deps:
-                if isinstance(item, str):
-                    parsed = _parse_pep508(item)
-                    if parsed:
-                        name, spec = parsed
-                        entries.append(
-                            {
-                                "name": name,
-                                "spec": spec,
-                                "registry": "pypi",
-                                "url": _pypi_url(name),
-                                "dev": False,
-                            }
-                        )
-
-        opt_deps = project.get("optional-dependencies")
-        if isinstance(opt_deps, dict):
-            for group, items in opt_deps.items():
-                if not isinstance(items, list):
-                    continue
-                is_dev = isinstance(group, str) and group.lower() in DEV_GROUPS
-                for item in items:
-                    if isinstance(item, str):
-                        parsed = _parse_pep508(item)
-                        if parsed:
-                            name, spec = parsed
-                            entries.append(
-                                {
-                                    "name": name,
-                                    "spec": spec,
-                                    "registry": "pypi",
-                                    "url": _pypi_url(name),
-                                    "dev": is_dev,
-                                }
-                            )
-
-    dep_groups = data.get("dependency-groups")
-    if isinstance(dep_groups, dict):
-        for items in dep_groups.values():
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                if isinstance(item, str):
-                    parsed = _parse_pep508(item)
-                    if parsed:
-                        name, spec = parsed
-                        entries.append(
-                            {
-                                "name": name,
-                                "spec": spec,
-                                "registry": "pypi",
-                                "url": _pypi_url(name),
-                                "dev": True,
-                            }
-                        )
-
+    project = data.get("project") if isinstance(data.get("project"), dict) else {}
+    raw_name = project.get("name")
+    project_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+    if isinstance(project.get("dependencies"), list):
+        _pep508_list(project["dependencies"], False, (), "[project] dependencies", entries, not_read)
+    if isinstance(project.get("optional-dependencies"), dict):
+        for group, items in project["optional-dependencies"].items():
+            if isinstance(items, list):
+                where = f"[project.optional-dependencies] {group}"
+                _pep508_list(items, group.lower() in DEV_GROUPS, (f"extra {group}",), where, entries, not_read)
+    if isinstance(data.get("dependency-groups"), dict):
+        for group, items in data["dependency-groups"].items():
+            if isinstance(items, list):
+                _pep508_list(items, True, (f"group {group}",), f"[dependency-groups] {group}", entries, not_read)
+    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    poetry = tool.get("poetry") if isinstance(tool.get("poetry"), dict) else {}
+    if isinstance(poetry.get("dependencies"), dict):
+        _poetry_table(poetry["dependencies"], False, ("poetry",), "[tool.poetry.dependencies]", entries, not_read)
+    if isinstance(poetry.get("dev-dependencies"), dict):
+        where = "[tool.poetry.dev-dependencies]"
+        _poetry_table(poetry["dev-dependencies"], True, ("poetry dev",), where, entries, not_read)
+    groups = poetry.get("group") if isinstance(poetry.get("group"), dict) else {}
+    for group, table in groups.items():
+        if isinstance(table, dict) and isinstance(table.get("dependencies"), dict):
+            where = f"[tool.poetry.group.{group}.dependencies]"
+            tags = (f"poetry group {group}",)
+            _poetry_table(table["dependencies"], group.lower() in DEV_GROUPS, tags, where, entries, not_read)
+    for other in ("uv", "pdm"):  # their dev-dependency tables are not read
+        if isinstance(tool.get(other), dict) and "dev-dependencies" in tool[other]:
+            not_read.append(f"pyproject.toml [tool.{other}.dev-dependencies] is not read")
     return project_name, entries
 
 
-def _parse_requirements(path: Path) -> list[dict]:
+def _parse_requirements(lines: list[str], not_read: list) -> list[dict]:
+    """Each requirement line; an include (-r), editable, option, URL or path line is named in not_read."""
     entries: list[dict] = []
-    for line in _read_lines(path) or []:
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
         parsed = _parse_pep508(line)
         if parsed:
-            name, spec = parsed
-            entries.append(
-                {
-                    "name": name,
-                    "spec": spec,
-                    "registry": "pypi",
-                    "url": _pypi_url(name),
-                    "dev": False,
-                }
-            )
+            entries.append(_pypi(*parsed, False))
+        else:
+            not_read.append(f"requirements.txt: {text}")
     return entries
 
 
-def _parse_package_json(path: Path) -> tuple[str | None, list[dict]]:
-    data = _read_json(path)
-    if data is None:
-        return None, []
+def _npm_link(name: str, spec: str) -> str | None:
+    """The npm page for a registry dependency: an alias (npm:real@range) links to its real name;
+    a git, URL, file:, link:, workspace: or GitHub shorthand source has no registry page."""
+    if spec.startswith("npm:"):
+        rest = spec[4:]
+        at = rest.rfind("@")
+        name = rest[:at] if at > 0 else rest
+    elif ":" in spec or "/" in spec:
+        return None
+    return _npm_url(name) if is_plain_name("npm", name) else None
+
+
+def _parse_package_json(data: dict, not_read: list) -> tuple[str | None, list[dict]]:
     raw_name = data.get("name")
     project_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
     entries: list[dict] = []
-
     for field, is_dev, tag in NPM_SECTIONS:
         deps = data.get(field)
         if not isinstance(deps, dict):
             continue
         for name, spec in deps.items():
-            if not isinstance(name, str) or not name.strip():
+            if not name.strip() or not isinstance(spec, str):
+                not_read.append(f"package.json {field}: {name!r}: {spec!r}")
                 continue
-            clean_name = name.strip()
-            clean_spec = spec.strip() if isinstance(spec, str) else ""
+            clean_name, clean_spec = name.strip(), spec.strip()
             entries.append(
                 {
                     "name": clean_name,
                     "spec": clean_spec,
                     "registry": "npm",
-                    "url": _npm_url(clean_name) if is_plain_name("npm", clean_name) else None,
+                    "url": _npm_link(clean_name, clean_spec),
                     "dev": is_dev,
                     "tags": [tag] if tag else [],
                 }
             )
+    if "workspaces" in data:
+        not_read.append("package.json workspaces: each workspace's own package.json is not read")
     return project_name, entries
 
 
@@ -329,42 +325,38 @@ def _dedupe_and_sort(entries: list[dict]) -> list[dict]:
 
 
 def find(folder: Path) -> dict:
-    """Find declared packages in `folder` (or its enclosing project root)."""
+    """The packages the manifests of `folder`'s project declare (its nearest folder with one).
+    `read` names the manifests read; `unreadable` those that exist but could not be read;
+    `not_read` each declaration or table present that is not read, so the list never looks
+    complete when it is not."""
     if not Path(folder).exists():
         raise PlanError(f"{Path(folder).name}: no such file or folder")
     target = Path(folder).resolve()
     manifest_dir = _locate_manifest_dir(target)
     if manifest_dir is None:
         fallback = target.parent.name if target.is_file() else target.name
-        return {"project": fallback, "packages": []}
+        return {"project": fallback, "packages": [], "read": [], "not_read": []}
 
     project_name: str | None = None
     raw_entries: list[dict] = []
-    # A manifest that exists but cannot be read or parsed is named, never shown as
-    # a project with no packages.
-    readers = {"pyproject.toml": _read_toml, "requirements.txt": _read_lines, "package.json": _read_json}
-    unreadable = sorted(
-        name for name, read in readers.items()
-        if (manifest_dir / name).is_file() and read(manifest_dir / name) is None
-    )
-
-    pyproject_path = manifest_dir / "pyproject.toml"
-    if pyproject_path.is_file() and "pyproject.toml" not in unreadable:
-        py_name, py_entries = _parse_pyproject(pyproject_path)
-        if py_name:
-            project_name = py_name
-        raw_entries.extend(py_entries)
-
-    requirements_path = manifest_dir / "requirements.txt"
-    if requirements_path.is_file() and "requirements.txt" not in unreadable:
-        raw_entries.extend(_parse_requirements(requirements_path))
-
-    package_json_path = manifest_dir / "package.json"
-    if package_json_path.is_file() and "package.json" not in unreadable:
-        js_name, js_entries = _parse_package_json(package_json_path)
-        if not project_name and js_name:
-            project_name = js_name
-        raw_entries.extend(js_entries)
+    read, unreadable, not_read = [], [], []
+    readers = {
+        "pyproject.toml": (_read_toml, _parse_pyproject),
+        "requirements.txt": (_read_lines, lambda lines, nr: (None, _parse_requirements(lines, nr))),
+        "package.json": (_read_json, _parse_package_json),
+    }
+    for name, (reader, parse) in readers.items():
+        path = manifest_dir / name
+        if not path.is_file():
+            continue
+        data = reader(path)
+        if data is None:  # exists but cannot be read or parsed: named, never shown as no packages
+            unreadable.append(name)
+            continue
+        read.append(name)
+        found_name, entries = parse(data, not_read)
+        project_name = project_name or found_name
+        raw_entries.extend(entries)
 
     packages = _dedupe_and_sort(raw_entries)
     for pkg in packages:
@@ -373,9 +365,11 @@ def find(folder: Path) -> dict:
     result = {
         "project": project_name or manifest_dir.name,
         "packages": packages,
+        "read": read,
+        "not_read": not_read,
     }
     if unreadable:
-        result["unreadable"] = unreadable
+        result["unreadable"] = sorted(unreadable)
     return result
 
 
@@ -393,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(found, indent=2, ensure_ascii=False))
     for name in found.get("unreadable", []):
         print(f"asbuilt.packages: could not read {name}", file=sys.stderr)
+    for item in found["not_read"]:
+        print(f"asbuilt.packages: not read: {item}", file=sys.stderr)
     return 1 if found.get("unreadable") else 0
 
 

@@ -68,18 +68,27 @@ def _kind(hints):
 
 
 def _scripts(folder):
-    """(name, module, function) for each [project.scripts] line of the nearest pyproject.toml."""
+    """((name, module, function) for each [project.scripts] line of the nearest pyproject.toml,
+    and why it could not be read, or None). A manifest that cannot be read, or whose scripts
+    are not a table of strings, gives no scripts and says so, so the rest is still charted."""
     resolved = folder.resolve()
     for parent in [resolved, *resolved.parents]:
         file = parent / "pyproject.toml"
         if file.is_file():
+            why = None
             try:
                 with file.open("rb") as fh:
-                    scripts = tomllib.load(fh).get("project", {}).get("scripts", {})
+                    data = tomllib.load(fh)
             except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-                raise PlanError(f"{file} cannot be read: {exc}") from None
-            return [(name, *spec.partition(":")[::2]) for name, spec in scripts.items()]
-    return []
+                why = f"{file.name} cannot be read ({exc}), so its console scripts are not looked for"
+                data = {}
+            project = data.get("project", {})
+            scripts = project.get("scripts", {}) if isinstance(project, dict) else None
+            if not isinstance(scripts, dict) or not all(isinstance(v, str) for v in scripts.values()):
+                why = why or f"{file.name}: [project.scripts] is not a table of strings, so its console scripts are not looked for"
+                scripts = {}
+            return [(name, *spec.partition(":")[::2]) for name, spec in scripts.items()], why
+    return [], None
 
 
 def _is_main(node):
@@ -222,8 +231,10 @@ def _entries(path):
     for group, cid in adds:  # `cli.add_command(sub)` puts a proven command under a proven group
         if group in groups and cid != group and cid in parent and parent[cid] is None:
             parent[cid] = group
+    manifest = None
     if path.is_dir():
-        for script, module, fn in _scripts(path):
+        found_scripts, manifest = _scripts(path)
+        for script, module, fn in found_scripts:
             cid = _live(index, scopes, tuple(module.split(".")), fn)
             if cid:
                 entries.append((("script", cid), f"console script {script} = {module}:{fn}", [cid], (SCRIPT, script)))
@@ -238,6 +249,8 @@ def _entries(path):
         return f"@{name}.{kind} on {names[cid]} in {rel}: {name} is not proven to be {what}"
 
     unproven = [why_not(*m) for m in looks if m not in proven] + moved
+    if manifest:
+        unproven.append(manifest)
     included = {k: v for k, v in included.items() if k in apps}
     return names, edges, nodes, entries, parent, included, unproven, loads, unread
 

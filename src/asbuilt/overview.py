@@ -7,7 +7,9 @@ asbuilt.javascript.find_components return them, every charted function or class
 by id, the files they sit in, and the packages the project's manifests declare.
 What could not be read is named, never left out: files that did not parse
 (`not_read`), folders skipped (`skipped`), manifests that could not be read
-(`packages_unreadable`), and, in a folder with Python and JavaScript/TypeScript,
+(`packages_unreadable`), declarations in the manifests read (`packages_read`) that
+are not read (`packages_not_read`), each reader's entry points it could not follow
+(their components' `not_proven` and `entries_reaching_nothing`), and, in a folder with Python and JavaScript/TypeScript,
 a JavaScript/TypeScript reader failure (`js_error`) beside the Python components.
 """
 
@@ -118,6 +120,8 @@ def build(target):
         "project": found["project"],
         "packages": found["packages"],
         "packages_unreadable": found.get("unreadable", []),
+        "packages_read": found["read"],
+        "packages_not_read": found["not_read"],
         "components": None,
         "js_components": None,
         "js_error": None,
@@ -167,7 +171,12 @@ def problems(payload):
     lines += [f"could not read {item}" for item in payload["not_read"]]
     if payload["js_error"]:
         lines.append(f"JavaScript/TypeScript not charted: {payload['js_error']}")
+    for label, key in (("Python", "components"), ("JavaScript/TypeScript", "js_components")):
+        info = payload[key] or {}
+        lines += [f"{label} entry point reaching no charted function: {e}" for e in info.get("entries_reaching_nothing", [])]
+        lines += [f"{label} not proven: {e}" for e in info.get("not_proven", [])]
     lines += [f"could not read {name}" for name in payload["packages_unreadable"]]
+    lines += [f"packages not read: {item}" for item in payload["packages_not_read"]]
     return lines
 
 
