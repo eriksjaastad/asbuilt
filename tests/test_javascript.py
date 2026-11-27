@@ -5,9 +5,12 @@ import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from asbuilt.built import PASSES
 from asbuilt.compare import check
-from asbuilt.javascript import _module, chart, main
+from asbuilt.javascript import _module, chart, find_components, main
+from asbuilt.marks import _ORDER as MARK_ORDER
 from asbuilt.state import PlanError
 
 
@@ -266,7 +269,7 @@ class JavaScript(unittest.TestCase):
             "import work from './lib.js';\nfunction run() { return work(); }\n",
         )
         self.assertEqual(
-            self.calls(self.read()), {("entry.js:run:2", "lib.js:default:1")}
+            self.calls(self.read()), {("entry.js:run:2", "lib.js:lib:1")}
         )
 
     def test_source_only_below_chart_root_and_for_direct_test_filenames(self):
@@ -535,6 +538,1529 @@ class JavaScript(unittest.TestCase):
         self.assertIsNone(
             _module("src/app.ts", "./only.ts", {"src/only.js": None}),
         )
+
+    def test_commonjs_require_default_destructured_bare_and_ignored_forms(self):
+        self.put(
+            "single.js",
+            "function work() { return 1; }\nmodule.exports = work;\n",
+        )
+        self.put(
+            "named.js",
+            "function alpha() {}\nfunction beta() {}\n"
+            "module.exports = { alpha, raw: beta };\n",
+        )
+        self.put(
+            "props.js",
+            "function delta() {}\nexports.delta = delta;\n"
+            "module.exports.gamma = () => 2;\n",
+        )
+        self.put(
+            "side.js",
+            "function init() {}\n",
+        )
+        self.put(
+            "app.js",
+            "const fs = require('fs');\n"
+            "const work = require('./single');\n"
+            "const { alpha, raw: renamed } = require('./named');\n"
+            "const { delta, gamma } = require('./props');\n"
+            "require('./side');\n"
+            "const dyn = require(fs);\n"
+            "const expr = require('./sin' + 'gle');\n"
+            "const tpl = require(`./single`);\n"
+            "function run() { work(); alpha(); renamed(); delta(); gamma(); dyn(); expr(); tpl(); }\n",
+        )
+        plan = self.read()
+        self.assertEqual(
+            self.calls(plan),
+            {
+                ("app.js:run:9", "single.js:work:1"),
+                ("app.js:run:9", "named.js:alpha:1"),
+                ("app.js:run:9", "named.js:beta:2"),
+            },
+        )
+        imports = [
+            (e["sources"][0], e["targets"][0])
+            for e in plan["edges"]
+            if e.get("labels")
+        ]
+        self.assertEqual(
+            sorted(imports),
+            [
+                ("app.js", "named.js"),
+                ("app.js", "props.js"),
+                ("app.js", "side.js"),
+                ("app.js", "single.js"),
+            ],
+        )
+
+    def test_commonjs_require_against_esm_and_safety_guards(self):
+        # Destructured require reaches ES named exports; bare require of an ES
+        # module returns its namespace object, so main() proves nothing.
+        esm = self.root / "esm_target"
+        self.put(
+            "esm_target/lib.js",
+            "export default function main() {}\nexport function helper() {}\n",
+        )
+        self.put(
+            "esm_target/app.js",
+            "const main = require('./lib');\n"
+            "const { helper: assist } = require('./lib');\n"
+            "function run() { main(); assist(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(esm)),
+            {("app.js:run:3", "lib.js:helper:2")},
+        )
+
+        # Shadowed require, reassigned binding, and duplicate CJS exports refuse edges.
+        guarded = self.root / "guarded"
+        self.put(
+            "guarded/dup.js",
+            "function one() {}\nfunction two() {}\nexports.a = one;\nexports.a = two;\n",
+        )
+        self.put(
+            "guarded/good.js",
+            "function ok() {}\nmodule.exports = ok;\n",
+        )
+        self.put(
+            "guarded/reassigned.js",
+            "let ok = require('./good');\nok = () => {};\nfunction run() { ok(); }\n",
+        )
+        self.put(
+            "guarded/shadowed.js",
+            "function require() {}\nconst ok = require('./good');\nfunction run() { ok(); }\n",
+        )
+        self.put(
+            "guarded/uses_dup.js",
+            "const { a } = require('./dup');\nfunction run() { a(); }\n",
+        )
+        self.assertFalse(self.calls(self.read(guarded)))
+
+    def test_commonjs_replaced_deleted_or_shadowed_exports_prove_nothing(self):
+        cases = {
+            "replaced_object": "function f() {}\nexports.f = f;\nmodule.exports = {};\n",
+            "replaced_require": "function f() {}\nexports.f = f;\nmodule.exports = require('./other');\n",
+            "replaced_if": "function f() {}\nexports.f = f;\nif (x) { module.exports = {}; }\n",
+            "replaced_in_fn": "function f() {}\nexports.f = f;\nfunction reset() { module.exports = {}; }\n",
+            "deleted": "function f() {}\nexports.f = f;\ndelete exports.f;\n",
+            "rebound": "function f() {}\nexports = {};\nexports.f = f;\n",
+            "shadowed": "function f() {}\nexports.f = f;\nfunction g(exports) { exports.f = 1; }\n",
+            "aliased": "function f() {}\nexports.f = f;\nObject.assign(module.exports, {});\n",
+            "after_replace": "function f() {}\nmodule.exports = {};\nexports.f = f;\n",
+            "property": "function f() {}\nexports.f = f;\n",
+            "overwritten": "function f() {}\nfunction g() {}\nexports.f = f;\nexports.f = g.bind(null);\n",
+            "spread": "function f() {}\nfunction g() {}\nmodule.exports = { f, ...{ f: g } };\n",
+            "quoted": "function f() {}\nfunction g() {}\nmodule.exports = { f, 'f': g };\n",
+            "computed": "function f() {}\nfunction g() {}\nmodule.exports = { f, ['f']: g };\n",
+            "method": "function f() {}\nmodule.exports = { f, g() {} };\n",
+            "literal": "function f() {}\nmodule.exports = { f, n: null };\n",
+            "imported_module": "import module from 'custom';\nfunction f() {}\nmodule.exports = { f };\n",
+            "main_check": "function f() {}\nmodule.exports = { f };\nif (require.main === module) f();\n",
+        }
+        for label, lib in cases.items():
+            with self.subTest(label=label):
+                folder = self.root / label
+                self.put(f"{label}/other.js", "module.exports = {};\n")
+                self.put(f"{label}/lib.js", lib)
+                self.put(
+                    f"{label}/app.js",
+                    "const { f } = require('./lib');\nfunction run() { f(); }\n",
+                )
+                self.assertFalse(
+                    {c for c in self.calls(self.read(folder)) if c[0].startswith("app.js")}
+                )
+
+    def test_commonjs_properties_are_not_lexical_and_default_is_not_callable(self):
+        self.put(
+            "lib.js",
+            "exports.a = () => 1;\nexports.default = function d() {};\n"
+            "function local() { a(); }\n",
+        )
+        self.put("dflt.js", "function f() {}\nmodule.exports = { default: f };\n")
+        self.put(
+            "app.js",
+            "const lib = require('./lib');\n"
+            "import d from './lib';\n"
+            "import value from './dflt';\n"
+            "const { a } = require('./lib');\n"
+            "function run() { lib(); d(); value(); a(); }\n",
+        )
+        # Controls: module.exports = function, = identifier, = { a, b }.
+        self.put("fn.js", "module.exports = function main() {};\n")
+        self.put("ident.js", "function work() {}\nmodule.exports = work;\n")
+        self.put("obj.js", "function x() {}\nfunction y() {}\nmodule.exports = { x, y };\n")
+        self.put(
+            "use.js",
+            "const main = require('./fn');\nimport work from './ident';\n"
+            "const { x, y } = require('./obj');\n"
+            "function go() { main(); work(); x(); y(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read()),
+            {
+                ("use.js:go:4", "fn.js:main:1"),
+                ("use.js:go:4", "ident.js:work:1"),
+                ("use.js:go:4", "obj.js:x:1"),
+                ("use.js:go:4", "obj.js:y:2"),
+            },
+        )
+
+    def test_directory_index_resolution_and_ambiguous_refusal(self):
+        # Unambiguous directory index resolution for both ./utils and ./utils/
+        clean = self.root / "clean"
+        self.put("clean/utils/index.ts", "export function help() { return 1; }\n")
+        self.put("clean/cjs/index.js", "function tool() {}\nmodule.exports = { tool };\n")
+        self.put(
+            "clean/app.ts",
+            "import { help } from './utils';\n"
+            "import { help as helpSlash } from './utils/';\n"
+            "const { tool } = require('./cjs');\n"
+            "export function run() { help(); helpSlash(); tool(); }\n",
+        )
+        plan = self.read(clean)
+        self.assertEqual(
+            self.calls(plan),
+            {
+                ("app.ts:run:4", "utils/index.ts:help:1"),
+                ("app.ts:run:4", "cjs/index.js:tool:1"),
+            },
+        )
+        imports = [
+            (e["sources"][0], e["targets"][0])
+            for e in plan["edges"]
+            if e.get("labels")
+        ]
+        self.assertEqual(
+            sorted(imports),
+            [("app.ts", "cjs/index.js"), ("app.ts", "utils/index.ts")],
+        )
+
+        # Ambiguous directory index (multiple index.* files) refuses both import and call edges.
+        ambig = self.root / "ambig_idx"
+        self.put("ambig_idx/utils/index.js", "export function help() {}\n")
+        self.put("ambig_idx/utils/index.ts", "export function help() {}\n")
+        self.put(
+            "ambig_idx/app.ts",
+            "import { help } from './utils';\nexport function run() { help(); }\n",
+        )
+        ambig_plan = self.read(ambig)
+        self.assertFalse(self.calls(ambig_plan))
+        self.assertFalse(ambig_plan.get("edges"))
+
+        # Unit checks across all 8 index extensions, trailing slash, and root '.' / './'.
+        for ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"):
+            with self.subTest(ext=ext):
+                target = f"src/utils/index{ext}"
+                self.assertEqual(
+                    _module("src/app.ts", "./utils", {target: None}), target
+                )
+                self.assertEqual(
+                    _module("src/app.ts", "./utils/", {target: None}), target
+                )
+        self.assertIsNone(
+            _module(
+                "src/app.ts",
+                "./utils",
+                {"src/utils/index.mjs": None, "src/utils/index.mts": None},
+            )
+        )
+        self.assertEqual(
+            _module(
+                "src/app.ts",
+                "./utils/",
+                {"src/utils.ts": None, "src/utils/index.ts": None},
+            ),
+            "src/utils/index.ts",
+        )
+        self.assertIsNone(
+            _module("src/app.ts", "./utils/", {"src/utils.ts": None})
+        )
+        self.assertEqual(
+            _module("app.ts", "./", {"index.ts": None}),
+            "index.ts",
+        )
+        self.assertEqual(
+            _module("app.ts", ".", {"index.ts": None}),
+            "index.ts",
+        )
+
+    def test_directory_with_package_json_proves_no_directory_import(self):
+        self.put("differ/package.json", '{"main": "entry.js"}')
+        self.put("differ/entry.js", "function e() {}\nmodule.exports = e;\n")
+        self.put("differ/index.js", "function i() {}\nmodule.exports = i;\n")
+        self.put("only_entry/package.json", '{"main": "entry.js"}')
+        self.put("only_entry/entry.js", "function e() {}\nmodule.exports = e;\n")
+        self.put("plain/index.js", "function p() {}\nmodule.exports = p;\n")
+        self.put(
+            "app.js",
+            "const a = require('./differ');\nconst b = require('./only_entry');\n"
+            "const c = require('./plain');\nfunction run() { a(); b(); c(); }\n",
+        )
+        plan = self.read()
+        self.assertEqual(self.calls(plan), {("app.js:run:4", "plain/index.js:p:1")})
+        self.assertEqual(
+            [e["targets"][0] for e in plan["edges"]], ["plain/index.js"]
+        )
+
+    def test_nested_or_extended_configs_withhold_root_aliases(self):
+        nested = self.root / "nested"
+        self.put(
+            "nested/tsconfig.json",
+            '{"compilerOptions": {"paths": {"@/*": ["src/*"]}}}',
+        )
+        self.put(
+            "nested/frontend/tsconfig.json",
+            '{"compilerOptions": {"paths": {"@/*": ["web/*"]}}}',
+        )
+        self.put("nested/src/util.ts", "export function util() {}\n")
+        self.put("nested/frontend/web/util.ts", "export function util() {}\n")
+        self.put(
+            "nested/frontend/app.ts",
+            "import { util } from '@/util';\nexport function front() { util(); }\n",
+        )
+        self.put(
+            "nested/src/app.ts",
+            "import { util } from '@/util';\nexport function back() { util(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(nested)),
+            {("src/app.ts:back:2", "src/util.ts:util:1")},
+        )
+        extended = self.root / "extended"
+        self.put("extended/base.json", '{"compilerOptions": {"paths": {"@/*": ["alt/*"]}}}')
+        self.put(
+            "extended/tsconfig.json",
+            '{"extends": "./base.json", "compilerOptions": {"paths": {"@/*": ["src/*"]}}}',
+        )
+        self.put("extended/src/util.ts", "export function util() {}\n")
+        self.put(
+            "extended/app.ts",
+            "import { util } from '@/util';\nexport function run() { util(); }\n",
+        )
+        self.assertFalse(self.calls(self.read(extended)))
+
+    def test_tsconfig_jsonc_path_aliases_and_baseurl(self):
+        proj = self.root / "ts_aliases"
+        self.put(
+            "ts_aliases/tsconfig.json",
+            """{
+              // Line comment with "quotes"
+              "compilerOptions": {
+                /* Multi-line block comment
+                   covering baseUrl and paths */
+                "baseUrl": ".",
+                "paths": {
+                  "@/*": ["src/*"], // inline comment
+                  "~components/*": ["components/*"],
+                  "@exact": ["src/exact/entry"],
+                  "@url-safe/*": ["src/*"], /* comment after comma */
+                },
+              },
+            }
+            """,
+        )
+        self.put("ts_aliases/src/utils/math.ts", "export function add() { return 1; }\n")
+        self.put("ts_aliases/components/Button/index.tsx", "export function Button() { return <div/>; }\n")
+        self.put("ts_aliases/src/exact/entry.ts", "export function boot() {}\n")
+        self.put("ts_aliases/src/direct.ts", "export function direct() {}\n")
+        self.put(
+            "ts_aliases/src/app.tsx",
+            "import { add } from '@/utils/math';\n"
+            "import { Button } from '~components/Button';\n"
+            "import { boot } from '@exact';\n"
+            "import { direct } from 'src/direct';\n"
+            "export function App() { add(); Button(); boot(); direct(); }\n",
+        )
+        plan = self.read(proj)
+        self.assertEqual(
+            self.calls(plan),
+            {
+                ("src/app.tsx:App:5", "src/utils/math.ts:add:1"),
+                ("src/app.tsx:App:5", "components/Button/index.tsx:Button:1"),
+                ("src/app.tsx:App:5", "src/exact/entry.ts:boot:1"),
+                ("src/app.tsx:App:5", "src/direct.ts:direct:1"),
+            },
+        )
+
+    def test_jsconfig_aliases_without_baseurl_and_ambiguous_or_broken_configs(self):
+        # jsconfig.json with paths (no baseUrl) + CommonJS require
+        js_proj = self.root / "js_aliases"
+        self.put(
+            "js_aliases/jsconfig.json",
+            '{"compilerOptions": {"paths": {"@lib/*": ["lib/*"]}}}',
+        )
+        self.put("js_aliases/lib/fmt.js", "function fmt() {}\nmodule.exports = fmt;\n")
+        self.put(
+            "js_aliases/index.js",
+            "const fmt = require('@lib/fmt');\nfunction run() { fmt(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(js_proj)),
+            {("index.js:run:2", "lib/fmt.js:fmt:1")},
+        )
+
+        # Ambiguous multi-target path alias refuses when both targets exist, resolves when one exists.
+        ambig = self.root / "ambig_alias"
+        self.put(
+            "ambig_alias/tsconfig.json",
+            '{"compilerOptions": {"paths": {"@/*": ["src/*", "alt/*"]}}}',
+        )
+        self.put("ambig_alias/src/one.ts", "export function one() {}\n")
+        self.put("ambig_alias/src/both.ts", "export function both() {}\n")
+        self.put("ambig_alias/alt/both.ts", "export function both() {}\n")
+        self.put(
+            "ambig_alias/app.ts",
+            "import { one } from '@/one';\n"
+            "import { both } from '@/both';\n"
+            "export function run() { one(); both(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(ambig)),
+            {("app.ts:run:3", "src/one.ts:one:1")},
+        )
+
+        # Unparseable or root-escaping configs are ignored without crashing.
+        for label, content in (
+            ("syntax_err", "{ broken json"),
+            ("unclosed_comment", '{"compilerOptions": /* unclosed }'),
+            ("escape_root", '{"compilerOptions": {"baseUrl": "../outside", "paths": {"@/*": ["*"]}}}'),
+            ("not_object", '["invalid"]'),
+        ):
+            with self.subTest(label=label):
+                folder = self.root / f"broken_{label}"
+                self.put(f"broken_{label}/tsconfig.json", content)
+                self.put(f"broken_{label}/lib.ts", "export function ok() {}\n")
+                self.put(
+                    f"broken_{label}/app.ts",
+                    "import { ok } from './lib';\n"
+                    "import { nope } from '@/lib';\n"
+                    "export function run() { ok(); nope(); }\n",
+                )
+                self.assertEqual(
+                    self.calls(self.read(folder)),
+                    {("app.ts:run:3", "lib.ts:ok:1")},
+                )
+
+    def badges_by_name(self, path):
+        plan = self.read(path)
+        return {
+            box["labels"][0]["text"]: box["asbuilt"].get("badges")
+            for box in self.boxes(plan).values()
+            if "asbuilt" in box
+        }
+
+    def test_work_marks_env_detection_and_shadowing(self):
+        path = self.put(
+            "env.ts",
+            "export function propEnv() { return process.env.API_KEY; }\n"
+            "export function indexEnv() { return process.env['SECRET']; }\n"
+            "export function destructEnv() { const { PORT } = process.env; return PORT; }\n"
+            "export function viteEnv() { return import.meta.env.VITE_URL; }\n"
+            "export function viteIndexEnv() { return import.meta.env['VITE_KEY']; }\n"
+            "export function denoEnv() { return Deno.env.get('TOKEN'); }\n"
+            "export function shadowProcParam(process: any) { return process.env.API_KEY; }\n"
+            "export function shadowProcLocal() { const process = { env: { A: 1 } }; return process.env.A; }\n"
+            "export function shadowDeno(Deno: any) { return Deno.env.get('X'); }\n"
+            "export function metaUrlOnly() { return import.meta.url; }\n"
+            "export function typeQueryOnly(x: typeof process.env) { return x; }\n"
+            "export function procCheckOnly() { return typeof process !== 'undefined'; }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path),
+            {
+                "propEnv()": ["env"],
+                "indexEnv()": ["env"],
+                "destructEnv()": ["env"],
+                "viteEnv()": ["env"],
+                "viteIndexEnv()": ["env"],
+                "denoEnv()": ["env"],
+                "shadowProcParam()": None,
+                "shadowProcLocal()": None,
+                "shadowDeno()": None,
+                "metaUrlOnly()": None,
+                "typeQueryOnly()": None,
+                "procCheckOnly()": None,
+            },
+        )
+        # Named import from node:process also proves env; top-level const process shadows it.
+        node_proc = self.put(
+            "node_proc.ts",
+            "import { env } from 'node:process';\n"
+            "export function readImported() { return env.HOME; }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(node_proc),
+            {"readImported()": ["env"]},
+        )
+        top_shadow = self.put(
+            "top_shadow.js",
+            "const process = { env: {} };\n"
+            "export function readFake() { return process.env.HOME; }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(top_shadow),
+            {"readFake()": None},
+        )
+
+    def test_work_marks_input_detection_and_shadowing(self):
+        path = self.put(
+            "input.ts",
+            "import readline from 'node:readline';\n"
+            "import { createInterface as makeRl } from 'readline';\n"
+            "const rlCjs = require('readline');\n"
+            "export function readArgv() { return process.argv.slice(2); }\n"
+            "export function readStdin() { process.stdin.resume(); }\n"
+            "export function useRl() { return readline.createInterface({}); }\n"
+            "export function useNamedRl() { return makeRl({}); }\n"
+            "export function useCjsRl() { return rlCjs.createInterface({}); }\n"
+            "export function askUser() { return prompt('Name?'); }\n"
+            "export function shadowPromptParam(prompt: any) { return prompt('Name?'); }\n"
+            "export function promptValueOnly(prompt: string) { return prompt.trim(); }\n"
+            "export function shadowProc(process: any) { return process.argv; }\n"
+            "export function shadowRl(readline: any) { return readline.createInterface({}); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path),
+            {
+                "readArgv()": ["input"],
+                "readStdin()": ["input"],
+                "useRl()": ["input"],
+                "useNamedRl()": ["input"],
+                "useCjsRl()": ["input"],
+                "askUser()": ["input"],
+                "shadowPromptParam()": None,
+                "promptValueOnly()": None,
+                "shadowProc()": None,
+                "shadowRl()": None,
+            },
+        )
+        fake_rl = self.put(
+            "fake_rl.js",
+            "const readline = { createInterface() {} };\n"
+            "function prompt() {}\n"
+            "export function run() { readline.createInterface({}); prompt('hi'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(fake_rl),
+            {"prompt()": None, "run()": None},
+        )
+
+    def test_work_marks_writes_fs_storage_and_cookies(self):
+        fs_methods = (
+            "writeFile",
+            "writeFileSync",
+            "appendFile",
+            "appendFileSync",
+            "createWriteStream",
+            "mkdir",
+            "mkdirSync",
+            "rm",
+            "rmSync",
+            "unlink",
+            "unlinkSync",
+            "rename",
+            "renameSync",
+            "copyFile",
+            "copyFileSync",
+        )
+        lines = [
+            "import fs from 'fs';",
+            "import * as nfs from 'node:fs';",
+            "import { writeFile as wf } from 'fs/promises';",
+            "import * as fsp from 'node:fs/promises';",
+            "import { promises as fsPromises } from 'node:fs';",
+        ]
+        expected = {}
+        for idx, method in enumerate(fs_methods):
+            fn = f"m{idx}"
+            lines.append(f"export function {fn}() {{ fs.{method}('a', 'b'); }}")
+            expected[f"{fn}()"] = ["writes"]
+        lines.extend(
+            [
+                "export function viaNodeFs() { nfs.promises.writeFile('a', 'b'); }",
+                "export function viaNamedPromises() { wf('a', 'b'); }",
+                "export function viaNsPromises() { fsp.rm('a'); }",
+                "export function viaFsPromisesProp() { fsPromises.appendFile('a', 'b'); }",
+                "export function readOnlyFs() { fs.readFileSync('a'); nfs.existsSync('a'); }",
+                "export function setLocal() { localStorage.setItem('k', 'v'); }",
+                "export function setSession() { sessionStorage.setItem('k', 'v'); }",
+                "export function getLocal() { return localStorage.getItem('k'); }",
+                "export function setCookie() { document.cookie = 'a=1'; }",
+                "export function appendCookie() { document.cookie += '; path=/'; }",
+                "export function readCookie() { return document.cookie; }",
+                "export function shadowFs(fs) { fs.writeFileSync('a', 'b'); }",
+                "export function shadowStorage(localStorage, sessionStorage, document) {",
+                "  localStorage.setItem('k', 'v');",
+                "  sessionStorage.setItem('k', 'v');",
+                "  document.cookie = 'a=1';",
+                "}",
+            ]
+        )
+        expected.update(
+            {
+                "viaNodeFs()": ["writes"],
+                "viaNamedPromises()": ["writes"],
+                "viaNsPromises()": ["writes"],
+                "viaFsPromisesProp()": ["writes"],
+                "readOnlyFs()": None,
+                "setLocal()": ["writes"],
+                "setSession()": ["writes"],
+                "getLocal()": None,
+                "setCookie()": ["writes"],
+                "appendCookie()": ["writes"],
+                "readCookie()": None,
+                "shadowFs()": None,
+                "shadowStorage()": None,
+            }
+        )
+        path = self.put("writes.js", "\n".join(lines) + "\n")
+        self.assertEqual(self.badges_by_name(path), expected)
+
+        # CommonJS require and negative unimported fs cases.
+        cjs = self.put(
+            "writes_cjs.js",
+            "const { writeFileSync: save } = require('node:fs');\n"
+            "const fsp = require('fs/promises');\n"
+            "export function cjsSave() { save('a', 'b'); }\n"
+            "export function cjsFsp() { fsp.mkdir('d'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(cjs),
+            {"cjsSave()": ["writes"], "cjsFsp()": ["writes"]},
+        )
+        fake_fs = self.put(
+            "fake_fs.js",
+            "const fs = { writeFile() {}, writeFileSync() {} };\n"
+            "export function notReal() { fs.writeFile('a', 'b'); fs.writeFileSync('a', 'b'); }\n",
+        )
+        self.assertEqual(self.badges_by_name(fake_fs), {"notReal()": None})
+
+    def test_work_marks_calls_out_network_and_subprocess(self):
+        path = self.put(
+            "out.ts",
+            "import http from 'http';\n"
+            "import * as https from 'node:https';\n"
+            "import { get as httpGet } from 'node:http';\n"
+            "import axios from 'axios';\n"
+            "import cp, { execSync, spawn as spawnProc } from 'node:child_process';\n"
+            "const api = axios.create({ baseURL: 'https://example.com' });\n"
+            "export function useFetch() { return fetch('https://example.com'); }\n"
+            "export function useNestedFetch() { return () => fetch('https://example.com'); }\n"
+            "export function useXhr() { return new XMLHttpRequest(); }\n"
+            "export function useWs() { return new WebSocket('wss://example.com'); }\n"
+            "export function useHttpReq() { return http.request('http://example.com'); }\n"
+            "export function useHttpsGet() { return https.get('https://example.com'); }\n"
+            "export function useNamedHttpGet() { return httpGet('http://example.com'); }\n"
+            "export function useAxiosGet() { return axios.get('https://example.com'); }\n"
+            "export function useAxiosCall() { return axios('https://example.com'); }\n"
+            "export function useAxiosClient() { return api.post('/items', {}); }\n"
+            "export function useExec() { return cp.exec('ls'); }\n"
+            "export function useExecSync() { return execSync('ls'); }\n"
+            "export function useSpawn() { return spawnProc('ls'); }\n"
+            "export function useSpawnSync() { return cp.spawnSync('ls'); }\n"
+            "export function useExecFile() { return cp.execFile('ls'); }\n"
+            "export function useExecFileSync() { return cp.execFileSync('ls'); }\n"
+            "export function httpServerOnly() { return http.createServer(() => {}); }\n"
+            "export function shadowFetchParam(fetch: any) { return fetch('https://example.com'); }\n"
+            "export function shadowFetchLocal() { const fetch = () => 1; return fetch(); }\n"
+            "export function shadowXhr(XMLHttpRequest: any, WebSocket: any) { new XMLHttpRequest(); new WebSocket(); }\n"
+            "export function checkWsOnly() { return typeof WebSocket !== 'undefined'; }\n"
+            "export function methodFetch(obj: any) { return obj.fetch('https://example.com'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path),
+            {
+                "useFetch()": ["calls out"],
+                "useNestedFetch()": ["calls out"],
+                "useXhr()": None,
+                "useWs()": ["calls out"],
+                "useHttpReq()": ["calls out"],
+                "useHttpsGet()": ["calls out"],
+                "useNamedHttpGet()": ["calls out"],
+                "useAxiosGet()": ["calls out"],
+                "useAxiosCall()": ["calls out"],
+                "useAxiosClient()": ["calls out"],
+                "useExec()": ["calls out"],
+                "useExecSync()": ["calls out"],
+                "useSpawn()": ["calls out"],
+                "useSpawnSync()": ["calls out"],
+                "useExecFile()": ["calls out"],
+                "useExecFileSync()": ["calls out"],
+                "httpServerOnly()": None,
+                "shadowFetchParam()": None,
+                "shadowFetchLocal()": None,
+                "shadowXhr()": None,
+                "checkWsOnly()": None,
+                "methodFetch()": None,
+            },
+        )
+        # Local function fetch() and unimported axios/child_process must not mark.
+        shadowed = self.put(
+            "shadow_out.js",
+            "function fetch() { return 1; }\n"
+            "const axios = { get() {} };\n"
+            "const child_process = { execSync() {} };\n"
+            "export function run() { fetch(); axios.get('x'); child_process.execSync('ls'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(shadowed),
+            {"fetch()": None, "run()": None},
+        )
+
+    def test_network_badge_needs_a_request_not_a_helper(self):
+        path = self.put(
+            "helpers.ts",
+            "import axios from 'axios';\n"
+            "const api = axios.create({ baseURL: 'https://example.com' });\n"
+            "export function isErr(e: any) { return axios.isAxiosError(e); }\n"
+            "export function uri() { return api.getUri(); }\n"
+            "export function make() { return axios.create(); }\n"
+            "export function bare() { const x = new XMLHttpRequest(); x.open('GET', '/a'); return x; }\n"
+            "export function sent() { const x = new XMLHttpRequest(); x.open('GET', '/a'); x.send(); }\n"
+            "export function clientCall() { return api('/items'); }\n"
+            "export function clientReq() { return api.request({}); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path),
+            {
+                "isErr()": None,
+                "uri()": None,
+                "make()": None,
+                "bare()": None,
+                "sent()": ["calls out"],
+                "clientCall()": ["calls out"],
+                "clientReq()": ["calls out"],
+            },
+        )
+
+    def test_work_marks_resolve_writes_and_switch_declarations_per_scope(self):
+        path = self.put(
+            "scoped.js",
+            "import OpenAI from 'openai';\n"
+            "const openai = new OpenAI();\n"
+            "export function wrap(fetch) { fetch = fetch.bind(null); return fetch('/x'); }\n"
+            "export function real() { return fetch('https://example.com'); }\n"
+            "export function retry(openai) { openai = null; return openai; }\n"
+            "export function ask() { return openai.chat.completions.create({}); }\n"
+            "export function pick(k) { switch (k) { case 1: const fetch = () => 1; return fetch(); } }\n"
+            "export function env(k) { switch (k) { default: let process = { env: {} }; return process.env.A; } }\n"
+            "export function client(k) { switch (k) { case 1: const openai = { chat: {} }; return openai.chat.completions.create({}); } }\n"
+            "export function caseValue(k) { switch (k) { case fetch('/a'): return 1; } }\n"
+            "export function rebind() { fetch = null; }\n"
+            "export function later() { return fetch('/b'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path),
+            {
+                "wrap()": None,
+                "real()": None,
+                "retry()": None,
+                "ask()": ["model"],
+                "pick()": None,
+                "env()": None,
+                "client()": None,
+                "caseValue()": None,
+                "rebind()": None,
+                "later()": None,
+            },
+        )
+        without_rebind = self.put(
+            "scoped2.js",
+            "export function wrap(fetch) { fetch = fetch.bind(null); return fetch('/x'); }\n"
+            "export function real() { return fetch('https://example.com'); }\n"
+            "export function caseValue(k) { switch (k) { case fetch('/a'): return 1; } }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(without_rebind),
+            {"wrap()": None, "real()": ["calls out"], "caseValue()": ["calls out"]},
+        )
+
+    def test_work_marks_model_sdks_and_client_instances(self):
+        path = self.put(
+            "models.ts",
+            "import OpenAI from 'openai';\n"
+            "import Anthropic from '@anthropic-ai/sdk';\n"
+            "import { GoogleGenAI } from '@google/genai';\n"
+            "import { GoogleGenerativeAI } from '@google/generative-ai';\n"
+            "import { generateText, streamText as stream } from 'ai';\n"
+            "const openai = new OpenAI();\n"
+            "let reassigned = new OpenAI();\n"
+            "reassigned = {} as any;\n"
+            "const gen = new GoogleGenerativeAI('k');\n"
+            "const geminiModel = gen.getGenerativeModel({ model: 'gemini-2.0-flash' });\n"
+            "export function makeOpenAI() { return new OpenAI(); }\n"
+            "export function makeAnthropic() { return new Anthropic(); }\n"
+            "export function makeGoogleGenAI() { return new GoogleGenAI({}); }\n"
+            "export function callGenerateText() { return generateText({ prompt: 'hi' }); }\n"
+            "export function callStreamText() { return stream({ prompt: 'hi' }); }\n"
+            "export function useModuleClient() { return openai.chat.completions.create({}); }\n"
+            "export function useDerivedClient() { return geminiModel.generateContent('hi'); }\n"
+            "export function returnClientOnly() { return openai; }\n"
+            "export function useReassignedClient() { return reassigned.chat.completions.create({}); }\n"
+            "export function shadowClientParam(openai: any) { return openai.chat.completions.create({}); }\n"
+            "export function shadowCtorParam(OpenAI: any) { return new OpenAI(); }\n"
+            "export function typeOnlyParam(client: OpenAI) { return client; }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path),
+            {
+                "makeOpenAI()": ["model"],
+                "makeAnthropic()": ["model"],
+                "makeGoogleGenAI()": ["model"],
+                "callGenerateText()": ["model"],
+                "callStreamText()": ["model"],
+                "useModuleClient()": ["model"],
+                "useDerivedClient()": ["model"],
+                "returnClientOnly()": None,
+                "useReassignedClient()": None,
+                "shadowClientParam()": None,
+                "shadowCtorParam()": None,
+                "typeOnlyParam()": None,
+            },
+        )
+        # Unimported OpenAI / generateText must not produce model marks.
+        fake_ai = self.put(
+            "fake_ai.js",
+            "class OpenAI {}\n"
+            "function generateText() {}\n"
+            "export function run() { generateText(); return new OpenAI(); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(fake_ai),
+            {"OpenAI": None, "generateText()": None, "run()": None},
+        )
+
+    def test_work_marks_canonical_order_classes_scoping_and_all_grammars(self):
+        # Canonical order matches marks._ORDER regardless of source order; pure box omits badges.
+        for suffix in ("js", "jsx", "ts", "tsx"):
+            with self.subTest(suffix=suffix):
+                jsx = "<div/>" if suffix in ("jsx", "tsx") else "1"
+                path = self.put(
+                    f"order.{suffix}",
+                    "import OpenAI from 'openai';\n"
+                    "import { writeFileSync } from 'node:fs';\n"
+                    "const client = new OpenAI();\n"
+                    "export function everything() {\n"
+                    "  client.responses.create({});\n"
+                    "  fetch('https://example.com');\n"
+                    "  writeFileSync('out.txt', 'ok');\n"
+                    "  prompt('continue?');\n"
+                    "  return process.env.MODE;\n"
+                    "}\n"
+                    f"export const Pure = () => {jsx};\n"
+                    "export class Worker {\n"
+                    "  fetch() { return 1; }\n"
+                    "  run() { fetch('https://example.com'); return process.env.NODE_ENV; }\n"
+                    "}\n"
+                    "export function blockScoping() {\n"
+                    "  { const fetch = () => 1; fetch(); }\n"
+                    "  return fetch('https://example.com');\n"
+                    "}\n"
+                    "export function hoistedVarShadows() {\n"
+                    "  if (false) { var fetch = () => 1; }\n"
+                    "  return fetch('https://example.com');\n"
+                    "}\n",
+                )
+                plan = self.read(path)
+                boxes = {
+                    b["labels"][0]["text"]: b["asbuilt"]
+                    for b in self.boxes(plan).values()
+                    if "asbuilt" in b
+                }
+                self.assertEqual(boxes["everything()"]["badges"], list(MARK_ORDER))
+                self.assertNotIn("badges", boxes["Pure()"])
+                self.assertEqual(boxes["Worker"]["badges"], ["env", "calls out"])
+                self.assertEqual(boxes["blockScoping()"]["badges"], ["calls out"])
+                self.assertNotIn("badges", boxes["hoistedVarShadows()"])
+
+    def test_component_wrappers_memo_forwardref_definecomponent_and_local_refs(self):
+        self.put(
+            "helpers.ts",
+            "export function formatLabel(s: string) { return s; }\n",
+        )
+        self.put(
+            "components.tsx",
+            "import React, { memo, forwardRef } from 'react';\n"
+            "import { defineComponent } from 'vue';\n"
+            "import { formatLabel } from './helpers';\n"
+            "function BaseIcon() {\n"
+            "  formatLabel('icon');\n"
+            "  return <span/>;\n"
+            "}\n"
+            "export const MemoBtn = React.memo(function(props: any) {\n"
+            "  formatLabel(props.label);\n"
+            "  fetch('https://example.com');\n"
+            "  return <button/>;\n"
+            "});\n"
+            "export const ShortMemo = memo((props: any) => {\n"
+            "  formatLabel(props.label);\n"
+            "  return <div/>;\n"
+            "});\n"
+            "export const ForwardInput = React.forwardRef<HTMLInputElement, any>((props, ref) => {\n"
+            "  formatLabel('input');\n"
+            "  return <input ref={ref}/>;\n"
+            "});\n"
+            "export const ShortForward = forwardRef(function InnerInput(props: any, ref: any) {\n"
+            "  return <input ref={ref}/>;\n"
+            "});\n"
+            "export const ChainedCard = React.memo(React.forwardRef((props: any, ref: any) => {\n"
+            "  formatLabel(process.env.CARD_TITLE || '');\n"
+            "  return <section ref={ref}/>;\n"
+            "}));\n"
+            "export const ShortChained = memo(forwardRef(function(props: any, ref: any) {\n"
+            "  MemoBtn(props);\n"
+            "  return <article ref={ref}/>;\n"
+            "}));\n"
+            "export const VueWidget = defineComponent((props: any) => {\n"
+            "  formatLabel('vue');\n"
+            "  return () => <div/>;\n"
+            "});\n"
+            "export const WrappedIcon = React.memo(BaseIcon);\n"
+            "export const NonFnDefined = defineComponent({ name: 'Ignored' });\n",
+        )
+        self.put(
+            "app.tsx",
+            "import { MemoBtn, ChainedCard, WrappedIcon } from './components';\n"
+            "export function App() {\n"
+            "  MemoBtn({});\n"
+            "  ChainedCard({});\n"
+            "  WrappedIcon();\n"
+            "  return <main/>;\n"
+            "}\n",
+        )
+        plan = self.read()
+        boxes = self.boxes(plan)
+        for expected_id in (
+            "components.tsx:BaseIcon:4",
+            "components.tsx:MemoBtn:8",
+            "components.tsx:ShortMemo:13",
+            "components.tsx:ForwardInput:17",
+            "components.tsx:ShortForward:21",
+            "components.tsx:ChainedCard:24",
+            "components.tsx:ShortChained:28",
+            "components.tsx:VueWidget:32",
+            "components.tsx:WrappedIcon:36",
+        ):
+            self.assertIn(expected_id, boxes)
+        self.assertNotIn("components.tsx:NonFnDefined:37", boxes)
+        self.assertEqual(
+            boxes["components.tsx:MemoBtn:8"]["asbuilt"].get("badges"),
+            ["calls out"],
+        )
+        self.assertEqual(
+            boxes["components.tsx:ChainedCard:24"]["asbuilt"].get("badges"),
+            ["env"],
+        )
+        self.assertEqual(
+            boxes["components.tsx:WrappedIcon:36"]["labels"],
+            [{"text": "WrappedIcon()"}],
+        )
+        self.assertEqual(
+            self.calls(plan),
+            {
+                ("components.tsx:BaseIcon:4", "helpers.ts:formatLabel:1"),
+                ("components.tsx:MemoBtn:8", "helpers.ts:formatLabel:1"),
+                ("components.tsx:ShortMemo:13", "helpers.ts:formatLabel:1"),
+                ("components.tsx:ForwardInput:17", "helpers.ts:formatLabel:1"),
+                ("components.tsx:ChainedCard:24", "helpers.ts:formatLabel:1"),
+                ("components.tsx:ShortChained:28", "components.tsx:MemoBtn:8"),
+                ("components.tsx:VueWidget:32", "helpers.ts:formatLabel:1"),
+                ("components.tsx:WrappedIcon:36", "helpers.ts:formatLabel:1"),
+                ("app.tsx:App:2", "components.tsx:MemoBtn:8"),
+                ("app.tsx:App:2", "components.tsx:ChainedCard:24"),
+                ("app.tsx:App:2", "components.tsx:WrappedIcon:36"),
+            },
+        )
+
+    def test_component_wrappers_need_an_imported_wrapper_and_a_stable_target(self):
+        path = self.put(
+            "wrapped.tsx",
+            "import { memo as m } from 'react';\n"
+            "import * as Vue from 'vue';\n"
+            "function memo(fn: any) { return 42; }\n"
+            "function Base() { return fetch('https://example.com'); }\n"
+            "Base = () => null;\n"
+            "export const Fake = memo(() => fetch('https://example.com'));\n"
+            "export const Stale = m(Base);\n"
+            "export const Aliased = m(() => <div/>);\n"
+            "export const Spaced = Vue.defineComponent(() => () => <div/>);\n",
+        )
+        labels = {
+            box["labels"][0]["text"]
+            for box in self.boxes(self.read(path)).values()
+            if "asbuilt" in box
+        }
+        self.assertEqual(labels, {"memo()", "Base()", "Aliased()", "Spaced()"})
+
+    def test_anonymous_default_exports_use_file_stem_or_default_fallback(self):
+        self.put(
+            "Button.tsx",
+            "export default function(props: any) {\n"
+            "  fetch('https://example.com');\n"
+            "  return <button/>;\n"
+            "}\n",
+        )
+        self.put(
+            "Card.tsx",
+            "export default (props: any) => <div/>;\n",
+        )
+        self.put(
+            "Panel/index.tsx",
+            "export default () => <section/>;\n",
+        )
+        self.put(
+            "Taken.tsx",
+            "function Taken() { return 1; }\n"
+            "export default () => Taken();\n",
+        )
+        self.put(
+            "app.tsx",
+            "import Button from './Button';\n"
+            "import Card from './Card';\n"
+            "import Panel from './Panel';\n"
+            "import MakeTaken from './Taken';\n"
+            "export function App() {\n"
+            "  Button({});\n"
+            "  Card({});\n"
+            "  Panel();\n"
+            "  MakeTaken();\n"
+            "}\n",
+        )
+        plan = self.read()
+        boxes = self.boxes(plan)
+        self.assertIn("Button.tsx:Button:1", boxes)
+        self.assertEqual(
+            boxes["Button.tsx:Button:1"]["labels"], [{"text": "Button()"}]
+        )
+        self.assertEqual(
+            boxes["Button.tsx:Button:1"]["asbuilt"].get("badges"), ["calls out"]
+        )
+        self.assertIn("Card.tsx:Card:1", boxes)
+        self.assertIn("Panel/index.tsx:default:1", boxes)
+        self.assertIn("Taken.tsx:Taken:1", boxes)
+        self.assertIn("Taken.tsx:default:2", boxes)
+        self.assertEqual(
+            self.calls(plan),
+            {
+                ("Taken.tsx:default:2", "Taken.tsx:Taken:1"),
+                ("app.tsx:App:5", "Button.tsx:Button:1"),
+                ("app.tsx:App:5", "Card.tsx:Card:1"),
+                ("app.tsx:App:5", "Panel/index.tsx:default:1"),
+                ("app.tsx:App:5", "Taken.tsx:default:2"),
+            },
+        )
+
+    def test_p3_main_validates_input_before_output_and_allows_skip_named_project_root(self):
+        # 1. Invalid/excluded input path reports the input path error even if OUT is invalid.
+        missing = self.root / "missing.ts"
+        bad_out = self.root / "bad.txt"
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main([str(missing), str(bad_out)]), 2)
+        self.assertIn("missing.ts", err.getvalue())
+        self.assertNotIn("OUT must be JSON", err.getvalue())
+
+        excluded_file = self.put("src/app.test.ts", "function t() {}\n")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main([str(excluded_file), str(bad_out)]), 2)
+        self.assertIn("app.test.ts", err.getvalue())
+        self.assertNotIn("OUT must be JSON", err.getvalue())
+
+        # 2. A directory root whose own name is in SKIP (e.g. 'test' or 'vendor')
+        # is allowed when it is itself a standalone project root (.git or package.json),
+        # while node_modules and nested proj/tests are still refused.
+        for folder_name, marker in (("test", "package.json"), ("vendor", ".git")):
+            repo = self.root / f"standalone_{marker}" / folder_name
+            self.put(f"standalone_{marker}/{folder_name}/{marker}", "{}")
+            self.put(
+                f"standalone_{marker}/{folder_name}/src/app.ts",
+                "export function boot() { return 1; }\n",
+            )
+            plan = self.read(repo)
+            self.assertIn("src/app.ts:boot:1", self.boxes(plan))
+
+        nm_root = self.root / "standalone_nm" / "node_modules"
+        self.put("standalone_nm/node_modules/package.json", "{}")
+        self.put("standalone_nm/node_modules/index.js", "function dep() {}\n")
+        with self.assertRaises(PlanError):
+            self.read(nm_root)
+
+    def test_find_components_cli_web_scripts_shared_and_no_path_found(self):
+        self.put(
+            "package.json",
+            '{"name": "acme-app", "bin": {"acme-cli": "./bin/cli.ts", "missing-bin": "./bin/nope.js"}}\n',
+        )
+        self.put(
+            "src/shared/format.ts",
+            "export function formatLabel(text: string) {\n"
+            "  return normalize(text);\n"
+            "}\n"
+            "function normalize(s: string) {\n"
+            "  return s.trim();\n"
+            "}\n"
+            "export function cliOnlyHelper() {\n"
+            "  return 'cli';\n"
+            "}\n"
+            "export function webOnlyHelper() {\n"
+            "  return 'web';\n"
+            "}\n"
+            "export function orphanHelper() {\n"
+            "  return 'unused';\n"
+            "}\n",
+        )
+        self.put(
+            "bin/cli.ts",
+            "#!/usr/bin/env node\n"
+            "import { formatLabel, cliOnlyHelper } from '../src/shared/format';\n"
+            "export function runCli() {\n"
+            "  const args = process.argv.slice(2);\n"
+            "  cliOnlyHelper();\n"
+            "  return formatLabel(args.join(' '));\n"
+            "}\n",
+        )
+        self.put(
+            "src/pages/dashboard.tsx",
+            "import { formatLabel, webOnlyHelper } from '../shared/format';\n"
+            "export function DashboardPage() {\n"
+            "  webOnlyHelper();\n"
+            "  return <section>{formatLabel('Dashboard')}</section>;\n"
+            "}\n",
+        )
+        self.put(
+            "src/sync.ts",
+            "import { formatLabel } from './shared/format';\n"
+            "function runSync() {\n"
+            "  return formatLabel('sync');\n"
+            "}\n"
+            "runSync();\n",
+        )
+
+        found = find_components(self.root)
+        self.assertEqual(
+            found["groups"],
+            [
+                {"kind": "commands", "components": ["acme-cli"]},
+                {"kind": "web pages", "components": ["DashboardPage"]},
+                {"kind": "scripts", "components": ["runSync"]},
+            ],
+        )
+
+        by_name = {c["name"]: c for c in found["components"]}
+        self.assertEqual(by_name["acme-cli"]["kind"], "commands")
+        self.assertEqual(
+            {m["name"] for m in by_name["acme-cli"]["members"]},
+            {"runCli()", "cliOnlyHelper()"},
+        )
+        self.assertEqual(by_name["DashboardPage"]["kind"], "web pages")
+        self.assertEqual(
+            {m["name"] for m in by_name["DashboardPage"]["members"]},
+            {"DashboardPage()", "webOnlyHelper()"},
+        )
+        self.assertEqual(by_name["runSync"]["kind"], "scripts")
+        self.assertEqual(
+            {m["name"] for m in by_name["runSync"]["members"]},
+            {"runSync()"},
+        )
+
+        self.assertEqual(len(found["shared"]), 1)
+        shared_file = found["shared"][0]
+        self.assertEqual(shared_file["file"], "src/shared/format.ts")
+        self.assertEqual(
+            shared_file["used_by"],
+            ["DashboardPage", "acme-cli", "runSync"],
+        )
+        self.assertEqual(
+            {m["name"]: m["used_by"] for m in shared_file["members"]},
+            {
+                "formatLabel()": ["DashboardPage", "acme-cli", "runSync"],
+                "normalize()": ["DashboardPage", "acme-cli", "runSync"],
+            },
+        )
+
+        self.assertEqual(
+            found["no_path_found"],
+            [
+                {
+                    "id": "src/shared/format.ts:orphanHelper:13",
+                    "name": "orphanHelper()",
+                    "file": "src/shared/format.ts",
+                    "lines": [13, 15],
+                }
+            ],
+        )
+        self.assertEqual(
+            found["unproven"],
+            ["package.json bin missing-bin -> ./bin/nope.js: not a file charted here"],
+        )
+
+    def test_find_components_react_dom_mount_http_routes_and_dom_listeners(self):
+        self.put(
+            "src/shared.ts",
+            "export function logEvent(name: string) {\n  return name;\n}\n"
+            "export function unreachedFn() {\n  return 0;\n}\n",
+        )
+        self.put(
+            "src/App.tsx",
+            "import { logEvent } from './shared';\n"
+            "export function App() {\n"
+            "  return <div>{logEvent('render')}</div>;\n"
+            "}\n",
+        )
+        self.put(
+            "src/client.tsx",
+            "import { createRoot } from 'react-dom/client';\n"
+            "import { App } from './App';\n"
+            "export function mountClient() {\n"
+            "  const root = createRoot(document.getElementById('root')!);\n"
+            "  root.render(<App />);\n"
+            "}\n",
+        )
+        self.put(
+            "src/server.ts",
+            "import express from 'express';\n"
+            "import { logEvent } from './shared';\n"
+            "const app = express();\n"
+            "function handleHealth() {\n"
+            "  return logEvent('health');\n"
+            "}\n"
+            "app.get('/health', handleHealth);\n",
+        )
+
+        found = find_components(self.root)
+        self.assertEqual(
+            found["groups"],
+            [{"kind": "web pages", "components": ["mountClient", "server"]}],
+        )
+        by_name = {c["name"]: c for c in found["components"]}
+        self.assertEqual(
+            {m["name"] for m in by_name["mountClient"]["members"]},
+            {"mountClient()", "App()"},
+        )
+        self.assertEqual(
+            {m["name"] for m in by_name["server"]["members"]},
+            {"handleHealth()"},
+        )
+        self.assertEqual(len(found["shared"]), 1)
+        self.assertEqual(
+            found["shared"][0]["members"][0]["used_by"],
+            ["mountClient", "server"],
+        )
+        self.assertEqual(
+            [m["name"] for m in found["no_path_found"]],
+            ["unreachedFn()"],
+        )
+
+        # Verify on asBuilt's own src/asbuilt/page JS modules (main.js and overview.js)
+        page_dir = Path(__file__).resolve().parent.parent / "src" / "asbuilt" / "page"
+        page_found = find_components(page_dir)
+        self.assertEqual([g["kind"] for g in page_found["groups"]], ["web pages"])
+        self.assertIn("main", page_found["groups"][0]["components"])
+
+    def test_proven_single_call_return_on_js_and_ts_functions(self):
+        path = self.put(
+            "proven.ts",
+            "function helper(x: number) { return x + 1; }\n"
+            "export function passBlock(x: number) { return helper(x); }\n"
+            "export const passArrow = (x: number) => helper(x);\n"
+            "export async function passAwait(x: number) { return await (helper(x)); }\n"
+            "export function nestedCall(x: number) { return helper(helper(x)); }\n"
+            "export function twoStmts(x: number) { const y = x; return helper(y); }\n"
+            "export function nonCall(x: number) { return x + 1; }\n"
+            "export class Box { run(x: number) { return helper(x); } }\n",
+        )
+        plan = self.read(path)
+        by_label = {
+            box["labels"][0]["text"]: box["asbuilt"]
+            for box in self.boxes(plan).values()
+            if "asbuilt" in box
+        }
+        self.assertEqual(by_label["passBlock()"].get("proven"), PASSES)
+        self.assertEqual(by_label["passArrow()"].get("proven"), PASSES)
+        self.assertEqual(by_label["passAwait()"].get("proven"), PASSES)
+        self.assertNotIn("proven", by_label["helper()"])
+        self.assertNotIn("proven", by_label["nestedCall()"])
+        self.assertNotIn("proven", by_label["twoStmts()"])
+        self.assertNotIn("proven", by_label["nonCall()"])
+        self.assertNotIn("proven", by_label["Box"])
+
+    def test_security_and_plain_facts_env_net_proc_file_and_throws(self):
+        path = self.put(
+            "security_notes.ts",
+            "import fs from 'node:fs';\n"
+            "import { execSync } from 'node:child_process';\n"
+            "import axios from 'axios';\n"
+            "export function readEnv() {\n"
+            "  const a = process.env.API_KEY;\n"
+            "  const b = process.env['SECRET_TOKEN'];\n"
+            "  const c = import.meta.env.VITE_URL;\n"
+            "  const d = Deno.env.get('DENO_KEY');\n"
+            "  return [a, b, c, d];\n"
+            "}\n"
+            "export function callNet() {\n"
+            "  fetch('https://api.example.com/v1/users');\n"
+            "  return axios.get('https://auth.example.org:8443/token');\n"
+            "}\n"
+            "export function runProc() {\n"
+            "  return execSync('ls -la');\n"
+            "}\n"
+            "export function writeDisk() {\n"
+            "  fs.writeFileSync('out.txt', 'hello');\n"
+            "}\n"
+            "export function failFast(x: string) {\n"
+            "  if (!x) {\n"
+            "    throw new Error('missing input');\n"
+            "  }\n"
+            "  return x;\n"
+            "}\n"
+            "export function caughtThrow() {\n"
+            "  try { throw new Error('swallowed'); } catch (e) { return 1; }\n"
+            "}\n"
+            "export function shadowAll(process: any, Deno: any, fetch: any, fs: any) {\n"
+            "  process.env.API_KEY;\n"
+            "  Deno.env.get('DENO_KEY');\n"
+            "  fetch('https://api.example.com');\n"
+            "  fs.writeFileSync('out.txt', 'no');\n"
+            "}\n",
+        )
+        plan = self.read(path)
+        by_label = {
+            box["labels"][0]["text"]: box["asbuilt"]
+            for box in self.boxes(plan).values()
+            if "asbuilt" in box
+        }
+
+        self.assertEqual(
+            by_label["readEnv()"]["security"],
+            [
+                {
+                    "fact": {"kind": "env", "how": "read", "name": "API_KEY"},
+                    "plain": "This reads API_KEY from the environment.",
+                    "expert": "process.env.API_KEY reads API_KEY from the environment.",
+                },
+                {
+                    "fact": {"kind": "env", "how": "read", "name": "SECRET_TOKEN"},
+                    "plain": "This reads SECRET_TOKEN from the environment.",
+                    "expert": "process.env['SECRET_TOKEN'] reads SECRET_TOKEN from the environment.",
+                },
+                {
+                    "fact": {"kind": "env", "how": "read", "name": "VITE_URL"},
+                    "plain": "This reads VITE_URL from the environment.",
+                    "expert": "import.meta.env.VITE_URL reads VITE_URL from the environment.",
+                },
+                {
+                    "fact": {"kind": "env", "how": "read", "name": "DENO_KEY"},
+                    "plain": "This reads DENO_KEY from the environment.",
+                    "expert": "Deno.env.get('DENO_KEY') reads DENO_KEY from the environment.",
+                },
+            ],
+        )
+        # plain is capped at 3 everyday sentences
+        self.assertEqual(
+            by_label["readEnv()"]["plain"],
+            [
+                "Reads API_KEY from the environment.",
+                "Reads SECRET_TOKEN from the environment.",
+                "Reads VITE_URL from the environment.",
+            ],
+        )
+
+        self.assertEqual(
+            by_label["callNet()"]["security"],
+            [
+                {
+                    "fact": {"kind": "net", "how": "http", "host": "api.example.com"},
+                    "plain": "This connects to api.example.com over the network.",
+                    "expert": "Connects to api.example.com via fetch.",
+                },
+                {
+                    "fact": {"kind": "net", "how": "http", "host": "auth.example.org"},
+                    "plain": "This connects to auth.example.org over the network.",
+                    "expert": "Connects to auth.example.org via axios.get.",
+                },
+            ],
+        )
+        self.assertEqual(
+            by_label["callNet()"]["plain"],
+            [
+                "Talks to api.example.com over the network.",
+                "Talks to auth.example.org over the network.",
+            ],
+        )
+
+        self.assertEqual(
+            by_label["runProc()"]["security"],
+            [
+                {
+                    "fact": {"kind": "proc", "how": "run"},
+                    "plain": "This runs another program on the computer.",
+                    "expert": "Runs a subprocess via execSync.",
+                }
+            ],
+        )
+        self.assertEqual(
+            by_label["runProc()"]["plain"],
+            ["Runs another program on the computer."],
+        )
+
+        self.assertEqual(
+            by_label["writeDisk()"]["security"],
+            [
+                {
+                    "fact": {"kind": "file", "how": "write"},
+                    "plain": "This writes or changes files on disk.",
+                    "expert": "Writes to disk via fs.writeFileSync.",
+                }
+            ],
+        )
+        self.assertEqual(
+            by_label["writeDisk()"]["plain"],
+            ["Writes or changes files on disk."],
+        )
+
+        self.assertNotIn("security", by_label["failFast()"])
+        self.assertEqual(
+            by_label["failFast()"]["plain"],
+            ['Can stop with an error: "missing input".'],
+        )
+        self.assertNotIn("plain", by_label["caughtThrow()"])
+        self.assertNotIn("security", by_label["shadowAll()"])
+        self.assertNotIn("plain", by_label["shadowAll()"])
+
+    def test_environment_writes_are_not_reads(self):
+        path = self.put(
+            "envw.js",
+            "export function setMode() { process.env.MODE = 'production'; }\n"
+            "export function setIdx() { process.env['PORT'] = '3000'; }\n"
+            "export function drop() { delete process.env.SECRET; delete process.env['TOKEN']; }\n"
+            "export function append() { process.env.PATH += ':/bin'; }\n"
+            "export function copy() { process.env.A = process.env.B; }\n",
+        )
+        boxes = {
+            b["labels"][0]["text"]: b["asbuilt"]
+            for b in self.boxes(self.read(path)).values()
+            if "asbuilt" in b
+        }
+        reads = {
+            label: [f["fact"]["name"] for f in info.get("security", [])]
+            for label, info in boxes.items()
+        }
+        self.assertEqual(
+            reads,
+            {"setMode()": [], "setIdx()": [], "drop()": [], "append()": ["PATH"], "copy()": ["B"]},
+        )
+        self.assertEqual(
+            {label: info.get("badges") for label, info in boxes.items()},
+            {"setMode()": None, "setIdx()": None, "drop()": None, "append()": ["env"], "copy()": ["env"]},
+        )
+
+    def test_var_loop_bindings_shadow_globals_for_marks(self):
+        path = self.put(
+            "loops.js",
+            "export function loop(items) { for (var fetch of items) {} return fetch('/x'); }\n"
+            "export function plain() { return fetch('/x'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path), {"loop()": None, "plain()": ["calls out"]}
+        )
+
+    def test_long_valid_expressions_chart_without_crashing(self):
+        self.put("long.js", "export function f() { return " + "+".join(["a"] * 3000) + "; }\n")
+        self.put("nest.js", "export function g() { return " + "[" * 3000 + "]" * 3000 + "; }\n")
+        self.put("ok.js", "export function ok() { return 1; }\n")
+        out = self.root / "chart.json"  # removed with the temporary folder
+        self.assertEqual(main([str(self.root), str(out)]), 0)
+        labels = {
+            b["labels"][0]["text"]
+            for b in self.boxes(self.read()).values()
+            if "asbuilt" in b
+        }
+        self.assertEqual(labels, {"f()", "g()", "ok()"})
+        find_components(self.root)
+
+    def test_single_file_bins_match_only_their_own_target(self):
+        self.put(
+            "package.json",
+            '{"name": "tool", "bin": {"tool": "bin/cli.js", "gone": "absent.js", "ts": "lib/run.js"}}',
+        )
+        (self.root / ".git").mkdir()
+        cli = self.put("bin/cli.js", "export function main() { return 1; }\n")
+        helper = self.put("lib/helper.js", "export function help() { return 1; }\n")
+        run = self.put("lib/run.ts", "export function go() { return 1; }\n")
+        ways = {
+            name: [w for c in find_components(p)["components"] for w in c["ways_in"]]
+            for name, p in (("cli", cli), ("helper", helper), ("run", run))
+        }
+        self.assertEqual(ways["helper"], [])
+        self.assertEqual(ways["cli"], ["package.json bin tool -> cli.js"])
+        self.assertEqual(ways["run"], ["package.json bin ts -> run.ts"])
+
+    def test_find_components_respects_nested_scopes_for_jsx_and_mounts(self):
+        self.put(
+            "src/Child.tsx",
+            "export function Child() { return <i/>; }\n",
+        )
+        self.put(
+            "src/App.tsx",
+            "import { Child } from './Child';\n"
+            "import { createRoot } from 'react-dom/client';\n"
+            "export function List(props: any) { return <ul>{props.items.map((Child: any) => <Child/>)}</ul>; }\n"
+            "export function Local() { const make = () => { const Child = () => null; return <Child/>; }; return make(); }\n"
+            "export class Box { render(Child: any) { return <Child/>; } }\n"
+            "export function Direct() { return <Child/>; }\n"
+            "export function boot(cbs: any[]) { cbs.forEach((createRoot: any) => createRoot(document.body)); }\n",
+        )
+        found = find_components(self.root)
+        reached = {
+            m["name"]: m["why"]
+            for c in found["components"]
+            for m in c["members"]
+        }
+        # Child is reached only from Direct, so it is no helper shared with List etc.
+        self.assertEqual(reached.get("Child()"), "reached from Direct()")
+        self.assertEqual(found["shared"], [])
+        self.assertNotIn(
+            "createRoot() in src/App.tsx: boot()",
+            [w for c in found["components"] for w in c["ways_in"]],
+        )
+
+    def test_web_entries_need_framework_imports_not_names(self):
+        self.put(
+            "maps.ts",
+            "const app = new Map();\n"
+            "export function get() { return app.get('config'); }\n",
+        )
+        self.put(
+            "fake.ts",
+            "function createRoot(x: any) { return x; }\n"
+            "export function mount(ReactDOM: any) { createRoot(1); ReactDOM.render(1); }\n",
+        )
+        self.put(
+            "server.ts",
+            "import express from 'express';\n"
+            "const app = express();\n"
+            "function health() { return 1; }\n"
+            "app.get('env');\n"
+            "app.get('/health', health);\n",
+        )
+        found = find_components(self.root)
+        ways = [w for c in found["components"] for w in c["ways_in"]]
+        self.assertEqual(ways, ["GET '/health' on app in server.ts"])
+
+    def test_find_components_reuses_provided_chart_data_without_recharting(self):
+        self.put(
+            "src/index.ts",
+            "export function main() { return process.argv.slice(2); }\n",
+        )
+        skipped: list[str] = []
+        precomputed = chart(self.root, skipped=skipped)
+        with mock.patch("asbuilt.javascript.chart") as mocked_chart:
+            comp = find_components(self.root, skipped=skipped, chart_data=precomputed)
+            mocked_chart.assert_not_called()
+        self.assertEqual(
+            comp["groups"],
+            [{"kind": "commands", "components": ["main"]}],
+        )
+
 
     def test_mts_and_cts_fallbacks_chart_through_the_folder_reader(self):
         folder = self.root / "esm"
