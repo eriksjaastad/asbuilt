@@ -117,12 +117,28 @@ def constants(nodes):
     return {name: value for name, value in assigned(nodes).items() if isinstance(value, str)}
 
 
+# What a function binds depends only on its own source, so it is worked out once per text: a
+# big project visits the same nested function once for every box that holds it.
+_LOCAL_BINDINGS: dict = {}
+
+
+def _fn_local(fn):
+    key = fn.text
+    local = _LOCAL_BINDINGS.get(key)
+    if local is None:
+        if len(_LOCAL_BINDINGS) > 20_000:
+            _LOCAL_BINDINGS.clear()
+        head = fn.child_by_field_name("parameters")
+        params = [name for child in (head.named_children if head is not None else ()) if (name := one_name(child))]
+        body = fn.child_by_field_name("body")
+        local = _bindings(body.named_children if body is not None else (), string_literal, initial=params)
+        _LOCAL_BINDINGS[key] = local
+    return local
+
+
 def _fn_constants(fn, outer):
     """outer, minus every name this function binds, plus one direct assignment of a string."""
-    head = fn.child_by_field_name("parameters")
-    params = [name for child in (head.named_children if head is not None else ()) if (name := one_name(child))]
-    body = fn.child_by_field_name("body")
-    local = _bindings(body.named_children if body is not None else (), string_literal, initial=params)
+    local = _fn_local(fn)
     kept = {name: text for name, text in outer.items() if name not in local}
     kept.update({name: text for name, text in local.items() if text is not None})
     return kept
