@@ -2007,7 +2007,8 @@ class JavaScript(unittest.TestCase):
             "export function Local() { const make = () => { const Child = () => null; return <Child/>; }; return make(); }\n"
             "export class Box { render(Child: any) { return <Child/>; } }\n"
             "export function Direct() { return <Child/>; }\n"
-            "export function boot(cbs: any[]) { cbs.forEach((createRoot: any) => createRoot(document.body)); }\n",
+            "export function boot(cbs: any[]) { cbs.forEach((createRoot: any) => createRoot(document.body)); }\n"
+            "createRoot(document.getElementById('root')!).render(<Direct/>);\n",
         )
         found = find_components(self.root)
         reached = {
@@ -2022,6 +2023,24 @@ class JavaScript(unittest.TestCase):
             "createRoot() in src/App.tsx: boot()",
             [w for c in found["components"] for w in c["ways_in"]],
         )
+
+    def test_a_component_nothing_renders_is_not_a_way_in(self):
+        self.put("src/Experience.tsx", "export function Experience() { return <section/>; }\n")
+        self.put("src/Hero.tsx", "export function Hero() { return <h1/>; }\n")
+        self.put(
+            "src/main.tsx",
+            "import { createRoot } from 'react-dom/client';\n"
+            "import { Hero } from './Hero';\n"
+            "function App() { return <Hero/>; }\n"
+            "createRoot(document.getElementById('root')!).render(<App/>);\n",
+        )
+        self.put("pages/about.tsx", "export default function About() { return <p/>; }\n")
+        found = find_components(self.root)
+        ways = [w for c in found["components"] for w in c["ways_in"]]
+        self.assertFalse([w for w in ways if "Experience" in w], ways)
+        self.assertIn("Experience()", [m["name"] for m in found["no_path_found"]])
+        members = {m["name"] for c in found["components"] for m in c["members"]}
+        self.assertTrue({"App()", "Hero()", "About()"} <= members, members)
 
     def test_web_entries_need_framework_imports_not_names(self):
         self.put(

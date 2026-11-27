@@ -2541,7 +2541,10 @@ def find_components(
 
     entries = list(def_entries)
     for rel, cid, ident in react_candidates:
-        if cid not in incoming_targets or _is_web_page_path(rel):
+        # Only a file-routed page is a way in by itself. "No incoming arrow" proves nothing for a
+        # component: JSX draws no arrows, so a rendered component and an unused one look the same.
+        # Mounted roots (createRoot().render, ReactDOM.render) are entries through their mount.
+        if _is_web_page_path(rel):
             if cid not in explicit_entry_defs_by_file[rel]:
                 explicit_entry_defs_by_file[rel].append(cid)
             entries.append(
