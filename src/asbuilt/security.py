@@ -12,10 +12,11 @@ import ipaddress
 from urllib.parse import urlparse
 
 from asbuilt.built import COND, imported, one_name, pattern
-from asbuilt.marks import layer, reaches_out, reads_env, resolve
+from asbuilt.marks import call_arguments, layer, reaches_out, reads_env, resolve
 
 _HTTP = ("request", "get", "post", "put", "patch", "delete", "head", "options", "send")
-_ENV_OP = ("get", "pop", "setdefault", "getenv", "update", "items", "values", "keys", "copy", "environ")
+_ENV_KEY_OP = ("get", "pop", "setdefault", "getenv")
+_ENV_OP = (*_ENV_KEY_OP, "update", "items", "values", "keys", "copy", "environ")
 _RUN_TIMEOUT = ("run", "call", "check_call", "check_output")  # Popen has no timeout argument
 _DATA = ("post", "put", "patch")  # the second positional argument is the body
 
@@ -24,10 +25,11 @@ def string_literal(node):
     """The string this node writes, or None when it is not one plain string."""
     if node is None or node.type != "string":
         return None
+    value = None
     try:
         value = ast.literal_eval(node.text.decode())
     except (SyntaxError, ValueError):
-        return None
+        value = None
     return value if isinstance(value, str) and value else None
 
 
@@ -54,9 +56,9 @@ def _assigned_value(node):
     return tuple(texts) if texts else None
 
 
-def assigned(nodes):
-    """name -> one top-level string, int, or tuple of strings. A second binding drops it."""
-    found = {}
+def _bindings(nodes, read_value, initial=()):
+    """Map every name bound in `nodes` to its single unconditional value, or None when banned."""
+    found = {name: None for name in initial}
 
     def ban(names):
         for name in names:
@@ -74,13 +76,16 @@ def assigned(nodes):
             if inner is not None:
                 walk(inner, conditional)
             return
+        if kind == "global_statement":
+            ban(c.text.decode() for c in node.named_children if c.type == "identifier")
+            return
         if kind in ("import_statement", "import_from_statement"):
             ban(imported(node))
             return
         if kind == "assignment":
             names = pattern(next(iter(node.named_children), None))
             value = node.named_children[-1] if len(node.named_children) > 1 else None
-            lit = _assigned_value(value) if not conditional and len(names) == 1 else None
+            lit = read_value(value) if not conditional and len(names) == 1 else None
             if lit is None or names[0] in found:
                 ban(names)
             else:
@@ -88,8 +93,7 @@ def assigned(nodes):
             return
         if kind == "for_statement":
             ban(pattern(next(iter(node.named_children), None)))
-            body = node.child_by_field_name("body")
-            for child in body.named_children if body is not None else ():
+            for child in node.named_children:
                 walk(child, True)
             return
         if kind in ("augmented_assignment", "named_expression"):
@@ -100,7 +104,12 @@ def assigned(nodes):
 
     for node in nodes:
         walk(node, False)
-    return {name: value for name, value in found.items() if value is not None}
+    return found
+
+
+def assigned(nodes):
+    """name -> one top-level string, int, or tuple of strings. A second binding drops it."""
+    return {name: value for name, value in _bindings(nodes, _assigned_value).items() if value is not None}
 
 
 def constants(nodes):
@@ -110,69 +119,13 @@ def constants(nodes):
 
 def _fn_constants(fn, outer):
     """outer, minus every name this function binds, plus one direct assignment of a string."""
-    direct, banned = {}, set()
     head = fn.child_by_field_name("parameters")
-    for child in head.named_children if head is not None else ():
-        name = one_name(child)
-        if name:
-            banned.add(name)
+    params = [name for child in (head.named_children if head is not None else ()) if (name := one_name(child))]
     body = fn.child_by_field_name("body")
-
-    def walk(node, top):
-        if node.type in ("function_definition", "class_definition"):
-            name = node.child_by_field_name("name")
-            if name is not None:
-                banned.add(name.text.decode())
-            return
-        if node.type == "decorated_definition":
-            inner = node.child_by_field_name("definition")
-            if inner is not None:
-                walk(inner, False)
-            return
-        if node.type == "global_statement":
-            banned.update(c.text.decode() for c in node.named_children if c.type == "identifier")
-            return
-        if node.type in ("import_statement", "import_from_statement"):
-            banned.update(imported(node))
-            return
-        target = next(iter(node.named_children), node) if node.type == "expression_statement" and top else node
-        if target.type == "assignment":
-            names = pattern(next(iter(target.named_children), None))
-            value = target.named_children[-1] if len(target.named_children) > 1 else None
-            lit = string_literal(value) if top and len(names) == 1 else None
-            name = names[0] if len(names) == 1 else None
-            if lit and name and name not in direct:
-                direct[name] = lit
-            else:
-                for item in names:
-                    banned.add(item)
-                    direct.pop(item, None)
-            return
-        if target.type in ("augmented_assignment", "named_expression", "for_statement"):
-            banned.update(pattern(next(iter(target.named_children), None)))
-        for child in node.named_children:
-            walk(child, False)
-
-    for stmt in body.named_children if body is not None else ():
-        walk(stmt, True)
-    kept = {name: text for name, text in outer.items() if name not in banned and name not in direct}
-    kept.update({name: text for name, text in direct.items() if name not in banned})
+    local = _bindings(body.named_children if body is not None else (), string_literal, initial=params)
+    kept = {name: text for name, text in outer.items() if name not in local}
+    kept.update({name: text for name, text in local.items() if text is not None})
     return kept
-
-
-def call_arguments(call):
-    args = call.child_by_field_name("arguments")
-    positional, named, splat = [], {}, False
-    for child in args.named_children if args is not None else ():
-        if child.type == "keyword_argument":
-            key, val = child.child_by_field_name("name"), child.child_by_field_name("value")
-            if key is not None and val is not None:
-                named[key.text.decode()] = val
-        elif child.type in ("dictionary_splat", "list_splat"):
-            splat = True
-        else:
-            positional.append(child)
-    return positional, named, splat
 
 
 def _extended(fun, scope):
@@ -272,9 +225,12 @@ def local_host(host):
         return False
     if host.lower().rstrip(".") == "localhost":
         return True
+    addr = None
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
+        addr = None
+    if addr is None:
         return False
     return addr.is_loopback or addr.is_unspecified or addr.is_private
 
@@ -462,13 +418,15 @@ def facts(node, module, consts=None):
             add("input", callee, _shown(fun, [bit] if bit else []), fields)
             return
         if kind == "env":
-            positional, named, _splat = call_arguments(current)
-            node = positional[0] if positional else named.get("key")
-            found_name = _bound_name(node, local)
             fields = {"how": _env_how(path)}
-            if found_name:
-                fields["name"] = found_name
-            bit = _name_bit(node, found_name)
+            bit = None
+            if path[-1] in _ENV_KEY_OP:
+                positional, named, _splat = call_arguments(current)
+                arg = positional[0] if positional else named.get("key")
+                found_name = _bound_name(arg, local)
+                if found_name:
+                    fields["name"] = found_name
+                bit = _name_bit(arg, found_name)
             add("env", callee, _shown(fun, [bit] if bit else []), fields)
             return
         fields = {"way": call_way(path), "caught": _within(cur, "try_statement")}

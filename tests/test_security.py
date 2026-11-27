@@ -62,6 +62,17 @@ class SecurityTest(unittest.TestCase):
         self.assertIn("not a literal", whole["expert"])
         self.assertNotIn("HOME", whole["plain"] + whole["expert"])
 
+        noisy = _notes("import os\ndef read(extra):\n    return os.environ.items(extra)\n", "read()")[0]
+        self.assertNotIn("name", noisy["fact"])
+        self.assertEqual(noisy["fact"]["at"], "os.environ.items(...)")
+        self.assertNotIn("extra", noisy["plain"] + noisy["expert"])
+
+        updated = _notes("import os\ndef write():\n    os.environ.update(key='sk-proj-secret')\n", "write()")[0]
+        self.assertEqual(updated["fact"]["how"], "write")
+        self.assertNotIn("name", updated["fact"])
+        self.assertEqual(updated["fact"]["at"], "os.environ.update(...)")
+        self.assertNotIn("sk-proj", updated["plain"] + updated["expert"])
+
     def test_input_is_a_note_and_a_local_def_or_a_caller_is_not(self):
         note = _notes("def ask_user():\n    return input('name: ')\n", "ask_user()")[0]
         self.assertEqual(note["fact"]["kind"], "input")
@@ -201,6 +212,8 @@ class SecurityTest(unittest.TestCase):
 
         built = _notes("from urllib.request import Request\ndef go(body):\n    Request('https://example.com/x', data=body)\n", "go()")[0]
         self.assertIn("sends your data to an outside service", built["plain"])
+        self.assertIsNone(_notes("import urllib.request\ndef go():\n    urllib.request.Request('https://example.com/x')\n", "go()"))
+        self.assertIsNone(_notes("from urllib.request import Request\ndef go():\n    Request('https://example.com/x', data=None)\n", "go()"))
         payload = _notes("import requests\ndef go(url, payload):\n    requests.post(url, payload)\n", "go()")[0]
         self.assertIn("sends data", payload["plain"])
         self.assertNotIn("outside", payload["plain"])

@@ -30,6 +30,7 @@ from asbuilt import output
 from asbuilt.compare import check
 from asbuilt.marks import of as _marks
 from asbuilt.marks import resolve
+from asbuilt.marks import scope_of as _mark_scope
 from asbuilt.plan import read_bytes
 from asbuilt.state import PlanError
 
@@ -298,7 +299,7 @@ def python_file(name, source):
                 note = "tree-sitter could not read it all, though Python accepts it"
             else:
                 decoded, definitions = text.decode(), _definitions(root)
-                scope = _scope(list(root.named_children), None, False)
+                scope = _mark_scope(list(root.named_children))
                 from asbuilt.plain import for_box as plain_for_box
                 from asbuilt.security import constants as security_constants
                 from asbuilt.security import for_box
@@ -357,13 +358,35 @@ def python_file(name, source):
 
 
 _NAMED_DIRS = {"tests", "venv", "env", "node_modules", "build", "dist", "site-packages"}
-_SKIP_DIRS = _NAMED_DIRS | {"__pycache__"}
+_SKIP_DIRS = _NAMED_DIRS | {"__pycache__", "__tests__"}
+
+
+def _is_test_file(path):
+    """True when `path` is a Python test file (`test_*.py` or `*_test.py`)."""
+    return path.name.startswith("test_") or path.stem.endswith("_test")
+
+
+def _is_test_path(path):
+    """True when `path` is a test file or sits inside a skipped/test directory."""
+    if _is_test_file(path):
+        return True
+    if any(part in _SKIP_DIRS for part in path.parts[:-1]):
+        return True
+    resolved = path.resolve()
+    if resolved.parent.name in _SKIP_DIRS:
+        return True
+    root = next(
+        (p for p in resolved.parents if (p / ".git").exists() or (p / "pyproject.toml").is_file()),
+        None,
+    )
+    if root is not None:
+        return any(part in _SKIP_DIRS for part in resolved.relative_to(root).parts[:-1])
+    return False
 
 
 def _py_files(folder):
     """(relative path, file) for each Python file under folder, the named skips, and __pycache__.
-    A hidden directory or a directory symlink is left out too, and is not named. A file whose
-    name contains "test" is kept."""
+    A hidden directory, a directory symlink, or a test file (test_*.py, *_test.py) is left out."""
     found, named, quiet, todo = [], [], [], [folder]
     while todo:
         current = todo.pop()
@@ -377,12 +400,12 @@ def _py_files(folder):
                 rel = path.relative_to(folder).as_posix()
                 if path.name in _NAMED_DIRS:
                     named.append(rel)
-                elif path.name == "__pycache__":
+                elif path.name in ("__pycache__", "__tests__"):
                     quiet.append(rel)
                 if path.name.startswith(".") or path.name in _SKIP_DIRS or path.is_symlink():
                     continue
                 todo.append(path)
-            elif path.is_file() and path.suffix == ".py":
+            elif path.is_file() and path.suffix == ".py" and not _is_test_file(path):
                 found.append((path.relative_to(folder).as_posix(), path))
     found.sort()
     return found, named, quiet
@@ -470,17 +493,53 @@ COND = {
 }
 
 
-def _client_spec(node, decided):
-    """("mod", module) when this assignment is one call of a marked constructor, else None."""
-    from asbuilt.marks import client_module, resolve
+_OVERLOAD = {("typing", "overload"), ("typing_extensions", "overload")}
 
-    kids = list(node.named_children)
-    if len(kids) < 2 or kids[-1].type != "call":
-        return None
-    fun = next(iter(kids[-1].named_children), None)
-    path = resolve(fun, decided)
-    module = None if path is None else client_module(path)
-    return None if module is None else ("mod", module)
+
+def _is_overload(node, scope=None):
+    """True when `node` is a @overload / @typing.overload decorated function stub."""
+    if node.type != "decorated_definition":
+        return False
+    inner = node.child_by_field_name("definition")
+    if inner is None or inner.type != "function_definition":
+        return False
+    for child in node.named_children:
+        if child.type != "decorator":
+            continue
+        expr = next(iter(child.named_children), None)
+        if expr is None:
+            continue
+        if scope is not None and resolve(expr, scope) in _OVERLOAD:
+            return True
+        if expr.type == "identifier" and expr.text == b"overload" and (scope is None or "overload" not in scope):
+            return True
+        if expr.type == "attribute":
+            obj, attr = expr.child_by_field_name("object"), expr.child_by_field_name("attribute")
+            if (
+                obj is not None
+                and obj.type == "identifier"
+                and obj.text in (b"typing", b"typing_extensions")
+                and attr is not None
+                and attr.text == b"overload"
+                and (scope is None or obj.text.decode() not in scope)
+            ):
+                return True
+    return False
+
+
+def _overloads(rel, root, scope):
+    """Child box ids of top-level @overload / @typing.overload stubs in `root`."""
+    found = set()
+    if root is None:
+        return found
+    for node in root.named_children:
+        if not _is_overload(node, scope):
+            continue
+        inner = node.child_by_field_name("definition")
+        name = None if inner is None else inner.child_by_field_name("name")
+        if name is not None:
+            found.add(f"{rel}:{name.text.decode()}:{node.start_point[0] + 1}")
+    return found
 
 
 def _scope(nodes, own, init, local=False):
@@ -489,8 +548,8 @@ def _scope(nodes, own, init, local=False):
     None means the name is bound some other way too, or only inside if/try, so it gets no arrow.
     `local` is a function body: a name bound there only by one import, even inside if/try, can
     only be called once that import ran, so the import is what it calls.
-    One assignment of a marked constructor is that module; a second binding is not.
-    Defs and classes count as bindings and are not entered."""
+    Defs and classes count as bindings and are not entered; @overload stubs are skipped.
+    A star import (`from x import *`) records `"*"` as None so callers and targets stay conservative."""
     decided = {}
 
     def bind(name, spec):
@@ -510,26 +569,22 @@ def _scope(nodes, own, init, local=False):
                 bind(name.text.decode(), ("def",))
             return
         if kind == "decorated_definition":
+            if _is_overload(node, decided):
+                return
             inner = node.child_by_field_name("definition")
             if inner is not None:
                 walk(inner, conditional)
             return
         if kind in ("import_from_statement", "import_statement"):
+            if kind == "import_from_statement" and any(c.type == "wildcard_import" for c in node.named_children[1:]):
+                bind("*", None)
             calls, mods = _imports([node], own, init)
             for name, pair in calls.items():
                 bind(name, None if conditional and not local else ("from", pair[0], pair[1]))
             for name, mod in mods.items():
                 bind(name, None if conditional and not local else ("mod", mod))
             return
-        if kind == "assignment":
-            # One assignment of OpenAI(), Anthropic(), or requests.Session() is that module.
-            # A second binding, of any kind, is not. The same rule as an import.
-            names = list(pattern(next(iter(node.named_children), None)))
-            spec = _client_spec(node, decided) if not conditional and len(names) == 1 else None
-            for name in names:
-                bind(name, spec)
-            return
-        if kind in ("augmented_assignment", "named_expression"):
+        if kind in ("assignment", "augmented_assignment", "named_expression"):
             for name in pattern(next(iter(node.named_children), None)):
                 bind(name, None)
             return
@@ -602,15 +657,14 @@ def _under(rel, root, pkgs):
     return tuple(parts) if parts and all(d in pkgs for d in inside) else None
 
 
-def _def_index(boxes, folder_name, roots=()):
-    """{(module, name): box id}, {file: module}, {file: the module its boxes are indexed under},
-    and {None, or a folder on sys.path (`roots`): {module: the files it names}}. Two files for
-    one module and name make it None, so it is not used. A file only a sys.path folder names is
+def _module_tables(boxes, folder_name, roots=()):
+    """{file: module}, {file: the module its boxes are indexed under}, and {None, or a folder on
+    sys.path (`roots`): {module: the files it names}}. A file only a sys.path folder names is
     indexed under ("sys.path", folder, *module), which no import writes, so only a file that
     has that folder on sys.path reaches it."""
     pkgs = {rel[: -len("__init__.py")].rstrip("/") for rel in boxes if rel.endswith("__init__.py")}
-    index, own, key, tables = {}, {}, {}, {r: {} for r in (None, *roots)}
-    for rel, box in boxes.items():
+    own, key, tables = {}, {}, {r: {} for r in (None, *roots)}
+    for rel in boxes:
         own[rel] = mod = _module(rel, pkgs, folder_name)
         if mod:
             tables[None].setdefault(mod, set()).add(rel)
@@ -620,17 +674,26 @@ def _def_index(boxes, folder_name, roots=()):
                 tables[root].setdefault(under, set()).add(rel)
                 mod = mod or ("sys.path", root, *under)
         key[rel] = mod
+    return own, key, tables
+
+
+def _def_index(boxes, key, skip=()):
+    """{(module, name): box id}. Two files or two defs for one module and name make it None, so
+    it is not used. Box ids in `skip` (such as @overload stubs) are ignored."""
+    index = {}
+    for rel, box in boxes.items():
+        mod = key.get(rel)
         if not mod:
             continue
         prefix = rel + ":"
         slot = index.setdefault(mod, {})
         for child in box.get("children", []):
             cid = child["id"]
-            if not cid.startswith(prefix):
+            if not cid.startswith(prefix) or cid in skip:
                 continue
             ident = cid[len(prefix) :].rpartition(":")[0]
             slot[ident] = None if ident in slot and slot[ident] != cid else cid
-    return index, own, key, tables
+    return index
 
 
 def _imported(root, own, init):
@@ -678,7 +741,8 @@ def _live(index, scopes, mod, name):
     if not cid:
         return None
     rel = cid.rsplit(":", 2)[0]
-    if scopes.get(rel, {}).get(name) != ("def",):
+    file_scope = scopes.get(rel, {})
+    if "*" in file_scope or file_scope.get(name) != ("def",):
         return None
     return cid
 
@@ -694,7 +758,10 @@ def _attr_mod(spec, scopes, modules):
         return None
     sub = spec[1] + (spec[2],)
     init = next((r for r, m in modules.items() if m == spec[1] and r.endswith("__init__.py")), None)
-    bound = None if init is None else scopes.get(init, {}).get(spec[2], False)
+    init_scope = {} if init is None else scopes.get(init, {})
+    if "*" in init_scope:
+        return None
+    bound = None if init is None else init_scope.get(spec[2], False)
     if bound is False:
         return sub
     same = bound and (bound[0] == "mod" and bound[1] == sub or bound[0] == "from" and bound[1] == spec[1] and bound[2] == spec[2])
@@ -880,11 +947,13 @@ def sys_paths(rel, root, top):
 def targets(calls, attrs, file_scope, index, scopes, modules):
     """Boxes in other files that these _direct_calls results reach, proved by an import."""
     found = []
+    star = "*" in file_scope
     for callee, how in calls:
-        spec = how or file_scope.get(callee)
+        spec = how or (None if star else file_scope.get(callee))
         found.append(None if not spec or spec[0] != "from" else _live(index, scopes, spec[1], spec[2]))
     for obj, attr, how in attrs:
-        found.append(_live(index, scopes, _attr_mod(how or file_scope.get(obj), scopes, modules), attr))
+        spec = how or (None if star else file_scope.get(obj))
+        found.append(_live(index, scopes, _attr_mod(spec, scopes, modules), attr))
     return [t for t in found if t]
 
 
@@ -922,6 +991,8 @@ def python_dir_links(folder):
     except OSError as exc:
         why = exc.strerror or type(exc).__name__
         raise PlanError(f"{folder} cannot be read: {why}") from None
+    if name in _SKIP_DIRS:
+        raise PlanError(f"{name}: a test or skipped folder is not charted.")
     files, named, quiet = _py_files(folder)
     if not files:
         skipped = ", ".join(sorted(named + quiet))
@@ -960,9 +1031,11 @@ def links(box, files, name, top):
         for line, _, folder, why in changes:
             if why is None:
                 below[rel][folder] = min(line, below[rel].get(folder, line))
-    index, modules, key, tables = _def_index(found, name, sorted({r for at in below.values() for r in at}))
+    modules, key, tables = _module_tables(found, name, sorted({r for at in below.values() for r in at}))
     init = {rel: rel.endswith("__init__.py") for rel in trees}
     raw = {rel: {} if root is None else _scope(list(root.named_children), modules.get(rel), init[rel]) for rel, root in trees.items()}
+    skip = set().union(*(_overloads(rel, trees[rel], raw[rel]) for rel in trees))
+    index = _def_index(found, key, skip)
     imports = {rel: [] if root is None else _imported(root, modules.get(rel), init[rel]) for rel, root in trees.items()}
     on = {rel: set() for rel in trees}  # roots in effect in the whole file
 
@@ -982,8 +1055,10 @@ def links(box, files, name, top):
             loads = [files_of(m, here) for m in mods]
             for mod, sub in subs:  # `from pkg import sub` loads pkg/sub.py, unless pkg binds sub itself
                 pkg = files_of(mod, here)
-                if len(pkg) == 1 and raw[next(iter(pkg))].get(sub, False) is False:
-                    loads.append(files_of((*mod, sub), here))
+                if len(pkg) == 1:
+                    pkg_scope = raw[next(iter(pkg))]
+                    if "*" not in pkg_scope and pkg_scope.get(sub, False) is False:
+                        loads.append(files_of((*mod, sub), here))
             for other in [next(iter(f)) for f in loads if len(f) == 1]:
                 if not here <= on[other]:
                     on[other] |= here
@@ -1007,10 +1082,12 @@ def links(box, files, name, top):
 
 def _is_same(out, path):
     """True when both exist and are the same file, once OUT is resolved. A symlink counts."""
+    same = False
     try:
-        return out.exists() and path.exists() and out.resolve().samefile(path)
+        same = out.exists() and path.exists() and out.resolve().samefile(path)
     except OSError:
-        return False
+        same = False
+    return same
 
 
 def _clashes(out, source):
@@ -1047,6 +1124,8 @@ def main(argv=None):
         if args.file.is_dir():
             box, skipped = python_dir(args.file)
         else:
+            if _is_test_path(args.file):
+                raise PlanError(f"{args.file.name}: test files are not charted.")
             box = python_file(args.file.name, read_bytes(args.file))
         plan = {"id": "asbuilt:built", "children": [box]}
         check(plan, args.out.name)
