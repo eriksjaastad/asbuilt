@@ -143,95 +143,73 @@ def _is_module_exports(node):
     )
 
 
-def _cjs_stable(root):
-    # Node's exports are whatever module.exports holds when loading ends. Only plain
-    # top-level writes are followed; a shadowed, aliased, deleted, nested or
-    # computed write could change that object, so the file proves no export.
-    names = set(_assigned(root))
-    for node in _walk(root, True):
-        if node.type in FUNCTIONS | CLASSES | {"method_definition"}:
-            names.add(_word(node.child_by_field_name("name")))
-            names.update(
-                _pattern(
-                    node.child_by_field_name("parameters")
-                    or node.child_by_field_name("parameter")
-                )
-            )
-        elif node.type == "variable_declarator":
-            names.update(_pattern(node.child_by_field_name("name")))
-        elif node.type == "catch_clause":
-            names.update(_pattern(node.child_by_field_name("parameter")))
-        elif node.type == "for_in_statement":
-            names.update(_pattern(node.child_by_field_name("left")))
-    if names & {"module", "exports"}:
-        return False
-    for base in _walk(root, True):
-        if not (
-            (base.type == "identifier" and _word(base) == "exports")
-            or _is_module_exports(base)
+def _cjs_names(root):
+    # Whitelist: Node's exports are what module.exports holds when loading ends, so
+    # only a file that names module/exports once, in one top-level
+    # module.exports = <identifier | function or class | {a, b: c}>, proves them.
+    # Any other mention (exports.x, an import, a read, a shadow) proves none.
+    mentions = [
+        n
+        for n in _walk(root, True)
+        if n.type
+        in {
+            "identifier",
+            "shorthand_property_identifier",
+            "shorthand_property_identifier_pattern",
+        }
+        and _word(n) in {"module", "exports"}
+    ]
+    if len(mentions) != 1:
+        return {}
+    member = mentions[0].parent
+    expr = member.parent if member is not None else None
+    if (
+        not _is_module_exports(member)
+        or member.child_by_field_name("object") != mentions[0]
+        or expr is None
+        or expr.type != "assignment_expression"
+        or expr.child_by_field_name("left") != member
+        or expr.parent.type != "expression_statement"
+        or expr.parent.parent != root
+    ):
+        return {}
+    right = expr.child_by_field_name("right")
+    if right.type == "identifier":
+        return {"module.exports": _word(right), "default": _word(right)}
+    if right.type in FUNCTIONS | CLASSES:
+        return {"module.exports": "module.exports", "default": "module.exports"}
+    if right.type != "object":
+        return {}
+    names = {}
+    for prop in right.named_children:
+        if prop.type == "shorthand_property_identifier":
+            key = value = _word(prop)
+        elif (
+            prop.type == "pair"
+            and prop.child_by_field_name("key").type == "property_identifier"
+            and prop.child_by_field_name("value").type == "identifier"
         ):
+            key = _word(prop.child_by_field_name("key"))
+            value = _word(prop.child_by_field_name("value"))
+        elif prop.type == "comment":
             continue
-        top = base
-        while (
-            top.parent is not None
-            and top.parent.type in {"member_expression", "subscript_expression"}
-            and top.parent.child_by_field_name("object") == top
-        ):
-            top = top.parent
-        parent = top.parent
-        if parent is None:
-            continue
-        if parent.type == "unary_expression" and _word(
-            parent.child_by_field_name("operator")
-        ) == "delete":
-            return False
-        target = {
-            "assignment_expression": "left",
-            "augmented_assignment_expression": "left",
-            "update_expression": "argument",
-        }.get(parent.type)
-        if target and parent.child_by_field_name(target) == top:
-            plain = (
-                parent.type == "assignment_expression"
-                and parent.parent.type == "expression_statement"
-                and parent.parent.parent == root
-                and (
-                    (top == base and base.type == "member_expression")
-                    or (
-                        top.type == "member_expression"
-                        and top.child_by_field_name("object") == base
-                        and top.child_by_field_name("property").type
-                        == "property_identifier"
-                    )
-                )
-            )
-            if not plain:
-                return False
-        elif top == base:
-            return False  # the object itself escapes (aliased, passed, chained)
-    return True
+        else:
+            return {}  # spreads, computed or quoted keys, methods, other values
+        names[key] = None if key in names else value
+    # An ES default import of this file is the whole object, never its .default.
+    names.pop("default", None)
+    return names
 
 
-def _cjs_export(expr, outer, found, cjs):
-    # cjs["names"] maps export name -> definition key; replacing module.exports
-    # discards earlier properties, and after it exports.x no longer reaches it.
-    # A "default" property is skipped: Node and Babel interop disagree on it.
-    names = cjs["names"]
-
-    def put(name, key):
-        names[name] = None if name in names else key
-
+def _cjs_boxes(expr, outer, found):
+    # Functions assigned through module.exports or exports are drawn as boxes; their
+    # dotted keys are never module-scope names, and _cjs_names decides exports.
     left = expr.child_by_field_name("left")
     right = expr.child_by_field_name("right")
     if left is None or right is None or left.type != "member_expression":
         return
     if _is_module_exports(left):
-        names.clear()
-        cjs["replaced"] = True
-        if right.type == "identifier":
-            put("module.exports", _word(right))
-            put("default", _word(right))
-        elif right.type in FUNCTIONS | CLASSES:
+        if right.type in FUNCTIONS | CLASSES:
             name = right.child_by_field_name("name")
             label = (
                 _word(name)
@@ -240,58 +218,54 @@ def _cjs_export(expr, outer, found, cjs):
                 else "default"
             )
             found.append((label, right, outer, "module.exports"))
-            put("module.exports", "module.exports")
-            put("default", "module.exports")
         elif right.type == "object":
             for prop in right.named_children:
-                if prop.type == "shorthand_property_identifier":
-                    ident = _word(prop)
-                    put(ident, ident)
-                elif prop.type == "pair":
-                    key = prop.child_by_field_name("key")
-                    val = prop.child_by_field_name("value")
-                    if (
-                        key is not None
-                        and key.type == "property_identifier"
-                        and val is not None
-                    ):
-                        k = _word(key)
-                        if val.type == "identifier":
-                            put(k, _word(val))
-                        elif val.type in FUNCTIONS | CLASSES:
-                            found.append((k, val, prop, f"exports.{k}"))
-                            put(k, f"exports.{k}")
+                key = prop.child_by_field_name("key") if prop.type == "pair" else None
+                val = prop.child_by_field_name("value") if key is not None else None
+                if (
+                    key is not None
+                    and key.type == "property_identifier"
+                    and val is not None
+                    and val.type in FUNCTIONS | CLASSES
+                ):
+                    found.append((_word(key), val, prop, f"exports.{_word(key)}"))
         return
     obj = left.child_by_field_name("object")
     prop = left.child_by_field_name("property")
-    via_exports = obj is not None and obj.type == "identifier" and _word(obj) == "exports"
     if (
         prop is not None
         and prop.type == "property_identifier"
-        and (via_exports or _is_module_exports(obj))
+        and right.type in FUNCTIONS | CLASSES
+        and (
+            (obj is not None and obj.type == "identifier" and _word(obj) == "exports")
+            or _is_module_exports(obj)
+        )
     ):
-        export_name = _word(prop)
-        live = not (via_exports and cjs["replaced"]) and export_name != "default"
-        if right.type == "identifier":
-            if live:
-                put(export_name, _word(right))
-        elif right.type in FUNCTIONS | CLASSES:
-            key = f"exports.{export_name}"
-            found.append((export_name, right, outer, key))
-            if live:
-                put(export_name, key)
+        found.append((_word(prop), right, outer, f"exports.{_word(prop)}"))
 
 
-_WRAPPERS = frozenset(
-    {
-        ("memo",),
-        ("React", "memo"),
-        ("forwardRef",),
-        ("React", "forwardRef"),
-        ("defineComponent",),
-        ("Vue", "defineComponent"),
-    }
-)
+# Wrapper functions that return the component they are given, by package.
+_WRAPPERS = {"react": {"memo", "forwardRef"}, "vue": {"defineComponent"}}
+
+
+def _wrapper_paths(root):
+    # A wrapper is proved only by a unique, never-written import binding, so a
+    # local function spelled memo (which may discard its argument) is no wrapper.
+    imports = _imports(root)
+    counts = Counter(_bindings(root) + [k for _, b in imports for k in b])
+    assigned = _assigned(root)
+    if not counts["require"] and "require" not in assigned:
+        imports += _cjs_imports(root)
+    paths = set()
+    for spec, bindings in imports:
+        for ident, exported in bindings.items():
+            if spec not in _WRAPPERS or counts[ident] != 1 or ident in assigned:
+                continue
+            if exported in _WRAPPERS[spec]:
+                paths.add((ident,))
+            elif exported in ("default", "*", "module.exports"):
+                paths.update((ident, name) for name in _WRAPPERS[spec])
+    return paths, counts, assigned
 
 
 def _unwrap_expr(node):
@@ -320,7 +294,7 @@ def _wrapper_callee(node):
     return (_word(cur), *attrs)
 
 
-def _unwrap_component(node):
+def _unwrap_component(node, wrappers):
     node = _unwrap_expr(node)
     if node is None:
         return None, False
@@ -329,7 +303,7 @@ def _unwrap_component(node):
     depth = 0
     cur = node
     while cur is not None and cur.type == "call_expression":
-        if _wrapper_callee(cur.child_by_field_name("function")) not in _WRAPPERS:
+        if _wrapper_callee(cur.child_by_field_name("function")) not in wrappers:
             return None, False
         args = cur.child_by_field_name("arguments")
         if args is None or not (1 <= len(args.named_children) <= 2):
@@ -361,7 +335,7 @@ def _definitions(root, file_name=""):
     found, exports = [], {}
     anon_defaults = []
     wrapper_refs = []
-    cjs = {"names": {}, "replaced": False}
+    wrappers, counts, assigned = _wrapper_paths(root)
 
     def expose(name, ident):
         exports[name] = None if name in exports else ident
@@ -370,7 +344,7 @@ def _definitions(root, file_name=""):
         if outer.type == "expression_statement" and len(outer.named_children) == 1:
             expr = outer.named_children[0]
             if expr.type == "assignment_expression":
-                _cjs_export(expr, outer, found, cjs)
+                _cjs_boxes(expr, outer, found)
                 continue
         exported = outer.type == "export_statement"
         if exported and any(c.type == "type" for c in outer.children):
@@ -401,7 +375,7 @@ def _definitions(root, file_name=""):
             name = item.child_by_field_name("name")
             if name is not None and name.type not in {"identifier", "type_identifier"}:
                 continue
-            target, wrapped = _unwrap_component(raw_value)
+            target, wrapped = _unwrap_component(raw_value, wrappers)
             if target is None:
                 continue
             raw_name = (
@@ -442,9 +416,8 @@ def _definitions(root, file_name=""):
                         ),
                         _word(item.child_by_field_name("name")),
                     )
-    if _cjs_stable(root):
-        for name, key in cjs["names"].items():
-            expose(name, key)
+    for name, key in _cjs_names(root).items():
+        expose(name, key)
     fn_by_ident = {}
     fn_counts = Counter()
     for entry in found:
@@ -453,8 +426,12 @@ def _definitions(root, file_name=""):
             if target_node.type in FUNCTIONS:
                 fn_counts[key] += 1
                 fn_by_ident[key] = target_node
+    def stable(ref):
+        # The wrapped name must be one unwritten definition, or its body may be stale.
+        return fn_counts[ref] == 1 and counts[ref] == 1 and ref not in assigned
+
     for idx, ident, ref_name, outer in wrapper_refs:
-        if fn_counts[ref_name] == 1:
+        if stable(ref_name):
             found[idx] = (ident, fn_by_ident[ref_name], outer, ident)
         else:
             for exp_name, exp_target in list(exports.items()):
@@ -463,7 +440,7 @@ def _definitions(root, file_name=""):
     if len(anon_defaults) == 1:
         idx, target_node, outer, ref_name = anon_defaults[0]
         if ref_name is not None:
-            target_node = fn_by_ident.get(ref_name) if fn_counts[ref_name] == 1 else None
+            target_node = fn_by_ident.get(ref_name) if stable(ref_name) else None
         if target_node is not None:
             taken = {e[0] for e in found if e is not None} | set(_bindings(root)) | _assigned(root)
             stem = _default_stem(file_name)
@@ -473,7 +450,7 @@ def _definitions(root, file_name=""):
     elif len(anon_defaults) > 1:
         for idx, target_node, outer, ref_name in anon_defaults:
             if ref_name is not None:
-                target_node = fn_by_ident.get(ref_name) if fn_counts[ref_name] == 1 else None
+                target_node = fn_by_ident.get(ref_name) if stable(ref_name) else None
             if target_node is not None:
                 found[idx] = ("default", target_node, outer, "export.default")
                 expose("default", "export.default")
@@ -673,6 +650,9 @@ _MODEL_CONSTRUCTORS = frozenset(
     }
 )
 _MODEL_CALLS = frozenset({("ai", "generateText"), ("ai", "streamText")})
+_ENV_BASES = frozenset(
+    {("global", "process", "env"), ("module", "process", "env"), ("import.meta", "env")}
+)
 _TYPE_NODES = frozenset(
     {
         "type_annotation",
@@ -802,6 +782,8 @@ def _hoisted_bindings(body):
             for decl in cur.named_children:
                 if decl.type == "variable_declarator":
                     names.extend(_pattern(decl.child_by_field_name("name")))
+        elif cur.type == "for_in_statement" and _word(cur.child_by_field_name("kind")) == "var":
+            names.extend(_pattern(cur.child_by_field_name("left")))
         todo.extend(reversed(cur.named_children))
     return names
 
@@ -882,6 +864,20 @@ def _free_writes(root):
     return out
 
 
+def _env_write_target(node, scope, dynamic):
+    # process.env.X = v and delete process.env.X change the environment; neither
+    # reads it. A compound assignment (+=) does read, so it is not passed here.
+    node = _unwrap(node)
+    if node is None:
+        return False
+    if _resolve_mark_path(node, scope, dynamic) in _ENV_BASES:
+        return True
+    return node.type in {"member_expression", "subscript_expression"} and (
+        _resolve_mark_path(node.child_by_field_name("object"), scope, dynamic)
+        in _ENV_BASES
+    )
+
+
 def _on_mark_call(node, scope, dynamic, add):
     path = _resolve_mark_path(node.child_by_field_name("function"), scope, dynamic)
     if path is None:
@@ -950,11 +946,7 @@ def _on_mark_assign(node, scope, dynamic, add):
 
 def _on_mark_ref(node, scope, dynamic, add, details=None):
     path = _resolve_mark_path(node, scope, dynamic)
-    if path in {
-        ("global", "process", "env"),
-        ("module", "process", "env"),
-        ("import.meta", "env"),
-    }:
+    if path in _ENV_BASES:
         add("env")
     elif path in {
         ("global", "process", "argv"),
@@ -1033,11 +1025,7 @@ def _env_read_info(node, scope, dynamic):
         if not key:
             return None
         base = _resolve_mark_path(node.child_by_field_name("object"), scope, dynamic)
-        if base in {
-            ("global", "process", "env"),
-            ("module", "process", "env"),
-            ("import.meta", "env"),
-        }:
+        if base in _ENV_BASES:
             return key, _word(node)
         return None
     if node.type == "subscript_expression":
@@ -1045,11 +1033,7 @@ def _env_read_info(node, scope, dynamic):
         if not key:
             return None
         base = _resolve_mark_path(node.child_by_field_name("object"), scope, dynamic)
-        if base in {
-            ("global", "process", "env"),
-            ("module", "process", "env"),
-            ("import.meta", "env"),
-        }:
+        if base in _ENV_BASES:
             return key, _word(node)
         return None
     if node.type == "call_expression":
@@ -1208,6 +1192,18 @@ def _marks(node, module_scope, dynamic, details=None, security_out=None, plain_o
             add_sec(dedup_key, sec_entry)
             add_plain(plain_line)
 
+    # An explicit stack, not recursion: a long valid expression must not crash.
+    # Items pop in source order; a callable runs once everything before it is seen.
+    todo = []
+
+    def push(items):
+        todo.extend(reversed(items))
+
+    def set_client(scope, ident, val_node):
+        kind = _client_kind(val_node, scope, dynamic)
+        if kind is not None:
+            scope[ident] = ("client", kind)
+
     def visit_block(block, scope):
         block_scope = dict(scope)
         decl_counts = Counter()
@@ -1234,31 +1230,31 @@ def _marks(node, module_scope, dynamic, details=None, security_out=None, plain_o
                 if name is not None:
                     block_scope[_word(name)] = None
         block_assigned = _free_writes(block)
+        items = []
         if block.type == "switch_body":
-            for case in block.named_children:
-                visit(case.child_by_field_name("value"), block_scope)
+            items += [(c.child_by_field_name("value"), block_scope) for c in block.named_children]
         for stmt in stmts:
-            if stmt.type in {"lexical_declaration", "variable_declaration"}:
-                for decl in stmt.named_children:
-                    if decl.type != "variable_declarator":
-                        visit(decl, block_scope)
-                        continue
-                    name_node = decl.child_by_field_name("name")
-                    val_node = decl.child_by_field_name("value")
-                    visit(name_node, block_scope)
-                    visit(val_node, block_scope)
-                    if (
-                        name_node is not None
-                        and name_node.type == "identifier"
-                        and val_node is not None
-                    ):
-                        ident = _word(name_node)
-                        if decl_counts[ident] == 1 and ident not in block_assigned:
-                            kind = _client_kind(val_node, block_scope, dynamic)
-                            if kind is not None:
-                                block_scope[ident] = ("client", kind)
-            else:
-                visit(stmt, block_scope)
+            if stmt.type not in {"lexical_declaration", "variable_declaration"}:
+                items.append((stmt, block_scope))
+                continue
+            for decl in stmt.named_children:
+                if decl.type != "variable_declarator":
+                    items.append((decl, block_scope))
+                    continue
+                name_node = decl.child_by_field_name("name")
+                val_node = decl.child_by_field_name("value")
+                items += [(name_node, block_scope), (val_node, block_scope)]
+                if (
+                    name_node is not None
+                    and name_node.type == "identifier"
+                    and val_node is not None
+                ):
+                    ident = _word(name_node)
+                    if decl_counts[ident] == 1 and ident not in block_assigned:
+                        items.append(
+                            lambda i=ident, v=val_node: set_client(block_scope, i, v)
+                        )
+        push(items)
 
     def visit(cur, scope):
         if cur is None or cur.type in _TYPE_NODES:
@@ -1278,13 +1274,10 @@ def _marks(node, module_scope, dynamic, details=None, security_out=None, plain_o
             body = cur.child_by_field_name("body")
             for ident in _hoisted_bindings(body):
                 fn_scope[ident] = None
-            visit(params, fn_scope)
-            visit(body, fn_scope)
+            push([(params, fn_scope), (body, fn_scope)])
             return
         if kind == "method_definition":
             name = cur.child_by_field_name("name")
-            if name is not None and name.type == "computed_property_name":
-                visit(name, scope)
             method_scope = dict(scope)
             params = cur.child_by_field_name("parameters")
             for ident in _pattern(params):
@@ -1292,21 +1285,24 @@ def _marks(node, module_scope, dynamic, details=None, security_out=None, plain_o
             body = cur.child_by_field_name("body")
             for ident in _hoisted_bindings(body):
                 method_scope[ident] = None
-            visit(params, method_scope)
-            visit(body, method_scope)
+            computed = name is not None and name.type == "computed_property_name"
+            push(
+                ([(name, scope)] if computed else [])
+                + [(params, method_scope), (body, method_scope)]
+            )
             return
         if kind in CLASSES:
             class_scope = dict(scope)
             name = cur.child_by_field_name("name")
             if kind == "class" and name is not None:
                 class_scope[_word(name)] = None
-            for child in cur.named_children:
-                if child == name:
-                    continue
-                visit(
-                    child,
-                    scope if child.type == "class_heritage" else class_scope,
-                )
+            push(
+                [
+                    (c, scope if c.type == "class_heritage" else class_scope)
+                    for c in cur.named_children
+                    if c != name
+                ]
+            )
             return
         if kind in {"statement_block", "switch_body"}:
             visit_block(cur, scope)
@@ -1319,25 +1315,39 @@ def _marks(node, module_scope, dynamic, details=None, security_out=None, plain_o
                     if decl.type == "variable_declarator":
                         for ident in _pattern(decl.child_by_field_name("name")):
                             loop_scope[ident] = None
-            for child in cur.named_children:
-                visit(child, loop_scope)
+            push([(c, loop_scope) for c in cur.named_children])
             return
         if kind == "for_in_statement":
             loop_scope = dict(scope)
             for ident in _pattern(cur.child_by_field_name("left")):
                 loop_scope[ident] = None
-            for child in cur.named_children:
-                visit(child, loop_scope)
+            push([(c, loop_scope) for c in cur.named_children])
             return
         if kind == "catch_clause":
             catch_scope = dict(scope)
             for ident in _pattern(cur.child_by_field_name("parameter")):
                 catch_scope[ident] = None
-            visit(cur.child_by_field_name("body"), catch_scope)
+            push([(cur.child_by_field_name("body"), catch_scope)])
             return
         if kind in {"as_expression", "satisfies_expression"}:
-            if cur.named_children:
-                visit(cur.named_children[0], scope)
+            push([(cur.named_children[0], scope)] if cur.named_children else [])
+            return
+        target = (
+            cur.child_by_field_name("left")
+            if kind == "assignment_expression"
+            else cur.child_by_field_name("argument")
+            if kind == "unary_expression"
+            and _word(cur.child_by_field_name("operator")) == "delete"
+            else None
+        )
+        if target is not None and _env_write_target(target, scope, dynamic):
+            target = _unwrap(target)
+            index = (
+                target.child_by_field_name("index")
+                if target.type == "subscript_expression"
+                else None
+            )
+            push([(index, scope), (cur.child_by_field_name("right"), scope)])
             return
         if kind == "call_expression":
             _on_mark_call(cur, scope, dynamic, add)
@@ -1357,10 +1367,15 @@ def _marks(node, module_scope, dynamic, details=None, security_out=None, plain_o
             msg = _throw_literal_message(cur)
             if msg and msg not in throws:
                 throws.append(msg)
-        for child in cur.named_children:
-            visit(child, scope)
+        push([(c, scope) for c in cur.named_children])
 
-    visit(node, module_scope)
+    todo.append((node, module_scope))
+    while todo:
+        item = todo.pop()
+        if callable(item):
+            item()
+        else:
+            visit(*item)
     if len(throws) == 1:
         add_plain(f'Can stop with an error: "{throws[0]}".')
     if plain_out is not None and len(plain_out) > 3:
@@ -1810,12 +1825,36 @@ NO_PATH = "no path from an entry point found by asBuilt"
     _REACT_COMP,
     _TOP_SCRIPT,
 ) = range(7)
-_DOM_MOUNTS = frozenset({"createRoot", "hydrateRoot"})
-_ROUTE_RECEIVERS = frozenset({"app", "router", "server", "fastify"})
 _ROUTE_VERBS = frozenset(
     {"get", "post", "put", "delete", "patch", "use", "route", "all"}
 )
-_APP_FACTORIES = frozenset({"express", "Router", "Fastify", "fastify", "Hono", "Koa"})
+# Web entries are proved from imports, never from spellings such as app or render.
+# A path is (module, attribute...); "" stands for the module's whole export.
+_APP_FACTORIES = frozenset(
+    {
+        ("express", ""),
+        ("express", "", "Router"),
+        ("express", "Router"),
+        ("fastify", ""),
+        ("fastify", "fastify"),
+        ("fastify", "Fastify"),
+        ("koa", ""),
+        ("hono", "Hono"),
+    }
+)
+_DOM_MOUNTS = frozenset(
+    {
+        ("react-dom/client", "createRoot"),
+        ("react-dom/client", "hydrateRoot"),
+        ("react-dom/client", "", "createRoot"),
+        ("react-dom/client", "", "hydrateRoot"),
+        ("react-dom", "", "createRoot"),
+        ("react-dom", "", "hydrateRoot"),
+        ("react-dom", "", "render"),
+        ("react-dom", "", "hydrate"),
+    }
+)
+_WEB_MODULES = frozenset({p[0] for p in _APP_FACTORIES | _DOM_MOUNTS})
 _SHEBANG_RUNTIMES = ("node", "bun", "deno", "tsx", "ts-node")
 
 
@@ -1924,7 +1963,8 @@ def _package_bins(path, charted_files):
     for cmd_name, raw_target in entries:
         target_abs = (pkg_file.parent / raw_target).resolve()
         if not is_dir:
-            stem_matches = {single_resolved}
+            # The bin's own path (or its TS source) must be the selected file.
+            stem_matches = {target_abs}
             suffix = target_abs.suffix
             for alt in TS_FALLBACK.get(suffix, ()):
                 stem_matches.add(target_abs.with_suffix(alt))
@@ -1957,33 +1997,98 @@ def _package_bins(path, charted_files):
     return found_bins, unproven
 
 
-def _app_var_names(root, mark_scope):
-    imported_known = {k for k, v in mark_scope.items() if v is not None}
-    names = set(_ROUTE_RECEIVERS) - imported_known
-    for node in _walk(root, nested=True):
-        if node.type != "variable_declarator":
+def _bound_between(name, node, top):
+    """True when a scope enclosing node, up to and including top, declares name."""
+    cur = node.parent
+    while cur is not None and cur.type != "program":
+        kind = cur.type
+        if kind in FUNCTIONS or kind == "method_definition":
+            params = cur.child_by_field_name("parameters") or cur.child_by_field_name(
+                "parameter"
+            )
+            own = _word(cur.child_by_field_name("name"))
+            if name in _pattern(params) or name in _hoisted_bindings(
+                cur.child_by_field_name("body")
+            ):
+                return True
+            if kind in {"function_expression", "generator_function"} and own == name:
+                return True
+        elif kind in {"statement_block", "switch_body", "class_body"}:
+            if name in _lexical_names(_block_statements(cur)):
+                return True
+        elif kind == "for_statement":
+            if name in _lexical_names([cur.child_by_field_name("initializer")]):
+                return True
+        elif kind == "for_in_statement":
+            if _word(cur.child_by_field_name("kind")) in {"let", "const"} and name in (
+                _pattern(cur.child_by_field_name("left"))
+            ):
+                return True
+        elif kind == "catch_clause":
+            if name in _pattern(cur.child_by_field_name("parameter")):
+                return True
+        if cur == top:
+            break
+        cur = cur.parent
+    return False
+
+
+def _web_bindings(imports, counts, assigned):
+    # Unique, never-written imports of a web framework: ident -> (module, export).
+    found = {}
+    for spec, bindings in imports:
+        if spec not in _WEB_MODULES:
             continue
-        lhs = node.child_by_field_name("name")
-        rhs = _unwrap_expr(node.child_by_field_name("value"))
-        if lhs is None or lhs.type != "identifier" or rhs is None:
+        for ident, exported in bindings.items():
+            if counts[ident] == 1 and ident not in assigned:
+                whole = exported in ("default", "*", "module.exports")
+                found[ident] = (spec, "" if whole else exported)
+    return found
+
+
+def _web_path(node, web, top):
+    # (module, attrs...) for a callee rooted at a web import not shadowed by top.
+    root, attrs = _member_chain(_unwrap_expr(node))
+    if root is None or root.type != "identifier" or _word(root) not in web:
+        return None
+    if _bound_between(_word(root), root, top):
+        return None
+    return (*web[_word(root)], *attrs)
+
+
+def _app_var_names(root, web, counts, assigned):
+    # Top-level apps only: a unique, unwritten const built by a framework factory.
+    names = set()
+    for outer in root.named_children:
+        node = (
+            outer.child_by_field_name("declaration")
+            if outer.type == "export_statement"
+            else outer
+        )
+        if node is None or node.type not in {"lexical_declaration", "variable_declaration"}:
             continue
-        if rhs.type not in {"call_expression", "new_expression"}:
-            continue
-        field = "function" if rhs.type == "call_expression" else "constructor"
-        callee = _unwrap_expr(rhs.child_by_field_name(field))
-        if callee is None:
-            continue
-        if callee.type == "identifier" and _word(callee) in _APP_FACTORIES:
-            names.add(_word(lhs))
-        elif callee.type == "member_expression":
-            prop = callee.child_by_field_name("property")
-            if prop is not None and _word(prop) in _APP_FACTORIES:
-                names.add(_word(lhs))
+        for decl in node.named_children:
+            lhs = decl.child_by_field_name("name")
+            rhs = _unwrap_expr(decl.child_by_field_name("value"))
+            if lhs is None or lhs.type != "identifier" or rhs is None:
+                continue
+            ident = _word(lhs)
+            if counts[ident] != 1 or ident in assigned:
+                continue
+            if rhs.type not in {"call_expression", "new_expression"}:
+                continue
+            field = "function" if rhs.type == "call_expression" else "constructor"
+            if _web_path(rhs.child_by_field_name(field), web, rhs) in _APP_FACTORIES:
+                names.add(ident)
     return names
 
 
-def _collect_arg_targets(call_node, scope, hidden):
+def _collect_arg_targets(call_node, scope, hidden, top):
     targets = []
+
+    def visible(name, at):
+        return name not in hidden and name in scope and not _bound_between(name, at, top)
+
     args = call_node.child_by_field_name("arguments")
     if args is None:
         return targets
@@ -1992,9 +2097,8 @@ def _collect_arg_targets(call_node, scope, hidden):
         if arg is None:
             continue
         if arg.type == "identifier":
-            ident = _word(arg)
-            if ident not in hidden and ident in scope:
-                targets.append(scope[ident])
+            if visible(_word(arg), arg):
+                targets.append(scope[_word(arg)])
         elif arg.type in FUNCTIONS:
             cb_body = arg.child_by_field_name("body")
             cb_params = arg.child_by_field_name("parameters") or arg.child_by_field_name(
@@ -2015,25 +2119,30 @@ def _collect_arg_targets(call_node, scope, hidden):
                     callee is not None
                     and callee.type == "identifier"
                     and _word(callee) not in cb_hidden
-                    and _word(callee) in scope
+                    and visible(_word(callee), callee)
                 ):
                     targets.append(scope[_word(callee)])
         for sub in _walk(arg, nested=True):
             if sub.type in {"jsx_opening_element", "jsx_self_closing_element"}:
                 tag = sub.child_by_field_name("name")
-                if tag is not None and tag.type == "identifier":
-                    tname = _word(tag)
-                    if tname not in hidden and tname in scope:
-                        targets.append(scope[tname])
+                if (
+                    tag is not None
+                    and tag.type == "identifier"
+                    and visible(_word(tag), tag)
+                ):
+                    targets.append(scope[_word(tag)])
     return targets
 
 
-def _scan_entry_calls(ast_node, scope, mark_scope, dynamic, app_vars, hidden):
+def _scan_entry_calls(ast_node, scope, mark_scope, dynamic, web, app_vars, hidden):
     dom_mounts = []
     http_routes = []
     dom_listeners = []
     wired = []
     render_calls = []
+
+    def wire(call):
+        wired.extend(_collect_arg_targets(call, scope, hidden, ast_node))
 
     for cur in _walk(ast_node, nested=True):
         if cur.type != "call_expression":
@@ -2041,93 +2150,68 @@ def _scan_entry_calls(ast_node, scope, mark_scope, dynamic, app_vars, hidden):
         callee = _unwrap_expr(cur.child_by_field_name("function"))
         if callee is None:
             continue
+        web_path = _web_path(callee, web, ast_node)
+        if web_path in _DOM_MOUNTS:
+            dom_mounts.append(
+                f"ReactDOM.{web_path[-1]}()"
+                if web_path[-1] in {"render", "hydrate"}
+                else f"{web_path[-1]}()"
+            )
+            wire(cur)
+            continue
         if callee.type == "identifier":
             cname = _word(callee)
-            if cname in _DOM_MOUNTS and cname not in hidden:
-                dom_mounts.append(f"{cname}()")
-                wired.extend(_collect_arg_targets(cur, scope, hidden))
-            elif cname == "addEventListener" and cname not in hidden:
+            if cname in hidden or _bound_between(cname, callee, ast_node):
+                continue
+            if cname == "addEventListener":
                 dom_listeners.append("addEventListener()")
-                wired.extend(_collect_arg_targets(cur, scope, hidden))
-            elif cname == "createServer" and cname not in hidden:
+                wire(cur)
+            elif cname == "createServer":
                 path = _resolve_mark_path(callee, mark_scope, dynamic)
                 if path in {
                     ("module", "http", "createServer"),
                     ("module", "https", "createServer"),
                 }:
                     http_routes.append((path[1], "createServer", ""))
-                    wired.extend(_collect_arg_targets(cur, scope, hidden))
+                    wire(cur)
         elif callee.type == "member_expression":
             obj = _unwrap_expr(callee.child_by_field_name("object"))
             prop = callee.child_by_field_name("property")
             if prop is None or prop.type != "property_identifier":
                 continue
             pname = _word(prop)
-            if pname in _DOM_MOUNTS:
-                dom_mounts.append(f"{pname}()")
-                wired.extend(_collect_arg_targets(cur, scope, hidden))
-            elif (
-                pname in {"render", "hydrate"}
-                and obj is not None
-                and obj.type == "identifier"
-                and _word(obj) == "ReactDOM"
-            ):
-                dom_mounts.append(f"ReactDOM.{pname}()")
-                wired.extend(_collect_arg_targets(cur, scope, hidden))
-            elif pname == "render":
+            obj_name = _word(obj) if obj is not None and obj.type == "identifier" else ""
+            if obj_name and (obj_name in hidden or _bound_between(obj_name, obj, ast_node)):
+                continue
+            if pname == "render":
                 render_calls.append(cur)
             elif pname == "addEventListener":
                 dom_listeners.append("addEventListener()")
-                wired.extend(_collect_arg_targets(cur, scope, hidden))
+                wire(cur)
             elif pname == "createServer":
                 path = _resolve_mark_path(callee, mark_scope, dynamic)
-                obj_name = _word(obj) if obj is not None and obj.type == "identifier" else ""
                 if path in {
                     ("module", "http", "createServer"),
                     ("module", "https", "createServer"),
-                    ("global", "http", "createServer"),
-                    ("global", "https", "createServer"),
-                } or obj_name in {"http", "https"}:
-                    http_routes.append((obj_name or "http", "createServer", ""))
-                    wired.extend(_collect_arg_targets(cur, scope, hidden))
-            elif (
-                pname in _ROUTE_VERBS
-                and obj is not None
-                and obj.type == "identifier"
-                and _word(obj) in app_vars
-                and _word(obj) not in hidden
-            ):
+                }:
+                    http_routes.append((path[1], "createServer", ""))
+                    wire(cur)
+            elif pname in _ROUTE_VERBS and obj_name in app_vars:
                 args = cur.child_by_field_name("arguments")
                 named_args = args.named_children if args is not None else []
-                valid_route = (pname in {"use", "route"} and len(named_args) >= 1) or (
-                    pname not in {"use", "route"}
-                    and (
-                        len(named_args) >= 2
-                        or (
-                            len(named_args) == 1
-                            and named_args[0].type
-                            in {
-                                "string",
-                                "template_string",
-                                "identifier",
-                                "arrow_function",
-                                "function_expression",
-                            }
-                        )
-                    )
-                )
-                if valid_route:
+                # app.get('env') reads a setting; a route needs a path and a handler.
+                if len(named_args) >= (1 if pname in {"use", "route"} else 2):
                     route_arg = (
                         _word(named_args[0])
                         if named_args and named_args[0].type == "string"
                         else ""
                     )
-                    http_routes.append((_word(obj), pname, route_arg))
-                    wired.extend(_collect_arg_targets(cur, scope, hidden))
+                    http_routes.append((obj_name, pname, route_arg))
+                    wire(cur)
 
     if dom_mounts and render_calls:
         for rcall in render_calls:
-            wired.extend(_collect_arg_targets(rcall, scope, hidden))
+            wire(rcall)
 
     dedup_wired = []
     for item in wired:
@@ -2275,7 +2359,8 @@ def find_components(
         dynamic = pdata["dynamic"]
         exports = pdata["exports"]
         exported_idents = {v for v in exports.values() if v}
-        app_vars = _app_var_names(root, mark_scope)
+        web = _web_bindings(pdata["imports"], pdata["counts"], pdata["assigned"])
+        app_vars = _app_var_names(root, web, pdata["counts"], pdata["assigned"])
         exported_defs_by_file[rel] = []
         explicit_entry_defs_by_file[rel] = []
         top_calls_by_file[rel] = []
@@ -2310,11 +2395,15 @@ def find_components(
                     tag = sub.child_by_field_name("name")
                     if tag is not None and tag.type == "identifier":
                         tname = _word(tag)
-                        if tname not in hidden and tname in scope:
+                        if (
+                            tname not in hidden
+                            and tname in scope
+                            and not _bound_between(tname, tag, node)
+                        ):
                             add_edge(cid, scope[tname])
 
             dom_mounts, http_routes, dom_listeners, wired = _scan_entry_calls(
-                node, scope, mark_scope, dynamic, app_vars, hidden
+                node, scope, mark_scope, dynamic, web, app_vars, hidden
             )
             for t_cid in wired:
                 add_edge(cid, t_cid)
@@ -2399,6 +2488,7 @@ def find_components(
                     callee is not None
                     and callee.type == "identifier"
                     and _word(callee) in scope
+                    and not _bound_between(_word(callee), callee, outer)
                 ):
                     t_cid = scope[_word(callee)]
                     if t_cid not in top_calls_by_file[rel]:
@@ -2406,12 +2496,12 @@ def find_components(
                     if file_of.get(t_cid) == rel and t_cid not in explicit_entry_defs_by_file[rel]:
                         explicit_entry_defs_by_file[rel].append(t_cid)
                 if cur.type == "call_expression":
-                    for cb_target in _collect_arg_targets(cur, scope, set()):
+                    for cb_target in _collect_arg_targets(cur, scope, set(), outer):
                         if cb_target not in top_wired:
                             top_wired.append(cb_target)
 
             m_list, r_list, l_list, w_list = _scan_entry_calls(
-                outer, scope, mark_scope, dynamic, app_vars, set()
+                outer, scope, mark_scope, dynamic, web, app_vars, set()
             )
             top_dom_mounts.extend(m_list)
             top_http_routes.extend(r_list)

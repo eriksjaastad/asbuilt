@@ -577,8 +577,6 @@ class JavaScript(unittest.TestCase):
                 ("app.js:run:9", "single.js:work:1"),
                 ("app.js:run:9", "named.js:alpha:1"),
                 ("app.js:run:9", "named.js:beta:2"),
-                ("app.js:run:9", "props.js:delta:1"),
-                ("app.js:run:9", "props.js:gamma:3"),
             },
         )
         imports = [
@@ -650,6 +648,15 @@ class JavaScript(unittest.TestCase):
             "shadowed": "function f() {}\nexports.f = f;\nfunction g(exports) { exports.f = 1; }\n",
             "aliased": "function f() {}\nexports.f = f;\nObject.assign(module.exports, {});\n",
             "after_replace": "function f() {}\nmodule.exports = {};\nexports.f = f;\n",
+            "property": "function f() {}\nexports.f = f;\n",
+            "overwritten": "function f() {}\nfunction g() {}\nexports.f = f;\nexports.f = g.bind(null);\n",
+            "spread": "function f() {}\nfunction g() {}\nmodule.exports = { f, ...{ f: g } };\n",
+            "quoted": "function f() {}\nfunction g() {}\nmodule.exports = { f, 'f': g };\n",
+            "computed": "function f() {}\nfunction g() {}\nmodule.exports = { f, ['f']: g };\n",
+            "method": "function f() {}\nmodule.exports = { f, g() {} };\n",
+            "literal": "function f() {}\nmodule.exports = { f, n: null };\n",
+            "imported_module": "import module from 'custom';\nfunction f() {}\nmodule.exports = { f };\n",
+            "main_check": "function f() {}\nmodule.exports = { f };\nif (require.main === module) f();\n",
         }
         for label, lib in cases.items():
             with self.subTest(label=label):
@@ -670,31 +677,30 @@ class JavaScript(unittest.TestCase):
             "exports.a = () => 1;\nexports.default = function d() {};\n"
             "function local() { a(); }\n",
         )
+        self.put("dflt.js", "function f() {}\nmodule.exports = { default: f };\n")
         self.put(
             "app.js",
             "const lib = require('./lib');\n"
             "import d from './lib';\n"
+            "import value from './dflt';\n"
             "const { a } = require('./lib');\n"
-            "function run() { lib(); d(); a(); }\n",
+            "function run() { lib(); d(); value(); a(); }\n",
         )
-        # Controls: replacement then property, module.exports = { a, b }.
-        self.put(
-            "fn.js",
-            "module.exports = function main() {};\nmodule.exports.helper = () => 2;\n",
-        )
+        # Controls: module.exports = function, = identifier, = { a, b }.
+        self.put("fn.js", "module.exports = function main() {};\n")
+        self.put("ident.js", "function work() {}\nmodule.exports = work;\n")
         self.put("obj.js", "function x() {}\nfunction y() {}\nmodule.exports = { x, y };\n")
         self.put(
             "use.js",
-            "const main = require('./fn');\nconst { helper } = require('./fn');\n"
+            "const main = require('./fn');\nimport work from './ident';\n"
             "const { x, y } = require('./obj');\n"
-            "function go() { main(); helper(); x(); y(); }\n",
+            "function go() { main(); work(); x(); y(); }\n",
         )
         self.assertEqual(
             self.calls(self.read()),
             {
-                ("app.js:run:4", "lib.js:a:1"),
                 ("use.js:go:4", "fn.js:main:1"),
-                ("use.js:go:4", "fn.js:helper:2"),
+                ("use.js:go:4", "ident.js:work:1"),
                 ("use.js:go:4", "obj.js:x:1"),
                 ("use.js:go:4", "obj.js:y:2"),
             },
@@ -1467,6 +1473,26 @@ class JavaScript(unittest.TestCase):
             },
         )
 
+    def test_component_wrappers_need_an_imported_wrapper_and_a_stable_target(self):
+        path = self.put(
+            "wrapped.tsx",
+            "import { memo as m } from 'react';\n"
+            "import * as Vue from 'vue';\n"
+            "function memo(fn: any) { return 42; }\n"
+            "function Base() { return fetch('https://example.com'); }\n"
+            "Base = () => null;\n"
+            "export const Fake = memo(() => fetch('https://example.com'));\n"
+            "export const Stale = m(Base);\n"
+            "export const Aliased = m(() => <div/>);\n"
+            "export const Spaced = Vue.defineComponent(() => () => <div/>);\n",
+        )
+        labels = {
+            box["labels"][0]["text"]
+            for box in self.boxes(self.read(path)).values()
+            if "asbuilt" in box
+        }
+        self.assertEqual(labels, {"memo()", "Base()", "Aliased()", "Spaced()"})
+
     def test_anonymous_default_exports_use_file_stem_or_default_fallback(self):
         self.put(
             "Button.tsx",
@@ -1899,6 +1925,126 @@ class JavaScript(unittest.TestCase):
         self.assertNotIn("plain", by_label["caughtThrow()"])
         self.assertNotIn("security", by_label["shadowAll()"])
         self.assertNotIn("plain", by_label["shadowAll()"])
+
+    def test_environment_writes_are_not_reads(self):
+        path = self.put(
+            "envw.js",
+            "export function setMode() { process.env.MODE = 'production'; }\n"
+            "export function setIdx() { process.env['PORT'] = '3000'; }\n"
+            "export function drop() { delete process.env.SECRET; delete process.env['TOKEN']; }\n"
+            "export function append() { process.env.PATH += ':/bin'; }\n"
+            "export function copy() { process.env.A = process.env.B; }\n",
+        )
+        boxes = {
+            b["labels"][0]["text"]: b["asbuilt"]
+            for b in self.boxes(self.read(path)).values()
+            if "asbuilt" in b
+        }
+        reads = {
+            label: [f["fact"]["name"] for f in info.get("security", [])]
+            for label, info in boxes.items()
+        }
+        self.assertEqual(
+            reads,
+            {"setMode()": [], "setIdx()": [], "drop()": [], "append()": ["PATH"], "copy()": ["B"]},
+        )
+        self.assertEqual(
+            {label: info.get("badges") for label, info in boxes.items()},
+            {"setMode()": None, "setIdx()": None, "drop()": None, "append()": ["env"], "copy()": ["env"]},
+        )
+
+    def test_var_loop_bindings_shadow_globals_for_marks(self):
+        path = self.put(
+            "loops.js",
+            "export function loop(items) { for (var fetch of items) {} return fetch('/x'); }\n"
+            "export function plain() { return fetch('/x'); }\n",
+        )
+        self.assertEqual(
+            self.badges_by_name(path), {"loop()": None, "plain()": ["calls out"]}
+        )
+
+    def test_long_valid_expressions_chart_without_crashing(self):
+        self.put("long.js", "export function f() { return " + "+".join(["a"] * 3000) + "; }\n")
+        self.put("nest.js", "export function g() { return " + "[" * 3000 + "]" * 3000 + "; }\n")
+        self.put("ok.js", "export function ok() { return 1; }\n")
+        out = self.root / "chart.json"  # removed with the temporary folder
+        self.assertEqual(main([str(self.root), str(out)]), 0)
+        labels = {
+            b["labels"][0]["text"]
+            for b in self.boxes(self.read()).values()
+            if "asbuilt" in b
+        }
+        self.assertEqual(labels, {"f()", "g()", "ok()"})
+        find_components(self.root)
+
+    def test_single_file_bins_match_only_their_own_target(self):
+        self.put(
+            "package.json",
+            '{"name": "tool", "bin": {"tool": "bin/cli.js", "gone": "absent.js", "ts": "lib/run.js"}}',
+        )
+        (self.root / ".git").mkdir()
+        cli = self.put("bin/cli.js", "export function main() { return 1; }\n")
+        helper = self.put("lib/helper.js", "export function help() { return 1; }\n")
+        run = self.put("lib/run.ts", "export function go() { return 1; }\n")
+        ways = {
+            name: [w for c in find_components(p)["components"] for w in c["ways_in"]]
+            for name, p in (("cli", cli), ("helper", helper), ("run", run))
+        }
+        self.assertEqual(ways["helper"], [])
+        self.assertEqual(ways["cli"], ["package.json bin tool -> cli.js"])
+        self.assertEqual(ways["run"], ["package.json bin ts -> run.ts"])
+
+    def test_find_components_respects_nested_scopes_for_jsx_and_mounts(self):
+        self.put(
+            "src/Child.tsx",
+            "export function Child() { return <i/>; }\n",
+        )
+        self.put(
+            "src/App.tsx",
+            "import { Child } from './Child';\n"
+            "import { createRoot } from 'react-dom/client';\n"
+            "export function List(props: any) { return <ul>{props.items.map((Child: any) => <Child/>)}</ul>; }\n"
+            "export function Local() { const make = () => { const Child = () => null; return <Child/>; }; return make(); }\n"
+            "export class Box { render(Child: any) { return <Child/>; } }\n"
+            "export function Direct() { return <Child/>; }\n"
+            "export function boot(cbs: any[]) { cbs.forEach((createRoot: any) => createRoot(document.body)); }\n",
+        )
+        found = find_components(self.root)
+        reached = {
+            m["name"]: m["why"]
+            for c in found["components"]
+            for m in c["members"]
+        }
+        # Child is reached only from Direct, so it is no helper shared with List etc.
+        self.assertEqual(reached.get("Child()"), "reached from Direct()")
+        self.assertEqual(found["shared"], [])
+        self.assertNotIn(
+            "createRoot() in src/App.tsx: boot()",
+            [w for c in found["components"] for w in c["ways_in"]],
+        )
+
+    def test_web_entries_need_framework_imports_not_names(self):
+        self.put(
+            "maps.ts",
+            "const app = new Map();\n"
+            "export function get() { return app.get('config'); }\n",
+        )
+        self.put(
+            "fake.ts",
+            "function createRoot(x: any) { return x; }\n"
+            "export function mount(ReactDOM: any) { createRoot(1); ReactDOM.render(1); }\n",
+        )
+        self.put(
+            "server.ts",
+            "import express from 'express';\n"
+            "const app = express();\n"
+            "function health() { return 1; }\n"
+            "app.get('env');\n"
+            "app.get('/health', health);\n",
+        )
+        found = find_components(self.root)
+        ways = [w for c in found["components"] for w in c["ways_in"]]
+        self.assertEqual(ways, ["GET '/health' on app in server.ts"])
 
     def test_find_components_reuses_provided_chart_data_without_recharting(self):
         self.put(
