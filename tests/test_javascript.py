@@ -1011,12 +1011,18 @@ class JavaScript(unittest.TestCase):
             "function onData() { process.stdin.on('data', (d) => d); }\n"
             "function piped(out) { process.stdin.pipe(out); }\n"
             "function handed(rl) { return rl.createInterface({ input: process.stdin }); }\n"
-            "async function iterated() { for await (const c of process.stdin) { return c; } }\n",
+            "async function iterated() { for await (const c of process.stdin) { return c; } }\n"
+            "function encoded(cb) { process.stdin.setEncoding('utf8').on('data', cb); }\n"
+            "function listed() { return process.stdin.toArray(); }\n"
+            "function byFd(fs) { return fs.readFileSync(process.stdin.fd, 'utf8'); }\n"
+            "async function stepped() { return process.stdin.iterator().next(); }\n"
+            "function flowing() { process.stdin.resume(); }\n",
         )
         boxes = {b["labels"][0]["text"]: b.get("asbuilt", {}).get("badges", []) for b in self.read(path)["children"][0]["children"]}
         self.assertEqual(boxes["cleanup()"], [])
         self.assertEqual(boxes["quiet()"], [])
-        for name in ("onData()", "piped()", "handed()", "iterated()"):
+        self.assertEqual(boxes["flowing()"], [])
+        for name in ("onData()", "piped()", "handed()", "iterated()", "encoded()", "listed()", "byFd()", "stepped()"):
             self.assertEqual(boxes[name], ["input"], name)
 
     def test_work_marks_input_detection_and_shadowing(self):

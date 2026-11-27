@@ -944,19 +944,29 @@ def _on_mark_assign(node, scope, dynamic, add):
         add("writes")
 
 
-# process.stdin.<these> receive what the user types; setRawMode, isTTY, pause and the like
-# only configure the stream, so they are not input.
-_STDIN_READS = {"on", "once", "addListener", "prependListener", "prependOnceListener", "read", "pipe"}
+# process.stdin.<these> only configure the stream. Used on their own (`process.stdin.setRawMode(false);`,
+# `if (process.stdin.isTTY)`) they read nothing; chained into a read (`.setEncoding('utf8').on(...)`)
+# the chain is a read. Every other use of process.stdin counts as input.
+_STDIN_SETTINGS = {
+    "setRawMode", "isTTY", "isRaw", "pause", "resume", "setEncoding", "unref", "ref",
+    "removeListener", "removeAllListeners", "off", "setMaxListeners",
+}
 
 
 def _reads_stdin(node):
-    """True when this `process.stdin` is read: a read method, or the stream itself handed on
-    (to readline, a pipe, a for-await loop). A setting such as setRawMode is not a read."""
+    """False only when this `process.stdin` is just configured: a setting from _STDIN_SETTINGS
+    whose result is not used to read further. A read method, `.fd`, or the stream handed on
+    (to readline, a pipe, a for-await loop) is input."""
     parent = node.parent
     if parent is None or parent.type != "member_expression" or parent.child_by_field_name("object") != node:
-        return parent is None or parent.type != "member_expression"
+        return True
     prop = parent.child_by_field_name("property")
-    return prop is not None and prop.text.decode() in _STDIN_READS
+    if prop is None or prop.text.decode() not in _STDIN_SETTINGS:
+        return True
+    use = parent.parent
+    if use is not None and use.type == "call_expression" and use.child_by_field_name("function") == parent:
+        use = use.parent  # the call's result
+    return use is not None and use.type == "member_expression"
 
 
 def _on_mark_ref(node, scope, dynamic, add, details=None):
