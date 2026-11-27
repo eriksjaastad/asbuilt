@@ -36,7 +36,7 @@ import tomllib
 from pathlib import Path
 
 from asbuilt import output
-from asbuilt.built import _clashes, _definitions, _direct_calls, _live, links
+from asbuilt.built import _clashes, _definitions, _direct_calls, _live, _overloads, links
 from asbuilt.built import local_names, python_dir_links, python_file, targets, tree
 from asbuilt.marks import resolve
 from asbuilt.plan import read_bytes
@@ -128,14 +128,19 @@ def _entries(path):
         scope, mod, init = scopes[rel], modules.get(rel), rel.endswith("__init__.py")
         defs = {f"{rel}:{d[0]}:{d[2]}": d[4] for d in _definitions(root)}
         nodes.update(defs)
+        stubs = _overloads(rel, root, scope)
         local = local_names(mod, init, canon.get(rel))
         moved += [f"{rel}:{line}: {stmt}: {why}" for line, stmt, _, why in paths[rel] if why]
 
-        def box_of(name, rel=rel, scope=scope, defs=defs):
-            """The box a top-level name is: this file's one def of it, or a def an import proves."""
+        def box_of(name, rel=rel, scope=scope, defs=defs, stubs=stubs):
+            """The box a top-level name is: this file's one def of it, or a def an import proves.
+            An @overload stub is not the def a call runs."""
             spec = scope.get(name)
             if spec == ("def",):
-                return next((c for c in defs if c.rpartition(":")[0] == f"{rel}:{name}"), None)
+                return next(
+                    (c for c in defs if c.rpartition(":")[0] == f"{rel}:{name}" and c not in stubs),
+                    None,
+                )
             return _live(index, scopes, spec[1], spec[2]) if spec and spec[0] == "from" else None
 
         def reach(block, box_of=box_of, scope=scope, local=local):

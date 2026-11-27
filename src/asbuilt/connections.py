@@ -66,7 +66,9 @@ class OpenRouter:
             with (self.opener or _open)(req, self.timeout) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
-            raise ConnectionFailed(f"OpenRouter refused the call, status {exc.code}.") from None
+            code = exc.code
+            exc.close()
+            raise ConnectionFailed(f"OpenRouter refused the call, status {code}.") from None
         except (urllib.error.URLError, TimeoutError, OSError):
             raise ConnectionFailed("OpenRouter could not be reached.") from None
         try:

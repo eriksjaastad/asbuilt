@@ -8,10 +8,9 @@ import builtins
 import json
 
 from asbuilt.built import one_name
-from asbuilt.marks import layer, reaches_out, reads_env, resolve
+from asbuilt.marks import call_arguments, layer, reaches_out, reads_env, resolve
 from asbuilt.security import (
     assigned,
-    call_arguments,
     call_way,
     facts as security_facts,
     string_literal,
@@ -19,6 +18,7 @@ from asbuilt.security import (
 
 _NESTED = ("function_definition", "class_definition", "lambda")
 _LISTS = ("list", "tuple", "list_pattern", "pattern_list", "expression_list")
+_MAX_QUOTE = 160
 
 
 def _module(node):
@@ -101,10 +101,11 @@ def _items(node):
 
 
 def _jsonish(text):
+    value = None
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
-        return False
+        value = None
     return isinstance(value, (dict, list))
 
 
@@ -185,13 +186,9 @@ def _param_default(node, bound):
     if node.type not in ("default_parameter", "typed_default_parameter"):
         return None
     value = node.named_children[-1]
-    if value.type == "integer":
-        try:
-            return int(value.text.decode(), 0)
-        except ValueError:
-            return None
     if value.type == "identifier":
-        return bound.get(value.text.decode())
+        got = bound.get(value.text.decode())
+        return got if isinstance(got, str) else None
     if value.type == "string":
         return string_literal(value)
     if value.type in _LISTS and value.named_children:
@@ -274,7 +271,7 @@ def _exec(node, assigns, defaults, attrs, depth=0):
     return None
 
 
-def _command_stdout(expr, assigns, scope, fn):
+def _command_stdout(expr, assigns, scope):
     """True when this return is the stdout of a command this box runs."""
     if expr is None or expr.type != "attribute":
         return False
@@ -292,55 +289,11 @@ def _command_stdout(expr, assigns, scope, fn):
         return False
     fun = next(iter(source.named_children), None)
     path = resolve(fun, scope)
-    if (
+    return bool(
         path
         and path[0] == "subprocess"
         and path[-1] in ("run", "check_output", "call", "check_call")
-    ):
-        return True
-    if fun is None or fun.type != "attribute" or _callee(fun) != "run":
-        return False
-    owner = fun.child_by_field_name("object")
-    if owner is None or owner.type != "identifier" or owner.text.decode() != "self":
-        return False
-    cls = fn.parent
-    while cls is not None and cls.type != "class_definition":
-        cls = cls.parent
-    if cls is None:
-        return False
-    for method in _methods(cls):
-        label = method.child_by_field_name("name")
-        if label is None or label.text.decode() != "run":
-            continue
-        return _returns_subprocess(method, scope)
-    return False
-
-
-def _returns_subprocess(method, scope):
-    inner = layer(method, scope)
-    found = False
-
-    def walk(node):
-        nonlocal found
-        if node.type in _NESTED:
-            return
-        if node.type == "return_statement":
-            expr = next(iter(node.named_children), None)
-            if expr is not None and expr.type == "call":
-                path = resolve(next(iter(expr.named_children), None), inner)
-                if (
-                    path
-                    and path[0] == "subprocess"
-                    and path[-1] in ("run", "check_output", "call", "check_call")
-                ):
-                    found = True
-        for child in node.named_children:
-            walk(child)
-
-    body = _block(method)
-    if body is not None:
-        walk(body)
-    return found
+    )
 
 
 def _network(expr, scope):
@@ -484,9 +437,9 @@ def _return_line(story):
 
 
 def _choice_line(story):
-    if not story.choices and not story.otherwise:
+    if not story.choices:
         return None
-    same = len({item[2] for item in story.choices}) == 1 if story.choices else False
+    same = len({item[2] for item in story.choices}) == 1
     bits = []
     for index, (lit, callee, env) in enumerate(story.choices):
         bits.append(
@@ -495,13 +448,9 @@ def _choice_line(story):
             else f"{callee} when it is {lit}"
         )
     head = "Otherwise it calls" if story.given else f"{story.name} calls"
-    if bits and story.otherwise:
-        return f"{head} {', '.join(bits)}, and {story.otherwise} otherwise."
-    if bits:
-        return f"{head} {', '.join(bits)}."
     if story.otherwise:
-        return f"{head} {story.otherwise}."
-    return None
+        return f"{head} {', '.join(bits)}, and {story.otherwise} otherwise."
+    return f"{head} {', '.join(bits)}."
 
 
 def _phrase(cond, keys):
@@ -675,15 +624,7 @@ def _class_node(module, name):
 
 
 def _init_method(cls):
-    body = cls.child_by_field_name("body")
-    for child in body.named_children if body is not None else ():
-        node = (
-            child.child_by_field_name("definition")
-            if child.type == "decorated_definition"
-            else child
-        )
-        if node is None or node.type != "function_definition":
-            continue
+    for node in _methods(cls):
         label = node.child_by_field_name("name")
         if label is not None and label.text.decode() == "__init__":
             return node
@@ -841,6 +782,22 @@ def _click_message(expr, scope):
     return path in {("click", "ClickException"), ("click", "UsageError")}
 
 
+def _cap_quote(text):
+    """Shorten a very long error message on a word boundary so the note stays readable."""
+    if not text:
+        return None
+    clean = " ".join(text.split())
+    if not clean:
+        return None
+    if len(clean) <= _MAX_QUOTE:
+        return clean
+    cut = clean[: _MAX_QUOTE - 3]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    cut = cut.rstrip(" ,;:-.")
+    return (cut or clean[: _MAX_QUOTE - 3]) + "..."
+
+
 def _quoted_message(expr, words, local_strings, module, scope):
     """The message, when this raise proves which argument is that message. A helper's argument is not one."""
     if expr is None or expr.type != "call":
@@ -859,10 +816,10 @@ def _quoted_message(expr, words, local_strings, module, scope):
     if kind == "sole":
         if named or len(positional) != 1:
             return None
-        return _string_value(positional[0], words, local_strings)
+        return _cap_quote(_string_value(positional[0], words, local_strings))
     if kind == "first":
         arg = positional[0] if positional else named.get("message")
-        return _string_value(arg, words, local_strings)
+        return _cap_quote(_string_value(arg, words, local_strings))
     cls = _class_node(module, _callee(expr))
     init = _init_method(cls) if cls is not None else None
     names = _param_names(init) if init is not None else []
@@ -877,7 +834,7 @@ def _quoted_message(expr, words, local_strings, module, scope):
         if key not in names:
             return None
         bound[key] = arg
-    return _string_value(bound.get(param), words, local_strings)
+    return _cap_quote(_string_value(bound.get(param), words, local_strings))
 
 
 def _stmt_exit(stmt, fn):
@@ -899,8 +856,6 @@ def _stmt_exit(stmt, fn):
         elif alt.type == "else_clause":
             block = _block(alt)
             other = _seq(block.named_children if block is not None else [], fn)
-        elif alt.type == "if_statement":
-            other = _stmt_exit(alt, fn)
         else:
             other = "mixed"
         return then if then == other else "mixed"
@@ -941,7 +896,7 @@ def _returned_call(block):
     return None
 
 
-def _read_if(node, story, params, assigns, facts, fn):
+def _read_if(node, story, params, assigns, facts):
     cond = node.child_by_field_name("condition")
     body = _block(node)
     if cond is None:
@@ -1005,7 +960,7 @@ def _function(fn, scope, words, bound, story, attrs):
                     if attr and got is not None:
                         attrs[attr] = got
         if cur.type == "if_statement":
-            _read_if(cur, story, params, assigns, facts, fn)
+            _read_if(cur, story, params, assigns, facts)
         if cur.type == "raise_statement" and _escapes(cur, fn):
             story.raises = True
             expr = next(iter(cur.named_children), None)
@@ -1014,7 +969,7 @@ def _function(fn, scope, words, bound, story, attrs):
             story.events.append((cond, text, _if_stops(cur, fn) if cond else False))
         if cur.type == "return_statement":
             expr = next(iter(cur.named_children), None)
-            stdout = bool(_command_stdout(expr, assigns, scope, fn))
+            stdout = bool(_command_stdout(expr, assigns, scope))
             # Every return has to be that stdout. One path that returns something else drops the claim.
             story.command_output = (
                 stdout
@@ -1066,13 +1021,7 @@ def _function(fn, scope, words, bound, story, attrs):
     if story.is_class:
         return
     claim = _return_claim(fn, scope, facts)
-    if claim is None:
-        return
-    if claim[0] in ("yield", "other") or (
-        story.returns not in (None, False) and story.returns != claim
-    ):
-        story.returns = False
-    elif story.returns is not False:
+    if claim is not None and claim[0] not in ("yield", "other"):
         story.returns = claim
 
 
@@ -1100,6 +1049,4 @@ def for_box(node, scope, words):
     _apply_facts(story, node, scope, words)
     for fn in _methods(node):
         _function(fn, layer(fn, scope), words, bound, story, attrs)
-    if story.returns is False:
-        story.returns = None
     return _sentences(story)

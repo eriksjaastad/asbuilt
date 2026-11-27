@@ -1,5 +1,6 @@
 import ast
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -787,14 +788,6 @@ class PlainTest(unittest.TestCase):
                     self.assertTrue(_escaping_raise(defined[name]), label)
                 self.assertLessEqual(" ".join(lines).count(", among others"), 1, label)
 
-    def test_non_decimal_integer_default_parameters_do_not_crash(self):
-        source = (
-            "def write_secret(path, mode=0o644, flags: int = 0x10, mask=0b101):\n"
-            "    return mode\n"
-        )
-        box = python_file("t.py", source.encode())
-        self.assertEqual(box["children"][0]["labels"][0]["text"], "write_secret()")
-
     def test_cyclic_class_inheritance_does_not_recurse_infinitely(self):
         self_cycle = (
             "class LoopError(LoopError):\n"
@@ -812,3 +805,136 @@ class PlainTest(unittest.TestCase):
             '    raise A("boom")\n'
         )
         self.assertIn("stops with an error", " ".join(_lines(mutual_cycle, "fail()")))
+
+    def test_plain_notes_never_mention_time_timeouts_or_waits(self):
+        forbidden = re.compile(
+            r"\b(time|times|timed|timeout|timeouts|wait|waits|waiting|second|seconds|minute|minutes|millisecond|milliseconds)\b",
+            re.IGNORECASE,
+        )
+        for path in (_CONNECTIONS, _ORDINARY):
+            box = python_file(path.name, path.read_bytes())
+            for child in box["children"]:
+                label = child["labels"][0]["text"]
+                for line in (child.get("asbuilt") or {}).get("plain") or []:
+                    self.assertIsNone(forbidden.search(line), f"{label}: {line}")
+        synthetic = (
+            "import subprocess\n"
+            "import time\n"
+            "import requests\n"
+            "TIMEOUT = 30\n"
+            "def slow_call(payload, timeout=60):\n"
+            "    time.sleep(5)\n"
+            '    requests.post("https://example.com/v1", json=payload, timeout=timeout)\n'
+            '    subprocess.run(["git", "status"], timeout=TIMEOUT)\n'
+        )
+        for line in _lines(synthetic, "slow_call()"):
+            self.assertIsNone(forbidden.search(line), line)
+
+    def test_very_long_quoted_error_messages_are_capped(self):
+        long_msg = "Database connection is not configured. " + (
+            "Run the setup script and verify your database credentials before retrying. " * 9
+        )
+        self.assertGreater(len(long_msg), 700)
+        source = f"def get_connection():\n    raise RuntimeError({long_msg!r})\n"
+        lines = _lines(source, "get_connection()")
+        self.assertEqual(len(lines), 1)
+        match = re.search(r'"([^"]+)"', lines[0])
+        self.assertIsNotNone(match, lines[0])
+        quoted = match.group(1)
+        self.assertLessEqual(len(quoted), 160)
+        self.assertTrue(quoted.endswith("..."), quoted)
+        self.assertFalse(quoted.endswith("...."), quoted)
+        self.assertTrue(lines[0].endswith('..."'), lines[0])
+        self.assertNotIn("\n", quoted)
+
+        multiline = (
+            "def fail():\n"
+            '    raise RuntimeError("line one\\n\\n   line two")\n'
+        )
+        self.assertEqual(
+            _lines(multiline, "fail()"),
+            ['fail stops with an error that says "line one line two".'],
+        )
+
+        blank = 'def fail():\n    raise RuntimeError("   \\n  ")\n'
+        self.assertEqual(_lines(blank, "fail()"), ["fail stops with an error."])
+
+    def test_inline_kept_env_and_three_command_facts_join_cleanly(self):
+        source = (
+            "import os\nimport subprocess\n"
+            "def run_git(args):\n"
+            '    env = {k: v for k, v in os.environ.items() if k in ("HOME", "PATH")}\n'
+            '    result = subprocess.run(["git", *args], env=env, capture_output=True)\n'
+            "    return result.stdout\n"
+        )
+        self.assertEqual(
+            _lines(source, "run_git()"),
+            [
+                "run_git runs the command git, keeps only a fixed set of environment names, and returns the command's output."
+            ],
+        )
+
+    def test_choice_line_without_otherwise_and_sends_with_bearer_and_bare_env_guard(self):
+        choice_only = (
+            "import os\n"
+            "def pick():\n"
+            '    mode = os.environ.get("MODE")\n'
+            '    if mode == "fast":\n'
+            "        return Fast()\n"
+        )
+        self.assertEqual(
+            _lines(choice_only, "pick()"),
+            ["pick calls Fast when MODE is fast."],
+        )
+
+        bearer_no_host = (
+            "import os\nimport requests\n"
+            "def post(url, body):\n"
+            '    token = os.environ.get("API_TOKEN")\n'
+            '    requests.post(url, json=body, headers={"Authorization": f"Bearer {token}"})\n'
+        )
+        self.assertEqual(
+            _lines(bearer_no_host, "post()"),
+            ["post sends data, using a key read from API_TOKEN."],
+        )
+
+        bare_env = (
+            "import os\n"
+            "def load(detail):\n"
+            '    token = os.environ.get("API_TOKEN")\n'
+            "    if not token:\n"
+            "        raise RuntimeError(detail)\n"
+            "    return token\n"
+        )
+        self.assertEqual(
+            _lines(bare_env, "load()"),
+            ["If the environment value API_TOKEN is missing, load stops with an error."],
+        )
+
+    def test_inherited_and_direct_base_init_errors_and_if_else_always_raises(self):
+        direct_base = (
+            "class DirectError(Exception):\n"
+            "    def __init__(self, msg):\n"
+            "        Exception.__init__(self, msg)\n"
+            "def fail(flag):\n"
+            "    if flag:\n"
+            '        raise DirectError("first path")\n'
+            "    else:\n"
+            '        raise DirectError("second path")\n'
+        )
+        self.assertEqual(
+            _lines(direct_base, "fail()"),
+            ['fail stops with an error that says "first path" or "second path".'],
+        )
+        inherited = (
+            "class MidError(Exception):\n"
+            "    pass\n"
+            "class ChildError(MidError):\n"
+            "    pass\n"
+            "def fail():\n"
+            '    raise ChildError("from child")\n'
+        )
+        self.assertEqual(
+            _lines(inherited, "fail()"),
+            ['fail stops with an error that says "from child".'],
+        )

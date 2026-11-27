@@ -1,4 +1,5 @@
 import contextlib
+import os
 import io
 import json
 import random
@@ -543,6 +544,93 @@ class BuiltCommandTest(unittest.TestCase):
         })
         self.assertEqual(ends, [])
 
+    def test_init_binding_the_same_submodule_keeps_the_arrow(self):
+        for init_code in ("from . import app\n", "import pkg.app as app\n"):
+            ends = _ends("shop", {
+                "pkg/app.py": "def run():\n    return 1\n",
+                "pkg/__init__.py": init_code,
+                "main.py": "from pkg import app\ndef main():\n    return app.run()\n",
+            })
+            self.assertEqual(ends, [["main.py:main:2", "pkg/app.py:run:1"]], init_code)
+
+    def test_overload_stubs_do_not_drop_the_real_implementation(self):
+        ends = _ends("shop", {
+            "other.py": (
+                "from typing import overload\n"
+                "@overload\n"
+                "def parse(x: int) -> int: ...\n"
+                "@overload\n"
+                "def parse(x: str) -> str: ...\n"
+                "def parse(x):\n"
+                "    return x\n"
+            ),
+            "app.py": "from other import parse\ndef main():\n    return parse(1)\n",
+        })
+        self.assertEqual(ends, [["app.py:main:2", "other.py:parse:6"]])
+
+        ends = _ends("shop", {
+            "other.py": (
+                "import typing\n"
+                "@typing.overload\n"
+                "def parse(x: int) -> int: ...\n"
+                "def parse(x):\n"
+                "    return x\n"
+            ),
+            "app.py": "import other\ndef main():\n    return other.parse(1)\n",
+        })
+        self.assertEqual(ends, [["app.py:main:2", "other.py:parse:4"]])
+
+        # Two real implementations remain ambiguous even with an @overload stub.
+        ends = _ends("shop", {
+            "other.py": (
+                "from typing import overload\n"
+                "@overload\n"
+                "def parse(x: int) -> int: ...\n"
+                "def parse(x):\n"
+                "    return x\n"
+                "def parse(x):\n"
+                "    return x\n"
+            ),
+            "app.py": "from other import parse\ndef main():\n    return parse(1)\n",
+        })
+        self.assertEqual(ends, [])
+
+        # @overload stubs with no real implementation draw no arrow.
+        ends = _ends("shop", {
+            "other.py": (
+                "from typing import overload\n"
+                "@overload\n"
+                "def parse(x: int) -> int: ...\n"
+            ),
+            "app.py": "from other import parse\ndef main():\n    return parse(1)\n",
+        })
+        self.assertEqual(ends, [])
+
+    def test_star_import_counts_as_a_binding(self):
+        # Star import in __init__.py may shadow the submodule name.
+        ends = _ends("shop", {
+            "pkg/app.py": "app = object()\ndef run():\n    return 1\n",
+            "pkg/__init__.py": "from .app import *\n",
+            "main.py": "from pkg import app\ndef main():\n    return app.run()\n",
+        })
+        self.assertEqual(ends, [])
+
+        # Star import in a target file may rebind the target def.
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "events.py": "def get():\n    return 1\nfrom ._c import *\n",
+            "tasks.py": "from .events import get\ndef run():\n    return get()\n",
+        })
+        self.assertEqual(ends, [])
+
+        # Star import in a caller file may rebind the imported name.
+        ends = _ends("shop", {
+            "__init__.py": "",
+            "other.py": "def load():\n    return 1\n",
+            "app.py": "from .other import load\nfrom .extra import *\ndef main():\n    return load()\n",
+        })
+        self.assertEqual(ends, [])
+
     def test_from_pkg_import_mod_then_mod_f_draws_an_arrow(self):
         ends = _ends("shop", {
             "__init__.py": "",
@@ -625,8 +713,10 @@ class BuiltCommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp, "shop")
             root.mkdir()
+            (root / "load.py").write_text("def load():\n    return 1\n")
             (root / "test_load.py").write_text("def test_load():\n    return 1\n")
-            skipped = ("tests", "__pycache__", ".venv", "venv", "env", "node_modules", "build", "dist", "site-packages")
+            (root / "load_test.py").write_text("def test_load_suffix():\n    return 1\n")
+            skipped = ("tests", "__tests__", "__pycache__", ".venv", "venv", "env", "node_modules", "build", "dist", "site-packages")
             for name in skipped:
                 folder = root / name
                 folder.mkdir()
@@ -634,7 +724,88 @@ class BuiltCommandTest(unittest.TestCase):
             out = Path(tmp, "out.json")
             self.assertEqual(main([str(root), str(out)]), 0)
             folder = json.loads(out.read_text())["children"][0]
-            self.assertEqual([box["id"] for box in folder["children"]], ["test_load.py"])
+            self.assertEqual([box["id"] for box in folder["children"]], ["load.py"])
+
+    def test_test_files_and_test_folders_are_excluded_and_refused_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "shop")
+            (root / "pkg").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / "__tests__").mkdir()
+            (root / "app.py").write_text("def run():\n    return 1\n")
+            (root / "contest.py").write_text("def judge():\n    return 2\n")
+            (root / "test_app.py").write_text("def test_run():\n    return 1\n")
+            (root / "app_test.py").write_text("def test_run_2():\n    return 1\n")
+            (root / "pkg" / "test_sub.py").write_text("def test_sub():\n    return 1\n")
+            (root / "pkg" / "sub_test.py").write_text("def test_sub_2():\n    return 1\n")
+            (root / "tests" / "helper.py").write_text("def help_test():\n    return 1\n")
+            (root / "__tests__" / "helper.py").write_text("def help_jest():\n    return 1\n")
+            out = Path(tmp, "out.json")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([str(root), str(out)]), 0)
+            folder = json.loads(out.read_text())["children"][0]
+            self.assertEqual([box["id"] for box in folder["children"]], ["app.py", "contest.py"])
+            refused_out = Path(tmp, "refused_out.json")
+
+            for refused in (
+                root / "test_app.py",
+                root / "app_test.py",
+                root / "pkg" / "test_sub.py",
+                root / "tests" / "helper.py",
+                root / "tests",
+                root / "__tests__",
+            ):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(main([str(refused), str(refused_out)]), 2, refused)
+                self.assertEqual(err.getvalue().count("\n"), 1, refused)
+                self.assertTrue(err.getvalue().startswith("asbuilt.built: "), refused)
+                self.assertFalse(refused_out.exists(), refused)
+
+            only_tests = Path(tmp, "only_tests")
+            only_tests.mkdir()
+            (only_tests / "test_one.py").write_text("def test_one():\n    return 1\n")
+            (only_tests / "two_test.py").write_text("def test_two():\n    return 2\n")
+            only_out = Path(tmp, "only_out.json")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(only_tests), str(only_out)]), 2)
+            self.assertIn("no Python files", err.getvalue())
+            self.assertFalse(only_out.exists())
+
+    def test_a_checkout_under_a_skipped_folder_name_charts_by_absolute_or_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "build", "repo")
+            (repo / ".git").mkdir(parents=True)
+            (repo / "app.py").write_text("def run():\n    return 1\n")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "helper.py").write_text("def help():\n    return 1\n")
+            for n, target in enumerate((repo / "app.py", Path(os.path.relpath(repo / "app.py")))):
+                out = Path(tmp, f"out{n}.json")
+                with self.subTest(target=str(target)), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(main([str(target), str(out)]), 0)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([str(repo / "tests" / "helper.py"), str(Path(tmp, "t.json"))]), 2)
+
+    def test_asbuilts_own_plain_notes_draw_arrows_to_the_shared_argument_reader(self):
+        out_dir = tempfile.TemporaryDirectory()
+        with out_dir:
+            out = Path(out_dir.name, "self.json")
+            src = Path(__file__).resolve().parent.parent / "src" / "asbuilt"
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([str(src), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            edges = []
+            todo = [plan]
+            while todo:
+                box = todo.pop()
+                edges += box.get("edges", [])
+                todo += box.get("children", [])
+            callers = {
+                e["sources"][0].split(":")[1]
+                for e in edges
+                if e["sources"][0].startswith("plain.py:")
+                and e["targets"][0].startswith("marks.py:call_arguments:")
+            }
+            self.assertTrue({"_from_param", "_exec", "_function"} <= callers, callers)
 
     def test_a_python_file_in_a_subfolder_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -114,6 +114,26 @@ test("a badge is drawn on the box and the box keeps its id", async () => {
   assert.match(svg, /data-badge="calls out"/);
 });
 
+test("a compared box draws its badges beside its mark, and keeps its id and arrows", async () => {
+  const plan = {
+    id: "root",
+    children: [
+      { id: "shop.py:load:1", labels: [{ text: "load()" }], asbuilt: { mark: "added", why: "", badges: ["writes"] } },
+      { id: "shop.py:save:4", labels: [{ text: "save()" }], asbuilt: { mark: "changed", why: "", badges: ["env"] } },
+    ],
+    edges: [{ id: "e", sources: ["shop.py:load:1"], targets: ["shop.py:save:4"], asbuilt: { mark: "added", why: "" } }],
+  };
+  const laid = await layout(plan, new ELK());
+  const svg = draw(laid, rough.generator());
+  for (const [id, badge, mark] of [["shop.py:load:1", "writes", "added"], ["shop.py:save:4", "env", "changed"]]) {
+    assert.equal(laid.boxes.find((b) => b.id === id).mark, mark);
+    assert.match(svg, new RegExp(`data-box="${id}"`));
+    assert.match(svg, new RegExp(`data-badge="${badge}"`));
+  }
+  for (const mark of ["added", "changed"]) assert.ok(svg.includes(`>${MARKS[mark].tag}<`), mark);
+  assert.match(svg, /data-arrow="e"/);
+});
+
 test("several badges wrap inside the box instead of running past its edge", () => {
   const badges = ["env", "input", "writes", "calls out", "model"];
   const svg = draw({ width: 190, height: 70, boxes: [{ id: "f", x: 0, y: 0, w: 190, h: 70, level: 1, label: "f()", badges }], arrows: [] }, rough.generator());

@@ -75,6 +75,13 @@ class MarkTest(unittest.TestCase):
     def test_a_method_open_with_a_write_mode_is_writes(self):
         self.assertEqual(_badges("def save(p):\n    p.open('w')\n", "save()"), ["writes"])
 
+    def test_zipfile_open_write_mode_is_writes_and_read_mode_is_not(self):
+        self.assertEqual(_badges("def save(zf, name):\n    zf.open(name, 'w')\n", "save()"), ["writes"])
+        self.assertEqual(_badges("def read(zf, name):\n    zf.open(name, 'r')\n", "read()"), [])
+        self.assertEqual(_badges("def read(zf):\n    zf.open('w', 'r')\n", "read()"), [])
+        source = "import zipfile\ndef save(p):\n    with zipfile.ZipFile(p, 'w') as zf:\n        zf.open('a.txt', 'w')\n"
+        self.assertEqual(_badges(source, "save()"), ["writes"])
+
     def test_os_fdopen_with_a_write_mode_is_writes(self):
         self.assertEqual(_badges("import os\ndef save(fd):\n    os.fdopen(fd, 'wb')\n", "save()"), ["writes"])
 
@@ -114,14 +121,29 @@ class MarkTest(unittest.TestCase):
     def test_subprocess_imported_under_another_name_is_calls_out(self):
         self.assertEqual(_badges("import subprocess as sp\ndef go():\n    sp.run(['echo'])\n", "go()"), ["calls out"])
 
-    def test_os_system_is_calls_out(self):
+    def test_os_system_and_os_popen_are_calls_out(self):
         self.assertEqual(_badges("import os\ndef go():\n    os.system('echo')\n", "go()"), ["calls out"])
+        self.assertEqual(_badges("import os\ndef go():\n    os.popen('echo')\n", "go()"), ["calls out"])
 
     def test_http_client_is_calls_out(self):
         self.assertEqual(_badges("import http.client\ndef fetch():\n    http.client.HTTPSConnection('example.test')\n", "fetch()"), ["calls out"])
 
-    def test_subprocess_getoutput_is_not_calls_out(self):
-        self.assertEqual(_badges("import subprocess\ndef go():\n    subprocess.getoutput('echo')\n", "go()"), [])
+    def test_subprocess_getoutput_is_calls_out(self):
+        self.assertEqual(_badges("import subprocess\ndef go():\n    subprocess.getoutput('echo')\n", "go()"), ["calls out"])
+
+    def test_imports_under_try_and_if_are_marked(self):
+        try_source = "try:\n    import requests\nexcept ImportError:\n    requests = None\ndef fetch():\n    requests.get('https://example.test')\n"
+        self.assertEqual(_badges(try_source, "fetch()"), ["calls out"])
+        if_source = "if True:\n    import os\ndef read():\n    return os.getenv('K')\n"
+        self.assertEqual(_badges(if_source, "read()"), ["env"])
+        local_try = "def fetch():\n    try:\n        import requests\n    except ImportError:\n        return None\n    return requests.get('https://example.test')\n"
+        self.assertEqual(_badges(local_try, "fetch()"), ["calls out"])
+        conflict = "if True:\n    import requests as client\nelse:\n    import other as client\ndef fetch():\n    client.get('https://example.test')\n"
+        self.assertEqual(_badges(conflict, "fetch()"), [])
+
+    def test_an_import_statement_itself_is_not_marked(self):
+        source = "def unused():\n    from os import environ\n    return 1\n"
+        self.assertEqual(_badges(source, "unused()"), [])
 
     def test_an_import_inside_the_box_counts(self):
         self.assertEqual(_badges("def fetch():\n    import requests\n    requests.get('https://example.test')\n", "fetch()"), ["calls out"])
@@ -134,6 +156,21 @@ class MarkTest(unittest.TestCase):
         self.assertIn("writes", _badges(source, "Saver"))
         self.assertIn("calls out", _badges(source, "Runner"))
 
+    def test_a_decorated_method_does_not_see_class_body_bindings(self):
+        source = (
+            "class Saver:\n"
+            "    def open(self):\n        return 1\n"
+            "    @staticmethod\n"
+            "    def save(path):\n        open(path, 'w')\n"
+        )
+        self.assertEqual(_badges(source, "Saver"), ["writes"])
+
+    def test_class_body_statements_use_the_class_body_scope(self):
+        shadowed = "import os\nclass C:\n    os = None\n    val = os.getenv('K')\n"
+        self.assertEqual(_badges(shadowed, "C"), [])
+        imported = "class C:\n    import os\n    val = os.getenv('K')\n"
+        self.assertEqual(_badges(imported, "C"), ["env"])
+
     def test_a_client_built_once_at_the_top_is_that_module(self):
         source = (
             "from openai import OpenAI\nimport anthropic\nimport requests\n"
@@ -145,6 +182,10 @@ class MarkTest(unittest.TestCase):
         self.assertEqual(_badges(source, "ask()"), ["model"])
         self.assertEqual(_badges(source, "speak()"), ["model"])
         self.assertEqual(_badges(source, "fetch()"), ["calls out"])
+
+    def test_a_client_assigned_conditionally_is_not_that_module(self):
+        source = "from openai import OpenAI\nif True:\n    client = OpenAI()\ndef ask():\n    client.chat.completions.create()\n"
+        self.assertEqual(_badges(source, "ask()"), [])
 
     def test_a_client_assigned_again_is_not_that_module(self):
         source = "from openai import OpenAI\nclient = OpenAI()\nclient = None\ndef ask():\n    client.chat.completions.create()\n"
@@ -219,7 +260,7 @@ class LooksForTest(unittest.TestCase):
                     self.assertIn(kind, _badges(source, "f()"))
 
     def test_calls_that_are_not_checked_are_not_marked_and_not_listed(self):
-        for name in ("subprocess.getoutput", "os.popen", "socket.gethostbyname", "shutil.copy", "urllib3.PoolManager"):
+        for name in ("socket.gethostbyname", "shutil.copy", "urllib3.PoolManager"):
             with self.subTest(name=name):
                 self.assertEqual(_badges(_calling(name), "f()"), [])
                 listed = [item for items in LOOKS_FOR.values() for item in items]
