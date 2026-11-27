@@ -96,8 +96,10 @@ class OverviewTest(unittest.TestCase):
             self.assertNotIn("vendor/", fid)
         self.assertTrue({"commands", "scripts"} <= {g["kind"] for g in res["components"]["groups"]})
         ids_resolve(self, res["components"], res["boxes"])
-        ways = [w for c in res["js_components"]["components"] if c["kind"] == "web pages" for w in c["ways_in"]]
-        self.assertTrue(any("src/asbuilt/page/overview.js" in w for w in ways))
+        # main.js listens on the page; overview.js starts by calling boot() at top level.
+        kinds = {c["name"]: c["kind"] for c in res["js_components"]["components"]}
+        self.assertEqual(kinds.get("main"), "web pages", kinds)
+        self.assertEqual(kinds.get("overview"), "scripts", kinds)
         names = {p["name"] for p in res["packages"]}
         self.assertTrue({"tree-sitter", "elkjs", "roughjs"} <= names)
 

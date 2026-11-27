@@ -1753,8 +1753,8 @@ class JavaScript(unittest.TestCase):
         # Verify on asBuilt's own src/asbuilt/page JS modules (main.js and overview.js)
         page_dir = Path(__file__).resolve().parent.parent / "src" / "asbuilt" / "page"
         page_found = find_components(page_dir)
-        self.assertEqual([g["kind"] for g in page_found["groups"]], ["web pages"])
-        self.assertIn("main", page_found["groups"][0]["components"])
+        pages = {g["kind"]: g["components"] for g in page_found["groups"]}
+        self.assertIn("main", pages["web pages"])
 
     def test_proven_single_call_return_on_js_and_ts_functions(self):
         path = self.put(
