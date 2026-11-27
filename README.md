@@ -22,8 +22,9 @@ An agent drafting the plan and the note on why each part changed come later.
 
 ## Install and open your project (one line)
 
-On a Mac, paste this into Terminal, with your project's folder at the end (you can drag the
-folder onto the Terminal window to fill in its path):
+On a Mac, open Terminal and paste this line. Before pressing Return, delete
+`~/path/to/your/project` at the end and drag your project's folder onto the Terminal window in
+its place; that types the folder's path for you.
 
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uvx --from https://github.com/eriksjaastad/asbuilt/archive/refs/heads/main.zip asbuilt --open ~/path/to/your/project
