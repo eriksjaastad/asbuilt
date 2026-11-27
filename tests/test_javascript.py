@@ -1016,12 +1016,16 @@ class JavaScript(unittest.TestCase):
             "function listed() { return process.stdin.toArray(); }\n"
             "function byFd(fs) { return fs.readFileSync(process.stdin.fd, 'utf8'); }\n"
             "async function stepped() { return process.stdin.iterator().next(); }\n"
-            "function flowing() { process.stdin.resume(); }\n",
+            "function flowing() { process.stdin.resume(); }\n"
+            "function raw() { process.stdin.setRawMode(false).pause(); }\n"
+            "function enc() { process.stdin.setEncoding('utf8').pause(); }\n"
+            "function done() { if (!process.stdin.isPaused()) { process.stdin.destroy(); } process.stdin.unpipe(); }\n",
         )
         boxes = {b["labels"][0]["text"]: b.get("asbuilt", {}).get("badges", []) for b in self.read(path)["children"][0]["children"]}
         self.assertEqual(boxes["cleanup()"], [])
         self.assertEqual(boxes["quiet()"], [])
-        self.assertEqual(boxes["flowing()"], [])
+        for name in ("flowing()", "raw()", "enc()", "done()"):
+            self.assertEqual(boxes[name], [], name)
         for name in ("onData()", "piped()", "handed()", "iterated()", "encoded()", "listed()", "byFd()", "stepped()"):
             self.assertEqual(boxes[name], ["input"], name)
 
