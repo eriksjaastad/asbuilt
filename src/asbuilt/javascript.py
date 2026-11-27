@@ -35,6 +35,8 @@ PARSERS = {
     ),
 }
 PARSERS[".jsx"] = PARSERS[".js"]
+PARSERS[".mjs"] = PARSERS[".cjs"] = PARSERS[".js"]
+PARSERS[".mts"] = PARSERS[".cts"] = PARSERS[".ts"]
 FUNCTIONS = {
     "function_declaration",
     "generator_function_declaration",
@@ -304,7 +306,7 @@ def _own(path):
     return (
         path.suffix in PARSERS
         and not path.name.startswith((".", "test_"))
-        and not any(s in path.name for s in (".test.", ".spec.", ".d.ts"))
+        and not any(s in path.name for s in (".test.", ".spec.", ".d.ts", ".d.mts", ".d.cts"))
         and not path.stem.endswith("_test")
         and not path.is_symlink()
     )
@@ -365,6 +367,8 @@ TS_FALLBACK = {
 
 
 def _module(source, spec, files):
+    # files holds every discovered name, parsed or skipped, so a skipped file still
+    # counts as the exact match or as a rival candidate; callers check it parsed.
     if not spec.startswith(("./", "../")):
         return None
     target = posixpath.normpath(posixpath.join(posixpath.dirname(source), spec))
@@ -386,7 +390,9 @@ def chart(path, skipped=None):
     files = {}
     unparseable = []
     is_dir = path.is_dir()
-    for name, file in _files(path):
+    found = _files(path)
+    known = dict.fromkeys(name for name, _ in found)
+    for name, file in found:
         try:
             files[name] = _file(name, read_bytes(file))
         except PlanError:
@@ -405,8 +411,8 @@ def chart(path, skipped=None):
         calls = {}
         scope = dict(local)
         for spec, bindings in imports:
-            target = _module(name, spec, files)
-            if target is None or target == name:
+            target = _module(name, spec, known)
+            if target is None or target == name or target not in files:
                 continue
             key = f"{name}>import:{target}"
             edges[key] = {

@@ -535,3 +535,45 @@ class JavaScript(unittest.TestCase):
         self.assertIsNone(
             _module("src/app.ts", "./only.ts", {"src/only.js": None}),
         )
+
+    def test_mts_and_cts_fallbacks_chart_through_the_folder_reader(self):
+        folder = self.root / "esm"
+        self.put("esm/util.mts", "export function util() { return 1; }\n")
+        self.put("esm/mod.cts", "export function mod() { return 2; }\n")
+        self.put("esm/types.d.mts", "export declare function t(): void;\n")
+        self.put(
+            "esm/app.mts",
+            "import { util } from './util.mjs';\nimport { mod } from './mod.cjs';\n"
+            "export function app() { return util() + mod(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(folder)),
+            {("app.mts:app:3", "util.mts:util:1"), ("app.mts:app:3", "mod.cts:mod:1")},
+        )
+        names = {box["id"] for box in self.read(folder)["children"]}
+        self.assertNotIn("types.d.mts", names)
+
+    def test_a_skipped_file_still_blocks_a_fallback_or_breaks_a_tie(self):
+        broken = "export function (\n"
+        good = "export function util() { return 1; }\n"
+        app = "import { util } from './%s';\nexport function app() { return util(); }\n"
+        # Explicit ./util.js names a skipped file: no arrow to util.ts.
+        self.put("exact/util.js", broken)
+        self.put("exact/util.ts", good)
+        self.put("exact/app.ts", app % "util.js")
+        # Extensionless ./util has two candidates; skipping one must not make it unique.
+        self.put("tie/util.js", broken)
+        self.put("tie/util.ts", good)
+        self.put("tie/app.ts", app % "util")
+        # Control: the only candidate parses, so the fallback still works.
+        self.put("ok/util.ts", good)
+        self.put("ok/app.ts", app % "util.js")
+        for folder in ("exact", "tie"):
+            with self.subTest(folder=folder):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    plan = self.read(self.root / folder)
+                self.assertFalse(self.calls(plan))
+                self.assertFalse([e for e in plan.get("edges", []) if "import:" in e["id"]])
+        self.assertEqual(
+            self.calls(self.read(self.root / "ok")), {("app.ts:app:2", "util.ts:util:1")}
+        )
