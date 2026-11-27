@@ -6,10 +6,10 @@ import threading
 import traceback
 from pathlib import Path
 
-from asbuilt import plan
+from asbuilt import overview, plan
 from asbuilt.hub import Hub
-from asbuilt.server import Server
-from asbuilt.state import build
+from asbuilt.server import OverviewServer, Server
+from asbuilt.state import PlanError, build
 from asbuilt.watch import snapshot, watch
 
 USAGE = """\
@@ -36,11 +36,43 @@ For example:
 """
 
 
+def _report_bind_error(port, exc):
+    why = exc
+    # Taken is usually the default port, which whoever started asbuilt never chose: say what to do.
+    if getattr(exc, "errno", None) == errno.EADDRINUSE:
+        why = "it is in use, perhaps by asbuilt already running. "
+        why += "Stop that one, or choose another port with --port N."
+    print(f"asbuilt: cannot start on 127.0.0.1:{port}: {why}", file=sys.stderr)
+    return 2
+
+
+def _serve_overview(project_dir, port):
+    """Serve the folder's overview at the printed address, as a plan is served, until interrupted."""
+    try:
+        payload = overview.build(project_dir)
+    except (PlanError, OSError) as exc:
+        print(f"asbuilt: {exc}", file=sys.stderr)
+        return 2
+    for line in overview.problems(payload):
+        print(f"asbuilt: {line}", file=sys.stderr)
+    try:
+        server = OverviewServer(port, payload)
+    except (OSError, OverflowError) as exc:
+        return _report_bind_error(port, exc)
+    print(
+        f"asbuilt: showing {project_dir} at http://127.0.0.1:{server.server_port}/",
+        flush=True,
+    )
+    with server, contextlib.suppress(KeyboardInterrupt):
+        server.serve_forever()
+    return 0
+
+
 def main(argv=None):
-    """Serve the plan file as a chart on this machine, redrawn when it is saved, until interrupted."""
+    """Serve the plan file as a chart on this machine, redrawn when it is saved, or a folder's overview, until interrupted."""
     parser = argparse.ArgumentParser(
         "asbuilt",
-        description="Draw a plan file as a chart in the browser, on this machine only.",
+        description="Draw a plan file as a chart in the browser, or open the component overview of a project folder, on this machine only.",
         epilog=USAGE,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -49,23 +81,19 @@ def main(argv=None):
         nargs="?",
         type=Path,
         default=Path("asbuilt/plan.json"),
-        help="default %(default)s",
+        help="a plan file, or a project folder for its component overview (default %(default)s)",
     )
     parser.add_argument("--port", type=int, default=8765, help="default %(default)s")
     args = parser.parse_args(argv)
+    if args.plan.is_dir():
+        return _serve_overview(args.plan, args.port)
     # The page is drawn from the snapshot the watch settled on, never from a reread.
     shown = [snapshot(args.plan)]
     hub = Hub(lambda: build(lambda: plan.parse_snapshot(shown[0], args.plan.name)))
     try:
         server = Server(args.port, hub)
     except (OSError, OverflowError) as exc:  # in use, no permission, out of range
-        why = exc
-        # Taken is usually the default port, which whoever started asbuilt never chose: say what to do.
-        if getattr(exc, "errno", None) == errno.EADDRINUSE:
-            why = "it is in use, perhaps by asbuilt already running. "
-            why += "Stop that one, or choose another port with --port N."
-        print(f"asbuilt: cannot start on 127.0.0.1:{args.port}: {why}", file=sys.stderr)
-        return 2
+        return _report_bind_error(args.port, exc)
     stop, failed = threading.Event(), []
 
     def changed(now):

@@ -165,3 +165,36 @@ uv run asbuilt noted.json
 Any other value, or leaving it unset, does not call out and adds no model notes. A reply that
 is not the notes asked for is thrown away and the output file is left unchanged. The model
 cannot add boxes. A function or class nested inside another is not its own box yet.
+
+## Open a project folder (component overview)
+
+Point `asbuilt` at a project folder instead of a plan file to open the component overview. As
+with a plan, it prints the page's address and serves it on this machine until Ctrl-C:
+
+```
+uv run asbuilt path/to/project
+```
+
+- **Components, then files, then functions.** Entry points are grouped by kind (commands, web
+  pages, scripts, other) and traced through proven calls. The page opens on the groups; click
+  one to see its components, a component to see its files,
+  and a file to see that component's functions in it. Code two or more components reach is
+  under **Shared helpers**; definitions with no proven path from an entry point are listed as
+  such, which does not mean they never run.
+- **Python and JavaScript/TypeScript together.** A folder with both shows each language's
+  components; if the JavaScript/TypeScript half cannot be charted, the page and stderr say why.
+- **Nothing hidden.** Files that could not be parsed, skipped folders, entry points that reach no
+  charted function or could not be proven, and manifests that could not be read are listed on
+  the page and on stderr. Test files are not charted.
+- **Packages this project declares.** Direct dependencies from the `pyproject.toml`
+  (`[project]`, `[dependency-groups]` and Poetry's tables), `requirements.txt` and
+  `package.json` (including optional and peer dependencies) in the project's own folder, each
+  tagged with where it was declared, with a link to PyPI or npm when it comes from one. The
+  panel names the files it read and anything in them it did not read (an `-r` include,
+  workspaces). This is what the manifests declare, not what is installed.
+- **JSON.** Print the overview payload or the package list:
+
+```
+uv run python -m asbuilt.overview path/to/project
+uv run python -m asbuilt.packages path/to/project
+```
