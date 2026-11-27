@@ -125,10 +125,15 @@ folder, the plan uses the slash (`mysite/`) so the two boxes stay different. A f
 folder is `load.py:load`; a nested file is `sub/util.py:name`. An arrow crosses files when an
 import proves the call: `from other import load` then `load()`, `import other` then
 `other.load()`, and `from pkg import mod` or `from . import mod` then `mod.f()`. A name keeps
-that arrow only when one import binds it. Importing that same module again does not remove it.
-Anything else is not an arrow. Directories named tests, venv,
+that arrow only when one import binds it (importing that same module again does not remove it;
+`import *` does). On the target side, the called name must be bound once in its file, as that
+definition (`@overload` stubs do not count as a second definition). For `from pkg import mod`
+then `mod.f()`, a name bound in `pkg/__init__.py` (or shadowed by `import *` there) is treated
+as that object rather than the submodule, unless `pkg/__init__.py` binds it to the submodule
+itself. Anything else is not an arrow. Directories named tests, venv,
 env, node_modules, build, dist, or site-packages are named when skipped. __pycache__ and
-hidden directories are skipped quietly.
+hidden directories are skipped quietly. Test files (`test_*.py`, `*_test.py`) are left out of a
+folder chart and refused when named directly, as JavaScript and TypeScript test files are.
 
 ```
 uv run python -m asbuilt.built . built.json

@@ -8,10 +8,9 @@ import builtins
 import json
 
 from asbuilt.built import one_name
-from asbuilt.marks import layer, reaches_out, reads_env, resolve
+from asbuilt.marks import call_arguments, layer, reaches_out, reads_env, resolve
 from asbuilt.security import (
     assigned,
-    call_arguments,
     call_way,
     facts as security_facts,
     string_literal,

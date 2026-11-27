@@ -370,18 +370,16 @@ def _is_test_path(path):
     """True when `path` is a test file or sits inside a skipped/test directory."""
     if _is_test_file(path):
         return True
-    if any(part in _SKIP_DIRS for part in path.parts[:-1]):
-        return True
+    # Only folders inside the project count, so a checkout under .../build/ or a repo
+    # named build still charts; with no project root, only the file's own folder counts.
     resolved = path.resolve()
-    if resolved.parent.name in _SKIP_DIRS:
-        return True
     root = next(
         (p for p in resolved.parents if (p / ".git").exists() or (p / "pyproject.toml").is_file()),
         None,
     )
     if root is not None:
         return any(part in _SKIP_DIRS for part in resolved.relative_to(root).parts[:-1])
-    return False
+    return resolved.parent.name in _SKIP_DIRS
 
 
 def _py_files(folder):

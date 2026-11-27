@@ -56,6 +56,23 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(comp["ways_in"], ["python -m app", "console script app = app.cli:main"])
         self.assertEqual(result["not_proven"], ["console script bad = app.cli:nope: not a function charted here"])
 
+    def test_an_overloaded_function_called_at_top_level_reaches_its_implementation(self):
+        stubbed = (
+            "from typing import overload\n"
+            "def work():\n    pass\n"
+            "@overload\n"
+            "def main(x: int) -> int: ...\n"
+            "def main(x=0):\n    work()\n"
+        )
+        # A main block, and module code in __main__.py, both run the real def on line 6.
+        for files in ({"tool.py": stubbed + MAIN}, {"tool/__init__.py": "", "tool/__main__.py": stubbed + "main()\n"}):
+            with self.subTest(files=list(files)):
+                result = found(files)
+                (comp,) = result["components"]
+                ids = {m["id"].rsplit(":", 2)[-2:][0] + ":" + m["id"].rsplit(":", 1)[1] for m in comp["members"]}
+                self.assertIn("main:6", ids)
+                self.assertIn("work:2", ids)
+
     def test_a_main_block_starts_a_component_and_one_reaching_nothing_is_listed(self):
         result = found(
             {

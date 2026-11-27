@@ -1,4 +1,5 @@
 import contextlib
+import os
 import io
 import json
 import random
@@ -769,6 +770,42 @@ class BuiltCommandTest(unittest.TestCase):
                 self.assertEqual(main([str(only_tests), str(only_out)]), 2)
             self.assertIn("no Python files", err.getvalue())
             self.assertFalse(only_out.exists())
+
+    def test_a_checkout_under_a_skipped_folder_name_charts_by_absolute_or_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "build", "repo")
+            (repo / ".git").mkdir(parents=True)
+            (repo / "app.py").write_text("def run():\n    return 1\n")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "helper.py").write_text("def help():\n    return 1\n")
+            for n, target in enumerate((repo / "app.py", Path(os.path.relpath(repo / "app.py")))):
+                out = Path(tmp, f"out{n}.json")
+                with self.subTest(target=str(target)), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(main([str(target), str(out)]), 0)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([str(repo / "tests" / "helper.py"), str(Path(tmp, "t.json"))]), 2)
+
+    def test_asbuilts_own_plain_notes_draw_arrows_to_the_shared_argument_reader(self):
+        out_dir = tempfile.TemporaryDirectory()
+        with out_dir:
+            out = Path(out_dir.name, "self.json")
+            src = Path(__file__).resolve().parent.parent / "src" / "asbuilt"
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([str(src), str(out)]), 0)
+            plan = json.loads(out.read_text())
+            edges = []
+            todo = [plan]
+            while todo:
+                box = todo.pop()
+                edges += box.get("edges", [])
+                todo += box.get("children", [])
+            callers = {
+                e["sources"][0].split(":")[1]
+                for e in edges
+                if e["sources"][0].startswith("plain.py:")
+                and e["targets"][0].startswith("marks.py:call_arguments:")
+            }
+            self.assertTrue({"_from_param", "_exec", "_function"} <= callers, callers)
 
     def test_a_python_file_in_a_subfolder_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
