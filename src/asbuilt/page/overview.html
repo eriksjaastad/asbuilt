@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>As-Built — Project Overview</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --paper: #faf8f4;
+      --paper-card: #fffdf9;
+      --paper-tint: #f3efe6;
+      --ink: #2f2e2c;
+      --ink-muted: #5f584e;
+      --ink-soft: #7a7267;
+      --rule: #dcd5c9;
+      --rule-strong: #bfb6a6;
+      /* Muted Okabe-Ito accents (red-green colorblind-safe) */
+      --accent-blue: #2e6f95;
+      --accent-blue-bg: #eaf2f7;
+      --accent-teal: #2e7d67;
+      --accent-teal-bg: #e9f4f0;
+      --accent-amber: #b36226;
+      --accent-amber-bg: #faf0e6;
+      --accent-purple: #785086;
+      --accent-purple-bg: #f3ecf6;
+      --accent-rust: #9e4332;
+      --accent-rust-bg: #f9ecea;
+      --code-bg: #2f2e2c;
+      --code-ink: #faf8f4;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    code, pre, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    #app {
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 28px 48px;
+    }
+
+    .ov-header {
+      border-bottom: 1.5px solid var(--rule-strong);
+      padding-bottom: 16px;
+      margin-bottom: 20px;
+    }
+
+    .ov-title-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    .ov-title {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+
+    .ov-lang-tag {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      background: var(--accent-blue-bg);
+      color: var(--accent-blue);
+      border: 1px solid #c5dce9;
+    }
+
+    .ov-summary {
+      margin: 8px 0 0;
+      color: var(--ink-muted);
+      font-size: 14px;
+    }
+
+    .ov-notice {
+      margin-top: 14px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid #e4c6a8;
+      background: var(--accent-amber-bg);
+      color: #6f3b14;
+      font-size: 13.5px;
+    }
+
+    .ov-notice strong {
+      font-weight: 600;
+    }
+
+    .ov-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .ov-main {
+      min-width: 0;
+    }
+
+    .ov-sidebar {
+      min-width: 0;
+      background: var(--paper-card);
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .ov-sidebar h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ink);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .ov-count {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink-muted);
+      background: var(--paper-tint);
+      border: 1px solid var(--rule);
+      border-radius: 999px;
+      padding: 1px 8px;
+    }
+
+    .ov-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .ov-tab {
+      appearance: none;
+      font: inherit;
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--ink);
+      background: var(--paper-card);
+      border: 1px solid var(--rule-strong);
+      border-radius: 6px;
+      padding: 7px 13px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+
+    .ov-tab:hover {
+      background: var(--paper-tint);
+    }
+
+    .ov-tab[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+    }
+
+    .ov-tab[aria-pressed="true"] .ov-count {
+      background: rgba(250, 248, 244, 0.18);
+      color: var(--paper);
+      border-color: rgba(250, 248, 244, 0.3);
+    }
+
+    .ov-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 14px;
+    }
+
+    .ov-card {
+      text-align: left;
+      width: 100%;
+      font: inherit;
+      color: var(--ink);
+      background: var(--paper-card);
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      padding: 15px 16px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    .ov-card:hover {
+      border-color: var(--accent-blue);
+      box-shadow: 0 2px 8px rgba(47, 46, 44, 0.06);
+    }
+
+    .ov-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .ov-card-title {
+      font-size: 16px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .ov-kind-badge {
+      flex-shrink: 0;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+    }
+
+    .ov-kind-commands { background: var(--accent-blue-bg); color: var(--accent-blue); border-color: #c5dce9; }
+    .ov-kind-web-pages { background: var(--accent-teal-bg); color: var(--accent-teal); border-color: #bfe0d6; }
+    .ov-kind-scripts { background: var(--accent-amber-bg); color: var(--accent-amber); border-color: #e6cbb2; }
+    .ov-kind-other { background: var(--accent-purple-bg); color: var(--accent-purple); border-color: #d9c6e0; }
+    .ov-kind-shared { background: var(--paper-tint); color: var(--ink-muted); border-color: var(--rule-strong); }
+
+    .ov-card-meta {
+      font-size: 13px;
+      color: var(--ink-muted);
+    }
+
+    .ov-card-ways {
+      margin: 0;
+      padding-left: 16px;
+      font-size: 12.5px;
+      color: var(--ink-soft);
+      overflow-wrap: anywhere;
+    }
+
+    .ov-breadcrumb {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      font-size: 13.5px;
+      color: var(--ink-muted);
+    }
+
+    .ov-back-btn {
+      appearance: none;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-blue);
+      background: var(--paper-card);
+      border: 1px solid var(--rule-strong);
+      border-radius: 5px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+
+    .ov-back-btn:hover {
+      background: var(--accent-blue-bg);
+      border-color: var(--accent-blue);
+    }
+
+    .ov-detail-header {
+      background: var(--paper-card);
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 18px;
+    }
+
+    .ov-detail-header h2 {
+      margin: 0 0 6px;
+      font-size: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .ov-detail-list {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      font-size: 13.5px;
+      color: var(--ink-muted);
+      overflow-wrap: anywhere;
+    }
+
+    .ov-file-section {
+      margin-bottom: 20px;
+    }
+
+    .ov-file-heading {
+      margin: 0 0 10px;
+      padding: 6px 12px;
+      background: var(--paper-tint);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 700;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .ov-fn-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .ov-fn-card {
+      background: var(--paper-card);
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      padding: 14px 16px;
+      min-width: 0;
+    }
+
+    .ov-fn-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .ov-fn-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .ov-fn-lines {
+      font-size: 12px;
+      color: var(--ink-soft);
+    }
+
+    .ov-fn-why {
+      margin: 0 0 8px;
+      font-size: 13px;
+      color: var(--ink-muted);
+    }
+
+    .ov-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 8px 0;
+    }
+
+    .ov-badge {
+      display: inline-block;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--rule-strong);
+      background: var(--paper-tint);
+      color: var(--ink);
+    }
+
+    .ov-badge-env { background: var(--accent-blue-bg); color: var(--accent-blue); border-color: #c5dce9; }
+    .ov-badge-input { background: var(--accent-teal-bg); color: var(--accent-teal); border-color: #bfe0d6; }
+    .ov-badge-writes { background: var(--accent-amber-bg); color: var(--accent-amber); border-color: #e6cbb2; }
+    .ov-badge-calls-out { background: var(--accent-rust-bg); color: var(--accent-rust); border-color: #e5c3bc; }
+    .ov-badge-model { background: var(--accent-purple-bg); color: var(--accent-purple); border-color: #d9c6e0; }
+
+    .ov-plain {
+      margin: 6px 0;
+      font-size: 14px;
+      color: var(--ink);
+    }
+
+    .ov-proven {
+      margin: 6px 0;
+      font-size: 13.5px;
+      color: var(--ink-muted);
+      font-style: italic;
+    }
+
+    .ov-security {
+      margin: 10px 0;
+      padding: 10px 12px;
+      border-radius: 6px;
+      border-left: 3px solid var(--accent-amber);
+      background: var(--accent-amber-bg);
+      font-size: 13.5px;
+    }
+
+    .ov-security-head {
+      margin: 0 0 6px;
+      font-weight: 700;
+      color: #6f3b14;
+    }
+
+    .ov-security-item {
+      margin: 6px 0 0;
+    }
+
+    .ov-security-item p {
+      margin: 2px 0;
+    }
+
+    .ov-calls {
+      margin: 8px 0;
+      font-size: 13px;
+      color: var(--ink-muted);
+    }
+
+    .ov-call-chip {
+      display: inline-block;
+      margin: 2px 6px 2px 0;
+      padding: 1px 7px;
+      border-radius: 4px;
+      background: var(--paper-tint);
+      border: 1px solid var(--rule);
+      font-size: 12px;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    details.ov-source {
+      margin-top: 10px;
+    }
+
+    details.ov-source summary {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-blue);
+      user-select: none;
+    }
+
+    details.ov-source pre {
+      margin: 8px 0 0;
+      padding: 12px 14px;
+      border-radius: 6px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      font-size: 12.5px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      overflow-x: auto;
+    }
+
+    .ov-rest {
+      margin: 6px 0 0;
+      font-size: 12.5px;
+      color: var(--ink-soft);
+    }
+
+    .ov-pkg-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .ov-pkg-item {
+      padding: 8px 10px;
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      background: var(--paper);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .ov-pkg-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .ov-pkg-link {
+      color: var(--accent-blue);
+      font-weight: 600;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    .ov-pkg-link:hover {
+      text-decoration: underline;
+    }
+
+    .ov-pkg-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      font-size: 11.5px;
+    }
+
+    .ov-pkg-spec {
+      color: var(--ink-muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .pkg-summary {
+      margin: 2px 0;
+      font-size: 12.5px;
+      line-height: 1.4;
+      color: var(--ink-muted);
+      overflow-wrap: anywhere;
+    }
+
+    .ov-soft-hint {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent-amber);
+    }
+
+    .ov-tag-runtime {
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--accent-teal-bg);
+      color: var(--accent-teal);
+      border: 1px solid #bfe0d6;
+      font-weight: 600;
+    }
+
+    .ov-tag-dev {
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--paper-tint);
+      color: var(--ink-muted);
+      border: 1px solid var(--rule-strong);
+      font-weight: 600;
+    }
+
+    .ov-tag-reg {
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--paper-card);
+      color: var(--ink-soft);
+      border: 1px solid var(--rule);
+    }
+
+    .ov-empty {
+      padding: 20px;
+      border: 1px dashed var(--rule-strong);
+      border-radius: 8px;
+      color: var(--ink-muted);
+      background: var(--paper-card);
+    }
+
+    .ov-error {
+      padding: 18px;
+      border: 2px solid var(--accent-rust);
+      border-radius: 8px;
+      background: var(--accent-rust-bg);
+      color: var(--accent-rust);
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 960px) {
+      #app {
+        padding: 16px;
+      }
+      .ov-layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <p class="ov-empty">Loading project overview…</p>
+  </div>
+  <script type="module" src="/overview.js"></script>
+</body>
+</html>
