@@ -6,8 +6,8 @@ import re
 import socket
 import subprocess
 import sys
-import threading
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -132,6 +132,28 @@ class CliTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["--port", "0"]), 0)
         close.assert_called_once()
+
+    def test_the_page_opens_in_the_browser_only_when_asked(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name)
+        (folder / "run.py").write_text('def main():\n    return 1\nif __name__ == "__main__":\n    main()\n')
+        for argv, server in ((["--port", "0"], cli.Server), ([str(folder), "--port", "0"], cli.OverviewServer)):
+            for flag, opened in (([], False), (["--open"], True)):
+                with (
+                    self.subTest(argv=argv, flag=flag),
+                    mock.patch.object(server, "serve_forever", side_effect=KeyboardInterrupt),
+                    mock.patch.object(cli.webbrowser, "open") as browser,
+                    contextlib.redirect_stdout(io.StringIO()) as out,
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    self.assertEqual(main(argv + flag), 0)
+                url = out.getvalue().split(" at ")[-1].strip()
+                self.assertTrue(url.startswith("http://127.0.0.1:"), out.getvalue())
+                if opened:
+                    browser.assert_called_once_with(url)
+                else:
+                    browser.assert_not_called()
 
     def test_a_watch_that_fails_ends_the_command_with_the_reason(self):
         codes = []
