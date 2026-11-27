@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from asbuilt.compare import check
-from asbuilt.javascript import chart, main
+from asbuilt.javascript import _module, chart, main
 from asbuilt.state import PlanError
 
 
@@ -369,3 +369,211 @@ class JavaScript(unittest.TestCase):
         self.assertEqual(info["lines"], [1, 52])
         self.assertEqual(len(info["text"].splitlines()), 40)
         self.assertIn("41-52", info["rest"])
+
+    def test_duplicate_declarations_on_same_line_get_unique_ids_and_calls(self):
+        path = self.put(
+            "dup.js",
+            "function helper() {}\n"
+            "function f() { helper(); } function f() { helper(); }\n"
+            "var g = () => helper(), g = () => helper();\n",
+        )
+        plan = self.read(path)
+        children = self.boxes(plan)["dup.js"]["children"]
+        ids = [c["id"] for c in children]
+        self.assertEqual(len(ids), len(set(ids)))
+        f_ids = [c["id"] for c in children if c["labels"] == [{"text": "f()"}]]
+        g_ids = [c["id"] for c in children if c["labels"] == [{"text": "g()"}]]
+        self.assertEqual(len(f_ids), 2)
+        self.assertEqual(len(g_ids), 2)
+        self.assertEqual(
+            self.calls(plan),
+            {(src, "dup.js:helper:1") for src in (*f_ids, *g_ids)},
+        )
+
+    def test_relative_import_of_dotted_filename_resolves(self):
+        for suffix in ("js", "ts"):
+            with self.subTest(suffix=suffix):
+                folder = self.root / f"dotted_{suffix}"
+                self.put(
+                    f"dotted_{suffix}/foo.bar.{suffix}",
+                    "export function hi() { return 1; }\n",
+                )
+                self.put(
+                    f"dotted_{suffix}/app.{suffix}",
+                    "import { hi } from './foo.bar';\nexport function run() { return hi(); }\n",
+                )
+                plan = self.read(folder)
+                self.assertEqual(
+                    self.calls(plan),
+                    {(f"app.{suffix}:run:2", f"foo.bar.{suffix}:hi:1")},
+                )
+                imports = [e for e in plan["edges"] if e.get("labels")]
+                self.assertEqual(
+                    [(e["sources"], e["targets"]) for e in imports],
+                    [([f"app.{suffix}"], [f"foo.bar.{suffix}"])],
+                )
+
+    def test_folder_skips_and_lists_unparseable_files_while_charting_valid_ones(self):
+        self.put("good.ts", "export function helper() { return 1; }\n")
+        self.put(
+            "app.ts",
+            "import { helper } from './good';\n"
+            "import { ghost } from './broken';\n"
+            "export function run() { helper(); ghost(); }\n",
+        )
+        self.put("broken.ts", "export function bad( {\n")
+        (self.root / "bad_utf8.js").write_bytes(b"\xff\xfe")
+
+        skipped = []
+        plan = chart(self.root, skipped=skipped)
+        check(plan, "chart.json")
+        self.assertEqual(skipped, ["bad_utf8.js", "broken.ts"])
+        boxes = self.boxes(plan)
+        self.assertIn("good.ts", boxes)
+        self.assertIn("app.ts", boxes)
+        self.assertNotIn("broken.ts", boxes)
+        self.assertNotIn("bad_utf8.js", boxes)
+        self.assertEqual(self.calls(plan), {("app.ts:run:3", "good.ts:helper:1")})
+
+        out = self.root / "chart.json"
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main([str(self.root), str(out)]), 0)
+        self.assertEqual(
+            err.getvalue(), "asbuilt.javascript: skipped bad_utf8.js, broken.ts\n"
+        )
+        self.assertTrue(out.is_file())
+
+    def test_single_unparseable_file_and_all_unparseable_folder_raise_plan_error(self):
+        broken_ts = self.put("broken.ts", "export function bad( {\n")
+        bad_utf8 = self.root / "bad.js"
+        bad_utf8.write_bytes(b"\xff")
+        for path in (broken_ts, bad_utf8):
+            with self.subTest(path=path.name), self.assertRaises(PlanError):
+                chart(path)
+        with self.assertRaises(PlanError) as ctx:
+            chart(self.root)
+        self.assertIn("bad.js", str(ctx.exception))
+        self.assertIn("broken.ts", str(ctx.exception))
+
+    def test_ts_esm_js_specifiers_resolve_to_ts_or_tsx_when_unambiguous(self):
+        for target_ext in ("ts", "tsx"):
+            with self.subTest(target_ext=target_ext):
+                folder = self.root / f"esm_{target_ext}"
+                body = "<div/>" if target_ext == "tsx" else "1"
+                self.put(
+                    f"esm_{target_ext}/sub/bar.{target_ext}",
+                    f"export function foo() {{ return {body}; }}\n",
+                )
+                self.put(
+                    f"esm_{target_ext}/app.ts",
+                    "import { foo } from './sub/bar.js';\n"
+                    "export function run() { return foo(); }\n",
+                )
+                plan = self.read(folder)
+                self.assertEqual(
+                    self.calls(plan),
+                    {("app.ts:run:2", f"sub/bar.{target_ext}:foo:1")},
+                )
+                imports = [e for e in plan["edges"] if e.get("labels")]
+                self.assertEqual(
+                    [(e["sources"], e["targets"]) for e in imports],
+                    [(["app.ts"], [f"sub/bar.{target_ext}"])],
+                )
+
+    def test_ts_esm_prefers_existing_js_and_rejects_ambiguous_ts_tsx(self):
+        # When bar.js exists alongside bar.ts, './bar.js' must resolve to bar.js.
+        prefer = self.root / "prefer"
+        self.put("prefer/bar.js", "export function foo() { return 1; }\n")
+        self.put("prefer/bar.ts", "export function foo() { return 2; }\n")
+        self.put(
+            "prefer/app.ts",
+            "import { foo } from './bar.js';\nexport function run() { return foo(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(prefer)),
+            {("app.ts:run:2", "bar.js:foo:1")},
+        )
+
+        # When bar.js does not exist and both bar.ts and bar.tsx exist, it is ambiguous.
+        ambig = self.root / "ambig"
+        self.put("ambig/bar.ts", "export function foo() { return 1; }\n")
+        self.put("ambig/bar.tsx", "export function foo() { return <div/>; }\n")
+        self.put(
+            "ambig/app.ts",
+            "import { foo } from './bar.js';\nexport function run() { return foo(); }\n",
+        )
+        self.assertFalse(self.calls(self.read(ambig)))
+
+    def test_ts_esm_jsx_mjs_cjs_fallback_resolution(self):
+        folder = self.root / "jsx_fallback"
+        self.put("jsx_fallback/card.tsx", "export function Card() { return <div/>; }\n")
+        self.put(
+            "jsx_fallback/app.tsx",
+            "import { Card } from './card.jsx';\nexport function App() { return Card(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(folder)),
+            {("app.tsx:App:2", "card.tsx:Card:1")},
+        )
+        # Unit checks for .mjs -> .mts and .cjs -> .cts in _module.
+        self.assertEqual(
+            _module("src/app.ts", "./util.mjs", {"src/util.mts": None}),
+            "src/util.mts",
+        )
+        self.assertEqual(
+            _module(
+                "src/app.ts",
+                "./util.mjs",
+                {"src/util.mjs": None, "src/util.mts": None},
+            ),
+            "src/util.mjs",
+        )
+        self.assertEqual(
+            _module("src/app.ts", "../lib/mod.cjs", {"lib/mod.cts": None}),
+            "lib/mod.cts",
+        )
+        self.assertIsNone(
+            _module("src/app.ts", "./only.ts", {"src/only.js": None}),
+        )
+
+    def test_mts_and_cts_fallbacks_chart_through_the_folder_reader(self):
+        folder = self.root / "esm"
+        self.put("esm/util.mts", "export function util() { return 1; }\n")
+        self.put("esm/mod.cts", "export function mod() { return 2; }\n")
+        self.put("esm/types.d.mts", "export declare function t(): void;\n")
+        self.put(
+            "esm/app.mts",
+            "import { util } from './util.mjs';\nimport { mod } from './mod.cjs';\n"
+            "export function app() { return util() + mod(); }\n",
+        )
+        self.assertEqual(
+            self.calls(self.read(folder)),
+            {("app.mts:app:3", "util.mts:util:1"), ("app.mts:app:3", "mod.cts:mod:1")},
+        )
+        names = {box["id"] for box in self.read(folder)["children"]}
+        self.assertNotIn("types.d.mts", names)
+
+    def test_a_skipped_file_still_blocks_a_fallback_or_breaks_a_tie(self):
+        broken = "export function (\n"
+        good = "export function util() { return 1; }\n"
+        app = "import { util } from './%s';\nexport function app() { return util(); }\n"
+        # Explicit ./util.js names a skipped file: no arrow to util.ts.
+        self.put("exact/util.js", broken)
+        self.put("exact/util.ts", good)
+        self.put("exact/app.ts", app % "util.js")
+        # Extensionless ./util has two candidates; skipping one must not make it unique.
+        self.put("tie/util.js", broken)
+        self.put("tie/util.ts", good)
+        self.put("tie/app.ts", app % "util")
+        # Control: the only candidate parses, so the fallback still works.
+        self.put("ok/util.ts", good)
+        self.put("ok/app.ts", app % "util.js")
+        for folder in ("exact", "tie"):
+            with self.subTest(folder=folder):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    plan = self.read(self.root / folder)
+                self.assertFalse(self.calls(plan))
+                self.assertFalse([e for e in plan.get("edges", []) if "import:" in e["id"]])
+        self.assertEqual(
+            self.calls(self.read(self.root / "ok")), {("app.ts:app:2", "util.ts:util:1")}
+        )

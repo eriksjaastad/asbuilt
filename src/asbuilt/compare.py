@@ -207,7 +207,8 @@ def _mark(key, old, new, ends=None, at=None):
 
 
 def _marked(item, mark):
-    return {**item, "asbuilt": {"mark": mark, "why": ""}}
+    prev = item.get("asbuilt") if isinstance(item.get("asbuilt"), dict) else {}
+    return {**item, "asbuilt": {**prev, "mark": mark, "why": ""}}
 
 
 def compare(planned, built):
@@ -234,6 +235,7 @@ def compare(planned, built):
     )
     arrow_at = {item[3]["id"]: key for key, item in now.items()}
     built_arrows = set(arrow_at)  # the ids, not the (source, target) pairing keys
+    built_box_ids = {item[3]["id"] for item in new.values()} | {built["id"]}
 
     def put(bid, parent, box, mark):
         placed[bid] = _marked({k: v for k, v in box.items() if k != "children"}, mark)
@@ -255,7 +257,7 @@ def compare(planned, built):
             put(bid, parent, {k: v for k, v in box.items() if k != "edges"}, "dropped")
     for aid, (*_, arrow) in was.items():
         if aid not in now:  # its ends are built boxes or dropped ones put back
-            if aid in new or aid == built["id"]:
+            if aid in built_box_ids:
                 raise ValueError(f'arrow "{aid}" was planned; built has a box "{aid}"')
             source, target = arrow["sources"][0], arrow["targets"][0]
             arrow = {

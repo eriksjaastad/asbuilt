@@ -8,7 +8,9 @@ Entry points: a [project.scripts] line in the nearest pyproject.toml, an
 hook on a FastAPI or Flask app or router made in that file. One program is one component: a
 click group with every command and group under it, a web app with every router it includes at
 module level, and entry points that share a function, or whose code calls a click group's own
-function, are one component listing each way in.
+function, are one component listing each way in. Each component is grouped by kind from its proven
+entry points alone: commands (console scripts and click commands/groups), web pages (FastAPI or
+Flask apps/routers), or scripts (standalone __main__ entry points).
 
 A component holds what its entry functions reach along the arrows asbuilt.built proves, plus
 what a file's module-level code calls once a component reaches anything in that file, since
@@ -49,11 +51,26 @@ NO_PATH = "no path from an entry point found by asBuilt"
 # A component is named after its way in that comes first here: a console script, a run file, a
 # top-level click group, a web app, then a click subgroup.
 SCRIPT, RUN, CLICK_TOP, WEB_APP, CLICK_SUB = range(5)
+COMMANDS, WEB_PAGES, SCRIPTS, OTHER = "commands", "web pages", "scripts", "other"
+KINDS = (COMMANDS, WEB_PAGES, SCRIPTS, OTHER)
+
+
+def _kind(hints):
+    """The group kind a component belongs to, from its proven entry-point tags alone."""
+    tags = {tag for tag, _ in hints}
+    if WEB_APP in tags:
+        return WEB_PAGES
+    if tags & {SCRIPT, CLICK_TOP, CLICK_SUB}:
+        return COMMANDS
+    if RUN in tags:
+        return SCRIPTS
+    return OTHER
 
 
 def _scripts(folder):
     """(name, module, function) for each [project.scripts] line of the nearest pyproject.toml."""
-    for parent in [folder, *folder.parents]:
+    resolved = folder.resolve()
+    for parent in [resolved, *resolved.parents]:
         file = parent / "pyproject.toml"
         if file.is_file():
             try:
@@ -93,6 +110,8 @@ def _entries(path):
     if path.is_dir():
         _, _, files, (found, index, modules, scopes, canon, paths) = python_dir_links(path)
     else:
+        if not path.name.endswith(".py"):
+            raise PlanError(f"{path.name} is not a Python file.")
         box, files = python_file(path.name, read_bytes(path)), [(path.name, path)]
         found, index, modules, scopes, canon, paths = links(box, files, box["id"], path.parent.resolve())
     by_module = {mod: rel for rel, mod in modules.items() if mod}
@@ -165,6 +184,8 @@ def _entries(path):
         for cid, node in defs.items():
             outer = node.parent
             for dec in outer.named_children if outer.type == "decorated_definition" else ():
+                if dec.type != "decorator" or not dec.named_children:
+                    continue
                 call = dec.named_children[0]  # `@x.get("/a")`, or bare `@click.command`, with no arguments
                 bare = call.type in ("attribute", "identifier")
                 fun = call if bare else call.child_by_field_name("function") if call.type == "call" else None
@@ -283,7 +304,7 @@ def find(path):
         name = min(slot["hints"])[1]
         while name in [c["name"] for c in comps]:
             name += "'"
-        comps.append({"name": name, "ways_in": slot["ways"], "roots": slot["roots"]})
+        comps.append({"name": name, "kind": _kind(slot["hints"]), "ways_in": slot["ways"], "roots": slot["roots"]})
         for box, chain in walk(slot["roots"]).items():
             why.setdefault(box, {})[name] = chain
 
@@ -322,8 +343,14 @@ def find(path):
             if declared:
                 call["callee_declares"] = declared
             arrows.setdefault((group[a], group[b]), []).append(call)
+    grouped = [
+        {"kind": kind, "components": names_in_kind}
+        for kind in KINDS
+        if (names_in_kind := [c["name"] for c in comps if c["kind"] == kind])
+    ]
     return {
         "components": comps,
+        "groups": grouped,
         "shared": list(shared.values()),
         "no_path_found": [{"id": b, "name": names[b]} for b in names if group[b] == NO_PATH],
         "arrows": [{"from": a, "to": b, "calls": calls} for (a, b), calls in arrows.items()],
@@ -337,13 +364,19 @@ def summary(found):
     """The component list as short text, for a person to judge the boxes."""
     file = lambda m: m["id"].rsplit(":", 2)[0]  # noqa: E731
     comps, shared, none = found["components"], found["shared"], found["no_path_found"]
+    by_name = {c["name"]: c for c in comps}
     lines = [f"{len(comps)} components, {len(shared)} shared files, {NO_PATH} {len(none)}", ""]
-    lines += [f"  {c['name']}: {len(c['members'])}" for c in comps]
+    for grp in found.get("groups", []):
+        lines.append(f"  {grp['kind']}:")
+        lines += [f"    {name}: {len(by_name[name]['members'])}" for name in grp["components"]]
+    if not found.get("groups"):
+        lines += [f"  {c['name']}: {len(c['members'])}" for c in comps]
     lines += [f"  {s['name']}: {len(s['members'])}" for s in shared]
     lines += [f"  {NO_PATH}: {len(none)}", "", f"arrows between boxes: {len(found['arrows'])}"]
     lines += [f"  {a['from']} -> {a['to']}: {len(a['calls'])} calls" for a in found["arrows"]]
     for comp in comps:
-        lines += ["", f"{comp['name']}: {len(comp['members'])} members", "  ways in:"]
+        kind = f" ({comp['kind']})" if "kind" in comp else ""
+        lines += ["", f"{comp['name']}{kind}: {len(comp['members'])} members", "  ways in:"]
         lines += [f"    {w}" for w in comp["ways_in"]]
         lines += [f"  {m['name']} ({file(m)}): {m['why']}" for m in comp["members"]]
     for box in shared:

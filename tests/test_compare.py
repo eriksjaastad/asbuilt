@@ -253,6 +253,84 @@ class CompareTest(unittest.TestCase):
         ):
             compare(planned, built)
 
+    def test_a_dropped_arrow_does_not_collide_with_a_line_numbered_built_box(self):
+        planned = box("r", box("shop.py:load"), box("shop.py:gone"))
+        planned["edges"] = [
+            {
+                "id": "shop.py:load:12",
+                "sources": ["shop.py:load"],
+                "targets": ["shop.py:gone"],
+            }
+        ]
+        built = box("r", box("shop.py:load:12"))
+        with self.assertRaisesRegex(
+            ValueError,
+            'arrow "shop.py:load:12" was planned; built has a box "shop.py:load:12"',
+        ):
+            compare(planned, built)
+
+    def test_compare_preserves_existing_asbuilt_metadata_when_marking(self):
+        built_meta = {
+            "lines": [1, 5],
+            "text": "def load(): pass",
+            "rest": "6-10",
+            "proven": True,
+            "badges": ["io"],
+            "security": [],
+            "plain": "loads data",
+            "model": "v1",
+        }
+        arrow_meta = {"proven": True, "plain": "calls helper"}
+        dropped_meta = {"lines": [9, 10], "plain": "removed"}
+        planned_box = {
+            **box("shop.py:load", labels=["load()"]),
+            "asbuilt": {"plain": "old"},
+        }
+        dropped_box = {**box("shop.py:gone"), "asbuilt": dropped_meta}
+        planned = box("r", planned_box, dropped_box)
+        planned["edges"] = [
+            {
+                "id": "e_drop",
+                "sources": ["shop.py:load"],
+                "targets": ["shop.py:gone"],
+                "asbuilt": {"plain": "dropped edge"},
+            }
+        ]
+        built_box = {
+            **box("shop.py:load:1", labels=["load()"]),
+            "asbuilt": built_meta,
+        }
+        built = box("r", built_box)
+        built["edges"] = [
+            {
+                "id": "e_built",
+                "sources": ["shop.py:load:1"],
+                "targets": ["shop.py:load:1"],
+                "asbuilt": arrow_meta,
+            }
+        ]
+        before = copy.deepcopy((planned, built))
+        out = compare(planned, built)
+        self.assertEqual((planned, built), before)
+        by_id = {c["id"]: c for c in out["children"]}
+        self.assertEqual(
+            by_id["shop.py:load:1"]["asbuilt"],
+            {**built_meta, "mark": "planned", "why": ""},
+        )
+        self.assertEqual(
+            by_id["shop.py:gone"]["asbuilt"],
+            {**dropped_meta, "mark": "dropped", "why": ""},
+        )
+        edges = {e["id"]: e for e in out["edges"]}
+        self.assertEqual(
+            edges["e_built"]["asbuilt"],
+            {**arrow_meta, "mark": "added", "why": ""},
+        )
+        self.assertEqual(
+            edges["e_drop"]["asbuilt"],
+            {"plain": "dropped edge", "mark": "dropped", "why": ""},
+        )
+
     def test_a_dropped_arrow_is_pointed_at_the_built_id(self):
         planned = box("r", box("shop.py:load"), box("shop.py:gone"))
         planned["edges"] = [{"id": "e", "sources": ["shop.py:load"], "targets": ["shop.py:gone"]}]

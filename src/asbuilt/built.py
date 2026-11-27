@@ -776,9 +776,20 @@ def _path_of(node, rel, top, scope):
         return None if base is None else _step(base, "..")
     if node.type == "subscript":  # Path(__file__).parents[1]
         value, index = node.child_by_field_name("value"), node.child_by_field_name("subscript")
-        if value.type == "attribute" and value.child_by_field_name("attribute").text == b"parents" and index.type == "integer":
+        if value.type == "attribute" and value.child_by_field_name("attribute").text == b"parents" and index is not None and index.type == "integer":
+            idx = None
+            try:
+                idx = int(index.text, 0)
+            except ValueError:  # governance: allow-silent SF002: an index that is not an integer literal is not provable, so no path
+                idx = None
+            if idx is None or idx < 0:
+                return None
             base = _path_of(value.child_by_field_name("object"), rel, top, scope)
-            for _ in range(int(index.text) + 1 if base is not None else 0):
+            if base is None:
+                return None
+            if idx >= len(base):
+                return ("..",)
+            for _ in range(idx + 1):
                 base = _step(base, "..")
             return base
         return None

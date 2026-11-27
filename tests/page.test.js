@@ -295,6 +295,43 @@ test("a save that drops the focused box returns the whole chart and hides whole 
   }
 });
 
+test("a save that only moves the focused box's line keeps the filter on", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
+  const file = join(dir, "plan.json");
+  const plan = (line) => {
+    const run = { id: `a.py:run:${line}`, labels: [{ text: "run()" }], asbuilt: { text: "def run():\n    pass\n" } };
+    return JSON.stringify({
+      id: "root",
+      children: [run, { id: "kept" }, { id: "aside" }],
+      edges: [{ id: "e", sources: [run.id], targets: ["kept"] }],
+    });
+  };
+  writeFileSync(file, plan(3));
+  const { run: server, address } = serve(file, t.signal);
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(await address);
+    await page.locator("[data-box='aside']").waitFor();
+    await page.locator("#chart").getByText("run()", { exact: true }).click();
+    await page.locator("#pipeline").click();
+    await page.locator("[data-box='aside']").waitFor({ state: "detached" });
+    writeFileSync(file, plan(7));
+    await page.locator("[data-box='a.py:run:7']").waitFor();
+    await page.locator("[data-box='kept']").waitFor();
+    assert.equal(await page.locator("[data-box='aside']").count(), 0);
+    assert.equal(await page.locator("#whole").evaluate((button) => button.hidden), false);
+    await page.locator("#whole").click();
+    await page.locator("[data-box='aside']").waitFor();
+  } finally {
+    server.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("closing the code while a filter is on leaves whole chart visible", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "asbuilt-page-"));
   const file = join(dir, "plan.json");

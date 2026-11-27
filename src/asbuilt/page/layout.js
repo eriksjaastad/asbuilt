@@ -5,7 +5,7 @@ import { LANES, lanes } from "./lanes.js";
 import { ARROW_ROOM, noteOf, PADDING, prepare } from "./prepare.js";
 
 const markOf = (item) => (item.asbuilt?.mark === undefined ? {} : { mark: item.asbuilt.mark });
-const badgesOf = (item) => (Array.isArray(item.asbuilt?.badges) ? { badges: item.asbuilt.badges } : {});
+const badgesOf = (item) => (Array.isArray(item.asbuilt?.badges) ? { badges: item.asbuilt.badges.filter((b) => typeof b === "string") } : {});
 const OPTIONS = {
   "elk.algorithm": "layered",
   "elk.direction": "DOWN",
@@ -121,11 +121,12 @@ async function chart(prepared, elk, hide, parts) {
   let out = wide > MAX_WIDTH * 3 ? null : await elk.layout({ ...structuredClone(prepared), layoutOptions: OPTIONS });
   if (!out || out.width > MAX_WIDTH) out = await fitted(prepared, elk, hidden, out?.width ?? wide);
   const [boxes, cut, held, spot, shown] = [[], new Map(), new Map(), new Map(), new Map()];
-  const origin = { [out.id]: [0, 0] };
+  const origin = new Map([[out.id, [0, 0]]]);
   const walk = (box, level, holders) => {
     for (const b of box.children ?? []) {
-      const [x, y] = [origin[box.id][0] + b.x, origin[box.id][1] + b.y];
-      origin[b.id] = [x, y];
+      const [ox, oy] = origin.get(box.id);
+      const [x, y] = [ox + b.x, oy + b.y];
+      origin.set(b.id, [x, y]);
       spot.set(b.id, { x, w: b.width });
       const part = parts.get(b.id);
       if (hide.has(b.id) && !part) {
@@ -155,7 +156,7 @@ async function chart(prepared, elk, hide, parts) {
   const drawnEdges = out.edges.filter((e) => !hidden.has(e.id) && !hide.has(e.id));
   const lines = drawnEdges.map((e) => {
     const [s] = e.sections;
-    const [dx, dy] = origin[e.container];
+    const [dx, dy] = origin.get(e.container);
     const points = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => [p.x + dx, p.y + dy]);
     const l = e.labels?.[0];
     const label = l && { x: l.x + dx, y: l.y + dy, w: l.width, text: l.text };

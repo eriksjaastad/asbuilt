@@ -5,8 +5,9 @@ import { esc } from "./shapes.js";
 export function find(plan, id) {
   const todo = [plan];
   for (const box of todo) {
-    if (box?.id === id) return box;
-    todo.push(...(box?.children ?? []));
+    if (!box || typeof box !== "object" || Array.isArray(box)) continue;
+    if (box.id === id) return box;
+    if (Array.isArray(box.children)) todo.push(...box.children);
   }
   return null;
 }

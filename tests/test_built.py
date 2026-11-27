@@ -817,3 +817,25 @@ class BuiltCommandTest(unittest.TestCase):
             }
             want = {"id": "asbuilt:built", "children": [{"id": "t.py", "labels": [{"text": "t.py"}], "children": [one]}]}
             self.assertEqual(json.loads(out.read_text()), want)
+
+    def test_sys_path_parents_handles_bases_huge_and_negative_indices(self):
+        from asbuilt.built import sys_paths, tree
+
+        source = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "sys.path.insert(0, str(Path(__file__).parents[0x1] / 'scripts'))\n"
+            "sys.path.insert(0, str(Path(__file__).parents[0o0]))\n"
+            "sys.path.insert(0, str(Path(__file__).parents[999999999999]))\n"
+            "sys.path.insert(0, str(Path(__file__).parents[-1]))\n"
+        )
+        found = sys_paths("scripts/run.py", tree(source.encode()), Path("/proj"))
+        self.assertEqual(
+            [(folder, why) for _, _, folder, why in found],
+            [
+                ("scripts", None),
+                ("scripts", None),
+                (None, "the folder is outside the charted folder"),
+                (None, "the folder is known only when it runs"),
+            ],
+        )
