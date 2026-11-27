@@ -416,3 +416,49 @@ test("asbuilt DIR serves the overview, and a click walks component, file, functi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A React project: the mounted App is the way in, and a component nothing renders sits under no path
+// found, never as a way in. Headless; no window opens.
+test("asbuilt DIR on a React project lists an unrendered component under no path found", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "asbuilt-react-"));
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "package.json"), '{"name":"demo"}');
+  writeFileSync(join(dir, "src", "Experience.tsx"), "export function Experience() { return <section/>; }\n");
+  writeFileSync(join(dir, "src", "Hero.tsx"), "export function Hero() { return <h1/>; }\n");
+  writeFileSync(join(dir, "src", "main.tsx"), "import { createRoot } from 'react-dom/client';\nimport { Hero } from './Hero';\nfunction App() { return <Hero/>; }\ncreateRoot(document.getElementById('root')!).render(<App/>);\n");
+  const run = spawn("uv", ["run", "-q", "asbuilt", dir, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], signal: t.signal });
+  let err = "";
+  run.stderr.on("data", (part) => (err += part));
+  const address = new Promise((resolve, reject) => {
+    let out = "";
+    run.stdout.on("data", (part) => {
+      out += part;
+      const found = out.match(/http:\/\/127\.0\.0\.1:\d+\//);
+      if (found) resolve(found[0]);
+    });
+    run.on("exit", (code) => reject(new Error(`asbuilt exited ${code} before printing its address: ${err}`)));
+    run.on("error", reject);
+  });
+  address.catch(() => {});
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(await address);
+    await page.locator('[data-tab="group:web pages"]').first().click();
+    const ways = await page.locator("main, body").first().innerText();
+    assert.ok(!ways.includes("Experience"), "Experience must not be a way in");
+    await page.locator('[data-component="main"]').click();
+    await page.locator('[data-file="src/Hero.tsx"]').waitFor();
+    await page.goto(await address);
+    await page.locator('[data-tab="no_path_found"]').first().click();
+    await page.getByText("Experience", { exact: false }).first().waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    run.kill();
+    await browser?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

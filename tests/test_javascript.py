@@ -2034,7 +2034,8 @@ class JavaScript(unittest.TestCase):
             "export class Box { render(Child: any) { return <Child/>; } }\n"
             "export function Direct() { return <Child/>; }\n"
             "export function boot(cbs: any[]) { cbs.forEach((createRoot: any) => createRoot(document.body)); }\n"
-            "createRoot(document.getElementById('root')!).render(<Direct/>);\n",
+            "function Root() { return <><List items={[]}/><Local/><Direct/></>; }\n"
+            "createRoot(document.getElementById('root')!).render(<Root/>);\n",
         )
         found = find_components(self.root)
         reached = {
@@ -2042,8 +2043,9 @@ class JavaScript(unittest.TestCase):
             for c in found["components"]
             for m in c["members"]
         }
-        # Child is reached only from Direct, so it is no helper shared with List etc.
-        self.assertEqual(reached.get("Child()"), "reached from Direct()")
+        # Every shadowing example is reached from Root, but only Direct renders the imported Child.
+        self.assertTrue({"List()", "Local()", "Direct()"} <= set(reached), reached)
+        self.assertEqual(reached.get("Child()"), "reached from Root() via Direct()")
         self.assertEqual(found["shared"], [])
         self.assertNotIn(
             "createRoot() in src/App.tsx: boot()",
@@ -2067,6 +2069,41 @@ class JavaScript(unittest.TestCase):
         self.assertIn("Experience()", [m["name"] for m in found["no_path_found"]])
         members = {m["name"] for c in found["components"] for m in c["members"]}
         self.assertTrue({"App()", "Hero()", "About()"} <= members, members)
+
+    def test_framework_route_files_and_named_mounts_are_ways_in_from_any_target(self):
+        self.put("package.json", "{}")
+        files = {
+            "app/layout.tsx": "export default function RootLayout() { return <html/>; }\n",
+            "app/loading.tsx": "export default function Loading() { return <p/>; }\n",
+            "app/blog/not-found.tsx": "export default function Missing() { return <p/>; }\n",
+            "app/components/Card.tsx": "export function Card() { return <div/>; }\n",
+            "remix/app/root.tsx": "export default function Root() { return <html/>; }\n",
+            "remix/app/routes/_index.tsx": "export default function Index() { return <p/>; }\n",
+            "pages/about.tsx": "export default function About() { return <p/>; }\n",
+            "legacy/main.jsx": "import { render as mount } from 'react-dom';\nfunction Old() { return <p/>; }\nmount(<Old/>, document.body);\n",
+            "legacy/hydrate.jsx": "import { hydrate } from 'react-dom';\nfunction Dry() { return <p/>; }\nhydrate(<Dry/>, document.body);\n",
+            "server/ssr.jsx": "import { renderToString } from 'react-dom/server';\nfunction Page() { return <p/>; }\nexport const html = renderToString(<Page/>);\n",
+        }
+        for rel, text in files.items():
+            self.put(rel, text)
+        self.put("remix/package.json", "{}")
+
+        def members(target):
+            found = find_components(target)
+            return {m["name"] for c in found["components"] for m in c["members"]}, {
+                m["name"] for m in found["no_path_found"]
+            }
+
+        reached, unreached = members(self.root)
+        for name in ("RootLayout()", "Loading()", "Missing()", "About()", "Old()", "Dry()", "Page()"):
+            self.assertIn(name, reached)
+        self.assertIn("Card()", unreached)
+        # A subfolder or one file keeps its route from the project root.
+        self.assertIn("About()", members(self.root / "pages")[0])
+        self.assertIn("About()", members(self.root / "pages" / "about.tsx")[0])
+        self.assertIn("RootLayout()", members(self.root / "app" / "layout.tsx")[0])
+        remix = members(self.root / "remix")[0]
+        self.assertTrue({"Root()", "Index()"} <= remix, remix)
 
     def test_web_entries_need_framework_imports_not_names(self):
         self.put(

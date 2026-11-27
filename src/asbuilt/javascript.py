@@ -1879,6 +1879,20 @@ _DOM_MOUNTS = frozenset(
         ("react-dom", "", "hydrateRoot"),
         ("react-dom", "", "render"),
         ("react-dom", "", "hydrate"),
+        ("react-dom", "render"),
+        ("react-dom", "hydrate"),
+        ("react-dom", "createRoot"),
+        ("react-dom", "hydrateRoot"),
+        *(
+            ("react-dom/server", *head, name)
+            for head in ((), ("",))
+            for name in (
+                "renderToString",
+                "renderToStaticMarkup",
+                "renderToPipeableStream",
+                "renderToReadableStream",
+            )
+        ),
     }
 )
 _WEB_MODULES = frozenset({p[0] for p in _APP_FACTORIES | _DOM_MOUNTS})
@@ -1926,19 +1940,38 @@ def _script_hint(rel, ident):
     return ident
 
 
+# Files a framework loads by their path: Next.js pages/ and app/ route files, Remix app/root and
+# app/routes/. Nothing else is a way in by itself.
+_APP_ROUTE_FILES = {"page", "route", "layout", "loading", "error", "not-found", "template", "default", "global-error"}
+
+
 def _is_web_page_path(rel):
+    """True when `rel`, relative to the project root, is a file a framework routes to."""
     norm = posixpath.normpath(rel.replace("\\", "/"))
     parts = norm.split("/")
-    if parts[0] == "pages" and len(parts) >= 2:
+    if parts[:1] == ["src"]:
+        parts = parts[1:]
+    if len(parts) >= 2 and parts[0] == "pages":
         return True
-    if parts[:2] == ["src", "pages"] and len(parts) >= 3:
-        return True
-    if Path(norm).stem in {"page", "route"} and (
-        (parts[0] == "app" and len(parts) >= 2)
-        or (parts[:2] == ["src", "app"] and len(parts) >= 3)
-    ):
-        return True
+    if len(parts) >= 2 and parts[0] == "app":
+        if Path(parts[-1]).stem in _APP_ROUTE_FILES:
+            return True
+        if parts[1:2] == ["routes"] and len(parts) >= 3:
+            return True
+        if len(parts) == 2 and Path(parts[1]).stem == "root":
+            return True
     return False
+
+
+def _project_prefix(path):
+    """The charted folder's path from its project root (the nearest package.json or .git), so a
+    route keeps its identity when one subfolder or file is charted. '' at the root."""
+    base = (path if path.is_dir() else path.parent).resolve()
+    for cand in (base, *base.parents):
+        if (cand / "package.json").is_file() or (cand / ".git").exists():
+            rel = base.relative_to(cand).as_posix()
+            return "" if rel == "." else rel + "/"
+    return ""
 
 
 def _package_bins(path, charted_files):
@@ -2273,6 +2306,7 @@ def find_components(
     )
     source_map = dict(_files(path))
     aliases = _load_aliases(path) if is_dir else None
+    route_prefix = _project_prefix(path)
 
     names: dict[str, str] = {}
     file_of: dict[str, str] = {}
@@ -2571,7 +2605,7 @@ def find_components(
         # Only a file-routed page is a way in by itself. "No incoming arrow" proves nothing for a
         # component: JSX draws no arrows, so a rendered component and an unused one look the same.
         # Mounted roots (createRoot().render, ReactDOM.render) are entries through their mount.
-        if _is_web_page_path(rel):
+        if _is_web_page_path(route_prefix + rel):
             if cid not in explicit_entry_defs_by_file[rel]:
                 explicit_entry_defs_by_file[rel].append(cid)
             entries.append(
@@ -2677,7 +2711,7 @@ def find_components(
                     (_SHEBANG_CMD, _file_hint(rel)),
                 )
             )
-        if _is_web_page_path(rel):
+        if _is_web_page_path(route_prefix + rel):
             p_roots = file_entry_roots(rel)
             if len(p_roots) == 1 and ident_of.get(p_roots[0], "default") != "default":
                 p_hint = ident_of[p_roots[0]]
