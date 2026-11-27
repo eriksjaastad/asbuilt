@@ -1752,6 +1752,7 @@ def _module(source, spec, files, aliases=None, root=None):
 
 def chart(path, skipped=None):
     """Existing ELK plan shape, with file import arrows and proven definition calls."""
+    _SCOPE_NAMES.clear()
     files = {}
     unparseable = []
     is_dir = path.is_dir()
@@ -2056,36 +2057,47 @@ def _package_bins(path, charted_files):
     return found_bins, unproven
 
 
+# Names each scope node declares, computed once per node for one chart() or find_components()
+# run; _bound_between asks the same scopes again for every call and JSX tag in them.
+_SCOPE_NAMES: dict = {}
+
+
+def _scope_names(cur):
+    # The cached node is kept with its names: holding it keeps its tree alive, so no later tree
+    # can reuse its id while the entry exists.
+    key = (cur.id, cur.start_byte, cur.end_byte)
+    hit = _SCOPE_NAMES.get(key)
+    if hit is not None:
+        return hit[1]
+    kind = cur.type
+    found = ()
+    if kind in FUNCTIONS or kind == "method_definition":
+        params = cur.child_by_field_name("parameters") or cur.child_by_field_name("parameter")
+        found = (*_pattern(params), *_hoisted_bindings(cur.child_by_field_name("body")))
+    elif kind in {"statement_block", "switch_body", "class_body"}:
+        found = _lexical_names(_block_statements(cur))
+    elif kind == "for_statement":
+        found = _lexical_names([cur.child_by_field_name("initializer")])
+    elif kind == "for_in_statement":
+        if _word(cur.child_by_field_name("kind")) in {"let", "const"}:
+            found = _pattern(cur.child_by_field_name("left"))
+    elif kind == "catch_clause":
+        found = _pattern(cur.child_by_field_name("parameter"))
+    names = frozenset(found)
+    _SCOPE_NAMES[key] = (cur, names)
+    return names
+
+
 def _bound_between(name, node, top):
     """True when a scope enclosing node, up to and including top, declares name."""
     cur = node.parent
     while cur is not None and cur.type != "program":
-        kind = cur.type
-        if kind in FUNCTIONS or kind == "method_definition":
-            params = cur.child_by_field_name("parameters") or cur.child_by_field_name(
-                "parameter"
-            )
-            own = _word(cur.child_by_field_name("name"))
-            if name in _pattern(params) or name in _hoisted_bindings(
-                cur.child_by_field_name("body")
-            ):
-                return True
-            if kind in {"function_expression", "generator_function"} and own == name:
-                return True
-        elif kind in {"statement_block", "switch_body", "class_body"}:
-            if name in _lexical_names(_block_statements(cur)):
-                return True
-        elif kind == "for_statement":
-            if name in _lexical_names([cur.child_by_field_name("initializer")]):
-                return True
-        elif kind == "for_in_statement":
-            if _word(cur.child_by_field_name("kind")) in {"let", "const"} and name in (
-                _pattern(cur.child_by_field_name("left"))
-            ):
-                return True
-        elif kind == "catch_clause":
-            if name in _pattern(cur.child_by_field_name("parameter")):
-                return True
+        if name in _scope_names(cur):
+            return True
+        if cur.type in {"function_expression", "generator_function"} and _word(
+            cur.child_by_field_name("name")
+        ) == name:
+            return True
         if cur == top:
             break
         cur = cur.parent
@@ -2287,6 +2299,7 @@ def find_components(
 ) -> dict:
     """Group JS/TS definitions into components, shared helpers, and no_path_found using parser-proven facts."""
     path = Path(path)
+    _SCOPE_NAMES.clear()
     local_skipped: list[str] = []
     if chart_data is not None:
         plan = chart_data

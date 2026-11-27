@@ -111,13 +111,14 @@ def _declared(node):
     return text.strip() or None
 
 
-def _entries(path):
+def _entries(path, charted=None):
     """The charted boxes, arrows and nodes; each entry point as (key, way in, roots, name hint);
     the click groups (child -> parent), the routers an app includes (router -> app), the
     decorators that look like entry points but are not proven, {file: boxes its module-level
     code calls}, and each file not read with why."""
     if path.is_dir():
-        _, _, files, (found, index, modules, scopes, canon, paths) = python_dir_links(path)
+        # A caller that already charted this folder passes python_dir_links' result.
+        _, _, files, (found, index, modules, scopes, canon, paths) = charted or python_dir_links(path)
     else:
         if not path.name.endswith(".py"):
             raise PlanError(f"{path.name} is not a Python file.")
@@ -255,9 +256,10 @@ def _entries(path):
     return names, edges, nodes, entries, parent, included, unproven, loads, unread
 
 
-def find(path):
-    """The component list of a folder or file, as a dict ready to write as JSON."""
-    names, edges, nodes, entries, parent, included, unproven, loads, unread = _entries(path)
+def find(path, charted=None):
+    """The component list of a folder or file, as a dict ready to write as JSON. `charted` is
+    built.python_dir_links(path) when the caller has it already, so the folder is read once."""
+    names, edges, nodes, entries, parent, included, unproven, loads, unread = _entries(path, charted)
     file_of = lambda box: box.rsplit(":", 2)[0]  # noqa: E731
     after = {}
     for a, b in edges:

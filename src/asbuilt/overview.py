@@ -101,13 +101,15 @@ def _javascript(target):
 
 def _python(target):
     """(files, boxes, components, skipped folders) for a Python file or folder."""
+    links = None
     if target.is_dir():
-        root, skipped = built.python_dir(target)
+        links = built.python_dir_links(target)
+        root, skipped = links[0], links[1]
         file_boxes = _file_boxes(root.get("children", []))
     else:
         file_boxes, skipped = [built.python_file(target.name, read_bytes(target))], []
     files, boxes = _flatten(file_boxes)
-    return files, boxes, components.find(target), skipped
+    return files, boxes, components.find(target, links), skipped
 
 
 def build(target):

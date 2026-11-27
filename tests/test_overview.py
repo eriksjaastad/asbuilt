@@ -177,6 +177,32 @@ class OverviewTest(unittest.TestCase):
                 self.assertEqual(main([str(root)]), 0)
             self.assertIn("could not read broken.py", err.getvalue())
 
+    def test_a_folder_is_read_once_and_function_bindings_are_reused(self):
+        from asbuilt import built, components, security
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "proj")
+            root.mkdir()
+            (root / "run.py").write_text(
+                'def main():\n    def inner():\n        x = "a"\n        return x\n    return inner()\n'
+                'if __name__ == "__main__":\n    main()\n'
+            )
+            real = built.python_dir_links
+            with mock.patch.object(built, "python_dir_links", wraps=real) as by_built, mock.patch.object(
+                components, "python_dir_links", wraps=real
+            ) as by_components:
+                build(root)
+            # components.find reuses the overview's chart instead of reading the folder again.
+            self.assertEqual(by_built.call_count + by_components.call_count, 1)
+            security._LOCAL_BINDINGS.clear()
+            with mock.patch.object(security, "_bindings", wraps=security._bindings) as bind:
+                build(root)
+                fn_calls = lambda: sum("initial" in call.kwargs for call in bind.call_args_list)  # noqa: E731
+                first = fn_calls()
+                build(root)
+            self.assertGreater(first, 0)
+            self.assertEqual(fn_calls(), first, "a second build re-bound functions it had seen")
+
     def test_single_python_file_and_a_test_file_named_directly(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp, "solo")
