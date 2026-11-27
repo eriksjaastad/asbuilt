@@ -944,6 +944,21 @@ def _on_mark_assign(node, scope, dynamic, add):
         add("writes")
 
 
+# process.stdin.<these> receive what the user types; setRawMode, isTTY, pause and the like
+# only configure the stream, so they are not input.
+_STDIN_READS = {"on", "once", "addListener", "prependListener", "prependOnceListener", "read", "pipe"}
+
+
+def _reads_stdin(node):
+    """True when this `process.stdin` is read: a read method, or the stream itself handed on
+    (to readline, a pipe, a for-await loop). A setting such as setRawMode is not a read."""
+    parent = node.parent
+    if parent is None or parent.type != "member_expression" or parent.child_by_field_name("object") != node:
+        return parent is None or parent.type != "member_expression"
+    prop = parent.child_by_field_name("property")
+    return prop is not None and prop.text.decode() in _STDIN_READS
+
+
 def _on_mark_ref(node, scope, dynamic, add, details=None):
     path = _resolve_mark_path(node, scope, dynamic)
     if path in _ENV_BASES:
@@ -954,6 +969,8 @@ def _on_mark_ref(node, scope, dynamic, add, details=None):
         ("global", "process", "stdin"),
         ("module", "process", "stdin"),
     }:
+        if path[-1] == "stdin" and not _reads_stdin(node):
+            return
         add("input")
         if details is not None and path[-1] == "argv":
             details.add("argv")
