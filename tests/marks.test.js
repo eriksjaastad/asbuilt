@@ -136,3 +136,37 @@ test("a mark button's count is how many boxes in this view prove it", () => {
   assert.deepEqual(markCounts(plan), { env: 1, input: 1, writes: 0, "calls out": 1, model: 2 });
   assert.deepEqual(markCounts(pipeline(plan, "read")).model, 1);
 });
+
+test("markCounts ignores Object.prototype keys like toString and constructor", () => {
+  const weird = { id: "r", children: [badge("a", ["toString", "constructor", "__proto__", "env"])] };
+  assert.deepEqual(markCounts(weird), { env: 1, input: 0, writes: 0, "calls out": 0, model: 0 });
+});
+
+test("marks helpers guard against malformed plans without throwing", () => {
+  for (const bad of [null, undefined, 42, "nope", [], { id: "r", children: "bad", edges: 99 }]) {
+    assert.deepEqual(markCounts(bad), { env: 0, input: 0, writes: 0, "calls out": 0, model: 0 });
+    assert.doesNotThrow(() => byMarks(bad, ["env"]));
+    assert.doesNotThrow(() => shown(bad, "a", ["env"]));
+    assert.doesNotThrow(() => hiddenBoxes(bad, []));
+  }
+  const mixed = { id: "r", children: [null, 5, badge("a", ["env"])], edges: [null, { sources: ["a"], targets: ["a"] }] };
+  assert.deepEqual(markCounts(mixed), { env: 1, input: 0, writes: 0, "calls out": 0, model: 0 });
+  assert.deepEqual(ids(byMarks(mixed, ["env"])), ["r", "a"]);
+});
+
+test("empty-string ids are kept by marks and shown", () => {
+  const emptyIdPlan = {
+    id: "",
+    children: [
+      { id: "g", children: [badge("a", ["env"]), { id: "b" }] },
+    ],
+  };
+  assert.deepEqual(ids(byMarks(emptyIdPlan, ["env"])), ["", "g", "a"]);
+
+  const emptyChildPlan = {
+    id: "r",
+    children: [badge("", ["env"]), { id: "other" }],
+  };
+  assert.deepEqual(ids(shown(emptyChildPlan, "", ["env"])), ["r", ""]);
+  assert.deepEqual(ids(shown(emptyChildPlan, "", [])), ["r", ""]);
+});

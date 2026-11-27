@@ -617,3 +617,21 @@ test("generated plans: every box comes back inside its own group and clear of th
   }
   assert.ok(knotted >= 60, `${knotted} of the plans had a knot of two`);
 });
+
+test("non-string badges are filtered out during layout", async () => {
+  const plan = { id: "r", children: [{ ...leaf("a"), asbuilt: { badges: [123, null, {}, "env", undefined, "writes"] } }] };
+  const laid = await layout(plan, elk);
+  assert.deepEqual(laid.boxes[0].badges, ["env", "writes"]);
+});
+
+test("a box with id __proto__ lays out without mutating origin's prototype", async () => {
+  const plan = {
+    id: "r",
+    children: [
+      { id: "__proto__", children: [leaf("a"), leaf("b")], edges: [arrow("e", "a", "b")] },
+    ],
+  };
+  const laid = await layout(plan, elk);
+  assertSound(plan, laid, 3, 1);
+  assert.equal(({}).polluted, undefined);
+});

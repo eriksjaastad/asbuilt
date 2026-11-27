@@ -7,6 +7,7 @@ from unittest import mock
 from asbuilt.built import python_dir, python_file
 from asbuilt.connections import OpenRouter
 from asbuilt.notes import annotate
+from asbuilt.security import host_name
 
 
 def _box(source, label):
@@ -269,3 +270,9 @@ class SecurityTest(unittest.TestCase):
         self.assertEqual(kept["expert"], note["expert"])
         self.assertNotIn("perfectly safe", kept["plain"] + kept["expert"])
         self.assertNotIn("credentials", kept["plain"] + kept["expert"])
+
+    def test_malformed_url_does_not_crash_host_name_or_security_notes(self):
+        self.assertIsNone(host_name("http://[bad"))
+        notes = _notes('import requests\ndef fetch():\n    requests.get("http://[bad")\n', "fetch()")
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn("host", notes[0]["fact"])

@@ -5,7 +5,8 @@ variables use built.py's box format. Only unique local names and relative ES-mod
 imports prove calls. Nested callbacks, methods, JSX uses, CommonJS, re-exports and
 configured aliases do not prove call arrows in this first slice. No code is run.
 Tests, dependencies, generated folders, declaration files and symlinks are skipped.
-Unreadable or malformed source fails visibly and leaves OUT unchanged.
+In a folder chart, unreadable or unparseable files are skipped and listed on stderr
+unless none remain; a single unparseable file fails visibly and leaves OUT unchanged.
 """
 
 import argparse
@@ -269,10 +270,19 @@ def _file(name, source):
         assigned.update(
             counts
         )  # dynamic scope cannot prove which binding a call reaches
-    children, local = [], {}
+    children, local, defs, used_ids = [], {}, [], set()
     for ident, node, outer in definitions:
         start, end = outer.start_point[0] + 1, _line(outer.end_point)
         cid = f"{name}:{ident}:{start}"
+        if cid in used_ids:
+            col = node.start_point[1] + 1
+            cid = f"{name}:{ident}:{start}:{col}"
+            n = 2
+            while cid in used_ids:
+                cid = f"{name}:{ident}:{start}:{col}:{n}"
+                n += 1
+        used_ids.add(cid)
+        defs.append((cid, node))
         children.append(
             {
                 "id": cid,
@@ -287,7 +297,7 @@ def _file(name, source):
         "labels": [{"text": name}],
         **({"children": children} if children else {}),
     }
-    return box, definitions, local, exports, imports, counts, assigned
+    return box, defs, local, exports, imports, counts, assigned
 
 
 def _own(path):
@@ -346,18 +356,50 @@ def _files(path):
     return sorted(found)
 
 
+TS_FALLBACK = {
+    ".js": (".ts", ".tsx"),
+    ".jsx": (".tsx", ".ts"),
+    ".mjs": (".mts",),
+    ".cjs": (".cts",),
+}
+
+
 def _module(source, spec, files):
     if not spec.startswith(("./", "../")):
         return None
     target = posixpath.normpath(posixpath.join(posixpath.dirname(source), spec))
-    candidates = {target} if Path(target).suffix else {target + ext for ext in PARSERS}
+    suffix = Path(target).suffix
+    if suffix in PARSERS or suffix in TS_FALLBACK:
+        if target in files:
+            return target
+        alts = TS_FALLBACK.get(suffix, ())
+        stem = target[: -len(suffix)]
+        candidates = {stem + ext for ext in alts}
+    else:
+        candidates = {target + ext for ext in PARSERS}
     found = candidates & files.keys()
     return next(iter(found)) if len(found) == 1 else None
 
 
-def chart(path):
+def chart(path, skipped=None):
     """Existing ELK plan shape, with file import arrows and proven definition calls."""
-    files = {name: _file(name, read_bytes(file)) for name, file in _files(path)}
+    files = {}
+    unparseable = []
+    is_dir = path.is_dir()
+    for name, file in _files(path):
+        try:
+            files[name] = _file(name, read_bytes(file))
+        except PlanError:
+            if not is_dir:
+                raise
+            unparseable.append(name)
+    if not files:
+        detail = f" (skipped {', '.join(unparseable)})" if unparseable else ""
+        raise PlanError(
+            f"{path.name}: no parseable JavaScript/TypeScript files to chart{detail}"
+        )
+    if skipped is not None:
+        skipped.extend(unparseable)
     edges = {}
     for name, (box, definitions, local, _, imports, counts, assigned) in files.items():
         calls = {}
@@ -381,7 +423,7 @@ def chart(path):
                     and actual in files[target][2]
                 ):
                     scope[ident] = files[target][2][actual]
-        for ident, node, outer in definitions:
+        for source, node in definitions:
             if node.type in CLASSES:
                 continue
             body = node.child_by_field_name("body")
@@ -406,7 +448,6 @@ def chart(path):
                     else None
                 )
                 if target:
-                    source = f"{name}:{ident}:{outer.start_point[0] + 1}"
                     key = f"{source}>{target}"
                     calls[key] = {"id": key, "sources": [source], "targets": [target]}
         if calls:
@@ -442,9 +483,12 @@ def main(argv=None):
             raise PlanError(
                 f"{args.out.name}: OUT must be JSON and must not replace source"
             )
-        result = chart(args.path)
+        skipped = []
+        result = chart(args.path, skipped=skipped)
         check(result, args.out.name)
         output.write_atomic(args.out, output.plan_bytes(result, args.out.name))
+        if skipped:
+            print(f"asbuilt.javascript: skipped {', '.join(skipped)}", file=sys.stderr)
     except (PlanError, OSError) as exc:
         return output.fail("asbuilt.javascript", exc)
     return 0

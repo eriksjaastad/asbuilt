@@ -78,3 +78,12 @@ test("a fact's name follows only its stored kind, how and way", () => {
   assert.equal(titled({ kind: "calls out", way: "send" }), "Makes a network request");
   assert.equal(titled(undefined), "Something to know");
 });
+
+test("find guards against malformed plans and non-array children without throwing", () => {
+  assert.equal(find(null, "a"), null);
+  assert.equal(find(42, "a"), null);
+  assert.equal(find([], "a"), null);
+  assert.equal(find({ id: "r", children: "not-a-list" }, "a"), null);
+  assert.equal(find({ id: "r", children: 123 }, "a"), null);
+  assert.deepEqual(find({ id: "r", children: [null, 5, [], { id: "a" }] }, "a"), { id: "a" });
+});

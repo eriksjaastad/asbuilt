@@ -67,14 +67,16 @@ relative path, and its top-level functions, classes and function-valued variable
 component functions) are boxes inside it. Clicking one opens its source using the same
 line-number IDs and code panel as Python. It never runs the project or calls a model.
 
-Arrows labelled “imports” connect files for relative ES-module imports. Call arrows connect
+Arrows labelled “imports” connect files for relative ES-module imports, including TypeScript
+ESM `.js`/`.jsx` specifiers resolved to `.ts`/`.tsx` when unambiguous. Call arrows connect
 unique local definitions, or exported definitions proved by named/default imports. An
 extensionless import resolves only when exactly one matching source file exists. Shadowed,
-reassigned or ambiguous names do not get call arrows. A malformed or unreadable file reports
-an error and leaves the previous output untouched; OUT must end in `.json`.
-The pinned grammars can also reject valid syntax, including some TypeScript arrow functions
-with `<` inside an object literal. One rejected file stops the entire JS/TS chart; this slice
-does not skip and list unparseable files as the Python reader does. That is follow-up work.
+reassigned or ambiguous names do not get call arrows. OUT must end in `.json`.
+The pinned grammars can reject some valid syntax, including some TypeScript arrow functions
+with `<` inside an object literal. In a folder chart, unreadable or unparseable files are
+skipped and listed on stderr so the rest of the project still charts; if no parseable files
+remain, or when charting a single broken file, the command reports an error and leaves the
+previous output untouched.
 
 Tests (`test/`, `tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, `test_*`, `*_test`), dependency
 and generated folders, hidden paths, symlinks and `.d.ts` declarations are skipped. External

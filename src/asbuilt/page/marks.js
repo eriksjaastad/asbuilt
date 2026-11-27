@@ -5,13 +5,16 @@ import { pipeline } from "./pipeline.js";
 
 const KINDS = ["env", "input", "writes", "calls out", "model"];
 
-const childrenOf = (box) => box.children ?? [];
-const badgesOf = (box) => (Array.isArray(box.asbuilt?.badges) ? box.asbuilt.badges : []);
+const isBox = (box) => box !== null && typeof box === "object" && !Array.isArray(box);
+const childrenOf = (box) => (Array.isArray(box?.children) ? box.children.filter(isBox) : []);
+const edgesOf = (box) => (Array.isArray(box?.edges) ? box.edges.filter(isBox) : []);
+const badgesOf = (box) => (Array.isArray(box?.asbuilt?.badges) ? box.asbuilt.badges : []);
 
 const index = (plan) => {
   const parent = new Map();
   const walk = (box, from) => {
-    if (from) parent.set(box.id, from);
+    if (!isBox(box)) return;
+    if (from !== null && from !== undefined) parent.set(box.id, from);
     for (const child of childrenOf(box)) walk(child, box.id);
   };
   walk(plan, null);
@@ -19,9 +22,9 @@ const index = (plan) => {
 };
 
 const copy = (box, keep, match) => {
-  if (!keep.has(box.id)) return null;
+  if (!isBox(box) || !keep.has(box.id)) return null;
   const children = childrenOf(box).map((child) => copy(child, keep, match)).filter(Boolean);
-  const edges = (box.edges ?? []).filter((edge) => match.has(edge.sources?.[0]) && match.has(edge.targets?.[0]));
+  const edges = edgesOf(box).filter((edge) => match.has(edge.sources?.[0]) && match.has(edge.targets?.[0]));
   const next = { ...box, ...(children.length ? { children } : {}) };
   if (!children.length) delete next.children;
   if (box.edges) {
@@ -34,6 +37,7 @@ const copy = (box, keep, match) => {
 // `kinds` empty, or none of the real marks, is the plan unchanged. Otherwise every box that proves
 // one of them stays, with the arrows that run from one such box to another.
 export function byMarks(plan, kinds) {
+  if (!isBox(plan)) return plan;
   const chosen = new Set((kinds ?? []).filter((kind) => KINDS.includes(kind)));
   if (!chosen.size) return plan;
   const match = new Set();
@@ -45,7 +49,7 @@ export function byMarks(plan, kinds) {
   const keep = new Set(match);
   if (plan.id !== undefined) keep.add(plan.id);
   const parent = index(plan);
-  for (const id of match) for (let at = parent.get(id); at; at = parent.get(at)) keep.add(at);
+  for (const id of match) for (let at = parent.get(id); at !== undefined && !keep.has(at); at = parent.get(at)) keep.add(at);
   return copy(plan, keep, match);
 }
 
@@ -54,8 +58,8 @@ const names = (kinds) => KINDS.filter((kind) => (kinds ?? []).includes(kind));
 // What the page lays out. Null means the plan itself: no pipeline and no mark. A copy is never
 // returned for that case, so All stays byte-identical to the chart with nothing chosen.
 export function shown(plan, focus, kinds) {
-  if (!plan) return null;
-  const base = focus ? pipeline(plan, focus) : plan;
+  if (!isBox(plan)) return null;
+  const base = focus !== null && focus !== undefined ? pipeline(plan, focus) : plan;
   const filtered = byMarks(base, names(kinds));
   return filtered === plan ? null : filtered;
 }
@@ -65,10 +69,11 @@ export function shown(plan, focus, kinds) {
 export function markCounts(plan) {
   const tally = Object.fromEntries(KINDS.map((kind) => [kind, 0]));
   const walk = (box) => {
-    for (const badge of badgesOf(box)) if (badge in tally) tally[badge] += 1;
+    if (!isBox(box)) return;
+    for (const badge of badgesOf(box)) if (Object.hasOwn(tally, badge)) tally[badge] += 1;
     for (const child of childrenOf(box)) walk(child);
   };
-  if (plan) walk(plan);
+  if (isBox(plan)) walk(plan);
   return tally;
 }
 
@@ -101,8 +106,10 @@ export function carries(kinds, reached, looks) {
 // The boxes in `plan` whose ids are not in `kept`, as { name, checked }. checked means a function
 // or class box, whose own code was read: it carries that code or marks proven from it. A label two hidden boxes share gets its holder's label.
 export function hiddenBoxes(plan, kept) {
+  if (!isBox(plan)) return [];
   const [all, boxes, parent] = [new Map(), new Map(), index(plan)];
   const walk = (box, top) => {
+    if (!isBox(box)) return;
     all.set(box.id, box);
     if (!top && box.id !== undefined && !kept.includes(box.id)) boxes.set(box.id, box);
     for (const child of childrenOf(box)) walk(child, false);

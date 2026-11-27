@@ -37,10 +37,12 @@ def _assigned_value(node):
     if lit:
         return lit
     if node is not None and node.type == "integer":
+        num = None
         try:
-            return int(node.text.decode())
-        except ValueError:
-            return None
+            num = int(node.text.decode(), 0)
+        except ValueError:  # governance: allow-silent SF002: text that is not an int literal is not a proven value
+            num = None
+        return num
     if node is None or node.type not in ("tuple", "list"):
         return None
     texts = []
@@ -254,10 +256,14 @@ def host_name(text):
     """The host of an http(s) URL string, port removed. None when it is not one."""
     if not isinstance(text, str) or not text:
         return None
-    parsed = urlparse(text)
-    if parsed.scheme in ("http", "https") and parsed.hostname:
-        return parsed.hostname
-    return None
+    host = None
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme in ("http", "https"):
+            host = parsed.hostname
+    except ValueError:  # governance: allow-silent SF002: a malformed URL has no host to name, so no fact
+        host = None
+    return host or None
 
 
 def local_host(host):

@@ -786,3 +786,29 @@ class PlainTest(unittest.TestCase):
                 if "with an error" in text:
                     self.assertTrue(_escaping_raise(defined[name]), label)
                 self.assertLessEqual(" ".join(lines).count(", among others"), 1, label)
+
+    def test_non_decimal_integer_default_parameters_do_not_crash(self):
+        source = (
+            "def write_secret(path, mode=0o644, flags: int = 0x10, mask=0b101):\n"
+            "    return mode\n"
+        )
+        box = python_file("t.py", source.encode())
+        self.assertEqual(box["children"][0]["labels"][0]["text"], "write_secret()")
+
+    def test_cyclic_class_inheritance_does_not_recurse_infinitely(self):
+        self_cycle = (
+            "class LoopError(LoopError):\n"
+            "    pass\n"
+            "def fail():\n"
+            '    raise LoopError("boom")\n'
+        )
+        self.assertIn("stops with an error", " ".join(_lines(self_cycle, "fail()")))
+        mutual_cycle = (
+            "class A(B):\n"
+            "    pass\n"
+            "class B(A):\n"
+            "    pass\n"
+            "def fail():\n"
+            '    raise A("boom")\n'
+        )
+        self.assertIn("stops with an error", " ".join(_lines(mutual_cycle, "fail()")))

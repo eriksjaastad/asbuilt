@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from asbuilt.components import NO_PATH, find, main, summary
+from asbuilt.components import COMMANDS, KINDS, NO_PATH, OTHER, SCRIPTS, WEB_PAGES, _kind, find, main, summary
+from asbuilt.state import PlanError
 
 MAIN = 'if __name__ == "__main__":\n    main()\n'
 
@@ -410,6 +411,192 @@ class SysPathTest(unittest.TestCase):
     def test_the_same_file_under_both_roots_is_one_box(self):
         result = self.run_file("sys.path.insert(0, str(Path(__file__).parent.parent))", "from scripts.commands.common import f")
         self.assertEqual(boxes(result)["scripts/commands/common.py:f"], "run")
+
+
+class RobustnessTest(unittest.TestCase):
+    def test_comment_between_decorator_and_def_does_not_crash(self):
+        result = found(
+            {
+                "cli.py": (
+                    "import click\n\n"
+                    "@click.command()\n"
+                    "# explanatory comment between decorator and def\n"
+                    "def run():\n"
+                    "    pass\n"
+                )
+            }
+        )
+        self.assertEqual([c["name"] for c in result["components"]], ["run"])
+
+    def test_relative_dot_path_finds_parent_pyproject_scripts(self):
+        tmp, root = tree(
+            {
+                "pyproject.toml": '[project]\nname = "app"\n[project.scripts]\napp = "app.cli:main"\n',
+                "src/app/__init__.py": "",
+                "src/app/cli.py": "def main():\n    pass\n",
+            }
+        )
+        with tmp, contextlib.chdir(root / "src"):
+            result = find(Path("."))
+        (comp,) = result["components"]
+        self.assertEqual(comp["name"], "app")
+        self.assertEqual(comp["ways_in"], ["console script app = app.cli:main"])
+
+    def test_single_non_python_file_raises_plan_error(self):
+        tmp, root = tree({"notes.txt": "hello\n"})
+        with tmp:
+            txt = root / "notes.txt"
+            with self.assertRaises(PlanError):
+                find(txt)
+            out = root / "out.json"
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(main([str(txt), str(out)]), 2)
+            self.assertIn("not a Python file", err.getvalue())
+            self.assertFalse(out.exists())
+
+
+class GroupTest(unittest.TestCase):
+    def assert_valid_groups(self, result):
+        comps = result["components"]
+        by_name = {c["name"]: c for c in comps}
+        self.assertEqual(len(by_name), len(comps))
+        groups = result["groups"]
+        seen_kinds = [g["kind"] for g in groups]
+        self.assertEqual(seen_kinds, [k for k in KINDS if k in seen_kinds])
+        grouped_names = []
+        comp_order = {c["name"]: i for i, c in enumerate(comps)}
+        for g in groups:
+            self.assertIn(g["kind"], KINDS)
+            self.assertTrue(g["components"])
+            for name in g["components"]:
+                self.assertIn(name, by_name)
+                self.assertEqual(by_name[name]["kind"], g["kind"])
+            self.assertEqual(g["components"], sorted(g["components"], key=comp_order.__getitem__))
+            grouped_names.extend(g["components"])
+        self.assertEqual(len(grouped_names), len(set(grouped_names)))
+        self.assertEqual(set(grouped_names), set(by_name))
+
+    def test_mixed_project_groups_commands_web_pages_and_scripts_in_deterministic_order(self):
+        result = found(
+            {
+                "pyproject.toml": '[project]\nname = "demo"\n[project.scripts]\nmycli = "demo.cli:main"\n',
+                "demo/__init__.py": "",
+                "demo/__main__.py": "from demo.cli import main\nmain()\n",
+                "demo/cli.py": "def main():\n    pass\n",
+                "click_app.py": (
+                    "import click\n\n"
+                    "@click.group()\n"
+                    "def grp():\n    pass\n\n"
+                    "@grp.command()\n"
+                    "def sub():\n    pass\n\n"
+                    "@click.command()\n"
+                    "def solo_cmd():\n    pass\n\n"
+                    'if __name__ == "__main__":\n    grp()\n'
+                ),
+                "api.py": (
+                    "from fastapi import FastAPI\n"
+                    "from routes import router\n"
+                    "app = FastAPI()\n"
+                    "app.include_router(router)\n\n"
+                    '@app.get("/health")\n'
+                    "def health():\n    pass\n"
+                ),
+                "routes.py": (
+                    "from fastapi import APIRouter\n"
+                    "router = APIRouter()\n\n"
+                    '@router.post("/items")\n'
+                    "def create_item():\n    pass\n"
+                ),
+                "site.py": (
+                    "from flask import Flask\n"
+                    "web = Flask(__name__)\n\n"
+                    '@web.route("/")\n'
+                    "def index():\n    pass\n"
+                ),
+                "runner.py": "def main():\n    pass\n" + MAIN,
+                "batch/__init__.py": "",
+                "batch/__main__.py": "def run():\n    pass\nrun()\n",
+            }
+        )
+        self.assert_valid_groups(result)
+        kinds = {c["name"]: c["kind"] for c in result["components"]}
+        self.assertEqual(kinds["mycli"], COMMANDS)
+        self.assertEqual(kinds["click_app"], COMMANDS)
+        self.assertEqual(kinds["solo_cmd"], COMMANDS)
+        self.assertEqual(kinds["web app app in api.py"], WEB_PAGES)
+        self.assertEqual(kinds["web app web in site.py"], WEB_PAGES)
+        self.assertEqual(kinds["runner"], SCRIPTS)
+        self.assertEqual(kinds["batch"], SCRIPTS)
+        self.assertEqual([g["kind"] for g in result["groups"]], [COMMANDS, WEB_PAGES, SCRIPTS])
+        by_kind = {g["kind"]: set(g["components"]) for g in result["groups"]}
+        self.assertEqual(by_kind[COMMANDS], {"mycli", "click_app", "solo_cmd"})
+        self.assertEqual(by_kind[WEB_PAGES], {"web app app in api.py", "web app web in site.py"})
+        self.assertEqual(by_kind[SCRIPTS], {"runner", "batch"})
+
+    def test_web_app_merged_with_main_block_stays_in_web_pages(self):
+        result = found(
+            {
+                "web.py": (
+                    "from flask import Flask\n"
+                    "app = Flask(__name__)\n\n"
+                    '@app.route("/")\n'
+                    "def home():\n    pass\n\n"
+                    'if __name__ == "__main__":\n    home()\n'
+                )
+            }
+        )
+        self.assert_valid_groups(result)
+        (comp,) = result["components"]
+        self.assertEqual(comp["kind"], WEB_PAGES)
+        self.assertEqual(result["groups"], [{"kind": WEB_PAGES, "components": [comp["name"]]}])
+
+    def test_unproven_decorators_and_empty_project_produce_empty_groups(self):
+        result = found(
+            {
+                "pyproject.toml": '[project]\nname = "app"\n[project.scripts]\ngone = "app.missing:main"\n',
+                "odd.py": 'import thing\n\n@thing.command()\ndef cmd():\n    pass\n\n@thing.get("/x")\ndef x():\n    pass\n',
+            }
+        )
+        self.assert_valid_groups(result)
+        self.assertEqual(result["components"], [])
+        self.assertEqual(result["groups"], [])
+
+    def test_fallback_kind_for_unrecognized_entry_tag(self):
+        self.assertEqual(_kind([(999, "mystery")]), OTHER)
+
+    def test_summary_includes_group_headings_and_component_kinds(self):
+        result = found(
+            {
+                "cli.py": "import click\n\n@click.command()\ndef go():\n    pass\n",
+                "web.py": 'from fastapi import FastAPI\napp = FastAPI()\n\n@app.get("/")\ndef root():\n    pass\n',
+                "tool.py": "def main():\n    pass\n" + MAIN,
+            }
+        )
+        self.assert_valid_groups(result)
+        text = summary(result)
+        self.assertIn("  commands:\n    go: 1", text)
+        self.assertIn("  web pages:\n    web app app in web.py: 1", text)
+        self.assertIn("  scripts:\n    tool: 1", text)
+        self.assertIn("go (commands): 1 members", text)
+        self.assertIn("web app app in web.py (web pages): 1 members", text)
+        self.assertIn("tool (scripts): 1 members", text)
+
+    def test_every_component_lands_in_exactly_one_group_on_random_projects(self):
+        rand = random.Random(9098)
+        for _ in range(25):
+            files = {}
+            for i in range(rand.randrange(1, 7)):
+                roll = rand.randrange(4)
+                if roll == 0:
+                    files[f"cmd{i}.py"] = f"import click\n\n@click.command()\ndef c{i}():\n    pass\n"
+                elif roll == 1:
+                    files[f"web{i}.py"] = f'from fastapi import FastAPI\napp = FastAPI()\n\n@app.get("/{i}")\ndef r{i}():\n    pass\n'
+                elif roll == 2:
+                    files[f"scr{i}.py"] = "def main():\n    pass\n" + MAIN
+                else:
+                    files[f"lib{i}.py"] = f"def helper{i}():\n    pass\n"
+            result = found(files)
+            self.assert_valid_groups(result)
 
 
 if __name__ == "__main__":

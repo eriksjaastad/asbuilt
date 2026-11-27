@@ -186,7 +186,10 @@ def _param_default(node, bound):
         return None
     value = node.named_children[-1]
     if value.type == "integer":
-        return int(value.text.decode())
+        try:
+            return int(value.text.decode(), 0)
+        except ValueError:
+            return None
     if value.type == "identifier":
         return bound.get(value.text.decode())
     if value.type == "string":
@@ -752,10 +755,14 @@ def _super_message(init):
     return found[0] if len(set(found)) == 1 else None
 
 
-def _message_slot(name, module):
+def _message_slot(name, module, seen=None):
     """How this error takes its message: one positional, the first, or a named parameter."""
     if _builtin_error(name):
         return ("sole", None)
+    seen = set() if seen is None else seen
+    if name in seen:
+        return None
+    seen.add(name)
     cls = _class_node(module, name)
     if cls is None:
         return None
@@ -772,7 +779,7 @@ def _message_slot(name, module):
     if any(_builtin_error(base) for base in names):
         return ("sole", None)
     for base in names:
-        slot = _message_slot(base, module)
+        slot = _message_slot(base, module, seen)
         if slot:
             return slot
     return None

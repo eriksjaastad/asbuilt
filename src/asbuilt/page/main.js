@@ -3,7 +3,8 @@
 import { boxAt, find, html } from "./code.js";
 import { latest } from "./latest.js";
 import { carries, hiddenBoxes, looked, markCounts, SAYS, showing, shown } from "./marks.js";
-import { pipeline } from "./pipeline.js";
+import { pipeline, resolveFocus } from "./pipeline.js";
+import { prepare } from "./prepare.js";
 import { keepLastGood, render } from "./render.js";
 import { esc } from "./shapes.js";
 
@@ -24,27 +25,32 @@ let last = null;
 let looks = null;
 for (const button of markButtons) button.textContent = SAYS[button.dataset.mark];
 
+const isBox = (box) => box !== null && typeof box === "object" && !Array.isArray(box);
+
 const listed = (box) => {
   const [boxes, arrows] = [[], []];
   const walk = (node, top) => {
-    if (!top && node.id) boxes.push(node.id);
-    for (const edge of node.edges ?? []) if (edge.id) arrows.push(edge.id);
-    for (const child of node.children ?? []) walk(child, false);
+    if (!isBox(node)) return;
+    if (!top && node.id !== undefined && node.id !== null) boxes.push(node.id);
+    for (const edge of Array.isArray(node.edges) ? node.edges : []) {
+      if (isBox(edge) && edge.id !== undefined && edge.id !== null) arrows.push(edge.id);
+    }
+    for (const child of Array.isArray(node.children) ? node.children : []) walk(child, false);
   };
   walk(box, true);
   return { boxes, arrows };
 };
 
-const focusId = () => (focus && plan && find(plan, focus) ? focus : null);
+const focusId = () => (focus !== null && plan && find(plan, focus) ? focus : null);
 
 // One reading of the current view: the pipeline when one is on, then the chosen marks.
 // The empty line lives here so the chart and the toolbar cannot each decide it.
 function picture() {
   const id = focusId();
-  const base = id ? pipeline(plan, id) : plan;
+  const base = id !== null ? pipeline(plan, id) : plan;
   const draw = shown(plan, id, [...chosen]);
   const empty = Boolean(chosen.size && draw && !draw.children?.length);
-  const reached = id ? (find(plan, id).labels?.[0]?.text ?? id) : null;
+  const reached = id !== null ? (find(plan, id)?.labels?.[0]?.text ?? id) : null;
   return { base, draw, empty, line: empty ? carries([...chosen], reached, looks) : "" };
 }
 
@@ -72,13 +78,13 @@ function sayHidden() {
 }
 
 function showCode() {
-  const box = plan && open ? find(plan, open) : null;
+  const box = plan && open !== null ? find(plan, open) : null;
   const body = html(box);
   source.innerHTML = body;
   // Whole chart sits in the toolbar, so the panel closes when it has no code to show.
   code.hidden = body === "";
   pipelineBtn.hidden = !box;
-  whole.hidden = !focus;
+  whole.hidden = focus === null;
 }
 
 const show = latest(async (text) => {
@@ -86,12 +92,15 @@ const show = latest(async (text) => {
   let ok = false;
   try {
     const state = JSON.parse(text);
-    ok = state?.ok === true;
-    if (ok) [plan, looks] = [state.plan, state.looks];
+    if (state?.ok === true) {
+      prepare(state.plan);
+      ok = true;
+      [plan, looks] = [state.plan, state.looks];
+    }
   } catch {
     // render turns a message it cannot read into the error panel
   }
-  if (focus && !find(plan, focus)) focus = null;
+  if (focus !== null) focus = resolveFocus(plan, focus);
   const view = picture();
   // An empty mark is a calm chart only for a plan the server accepted. An error, or a lost
   // connection, has to win, or the empty line hides it and becomes the last good chart.
@@ -105,13 +114,13 @@ const show = latest(async (text) => {
 
 chart.addEventListener("click", (event) => {
   const id = boxAt(event);
-  if (!id) return;
+  if (id === null) return;
   open = open === id ? null : id;
   showCode();
 });
 
 pipelineBtn.addEventListener("click", () => {
-  if (!open) return;
+  if (open === null) return;
   focus = open;
   show(last);
 });
