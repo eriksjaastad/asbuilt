@@ -1963,15 +1963,14 @@ def _is_web_page_path(rel):
     return False
 
 
-def _project_prefix(path):
-    """The charted folder's path from its project root (the nearest package.json or .git), so a
-    route keeps its identity when one subfolder or file is charted. '' at the root."""
-    base = (path if path.is_dir() else path.parent).resolve()
-    for cand in (base, *base.parents):
+def _route_rel(file, rel):
+    """`file`'s path from the package that owns it (the nearest package.json or .git above it), so
+    a route keeps its identity whether a monorepo, one package, a subfolder or one file is charted."""
+    file = Path(file).resolve()
+    for cand in file.parents:
         if (cand / "package.json").is_file() or (cand / ".git").exists():
-            rel = base.relative_to(cand).as_posix()
-            return "" if rel == "." else rel + "/"
-    return ""
+            return file.relative_to(cand).as_posix()
+    return rel  # no package above it: its path from the charted folder
 
 
 def _package_bins(path, charted_files):
@@ -2306,7 +2305,7 @@ def find_components(
     )
     source_map = dict(_files(path))
     aliases = _load_aliases(path) if is_dir else None
-    route_prefix = _project_prefix(path)
+    route_of = {rel: _route_rel(file, rel) for rel, file in source_map.items()}
 
     names: dict[str, str] = {}
     file_of: dict[str, str] = {}
@@ -2605,7 +2604,7 @@ def find_components(
         # Only a file-routed page is a way in by itself. "No incoming arrow" proves nothing for a
         # component: JSX draws no arrows, so a rendered component and an unused one look the same.
         # Mounted roots (createRoot().render, ReactDOM.render) are entries through their mount.
-        if _is_web_page_path(route_prefix + rel):
+        if _is_web_page_path(route_of.get(rel, rel)):
             if cid not in explicit_entry_defs_by_file[rel]:
                 explicit_entry_defs_by_file[rel].append(cid)
             entries.append(
@@ -2711,7 +2710,7 @@ def find_components(
                     (_SHEBANG_CMD, _file_hint(rel)),
                 )
             )
-        if _is_web_page_path(route_prefix + rel):
+        if _is_web_page_path(route_of.get(rel, rel)):
             p_roots = file_entry_roots(rel)
             if len(p_roots) == 1 and ident_of.get(p_roots[0], "default") != "default":
                 p_hint = ident_of[p_roots[0]]

@@ -2105,6 +2105,26 @@ class JavaScript(unittest.TestCase):
         remix = members(self.root / "remix")[0]
         self.assertTrue({"Root()", "Index()"} <= remix, remix)
 
+    def test_routes_in_a_monorepo_package_are_judged_from_that_package(self):
+        self.put("package.json", "{}")
+        self.put("packages/web/package.json", "{}")
+        self.put("packages/web/app/page.tsx", "export default function Home() { return <p/>; }\n")
+        self.put("packages/web/app/layout.tsx", "export default function Shell() { return <html/>; }\n")
+        self.put("packages/web/app/ui/Nav.tsx", "export function Nav() { return <nav/>; }\n")
+        for target in (
+            self.root,
+            self.root / "packages" / "web",
+            self.root / "packages" / "web" / "app",
+            self.root / "packages" / "web" / "app" / "page.tsx",
+        ):
+            with self.subTest(target=str(target.relative_to(self.root))):
+                found = find_components(target)
+                reached = {m["name"] for c in found["components"] for m in c["members"]}
+                self.assertIn("Home()", reached)
+                if target.is_dir():
+                    self.assertIn("Shell()", reached)
+                    self.assertIn("Nav()", {m["name"] for m in found["no_path_found"]})
+
     def test_web_entries_need_framework_imports_not_names(self):
         self.put(
             "maps.ts",
